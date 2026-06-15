@@ -1,0 +1,6 @@
+# Frontend build artifacts
+node_modules/
+dist/
+
+# Node install from frontend-maven-plugin
+/target/node/

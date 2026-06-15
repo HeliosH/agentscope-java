@@ -1,0 +1,46 @@
+# ===================================================================
+# AgentScope Enterprise SaaS Platform — local profile
+# Zero external dependencies: H2 in-memory DB, in-memory session/state,
+# stub echo model, no sandbox. For smoke testing the full request path.
+# Activate with: --spring.profiles.active=local
+# ===================================================================
+spring:
+  datasource:
+    url: jdbc:h2:mem:saas;DB_CLOSE_DELAY=-1;MODE=PostgreSQL
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration/h2
+    baseline-on-migrate: true
+
+saas:
+  model:
+    type: stub
+  redis:
+    enabled: false
+  sandbox:
+    enabled: false
+    # type: docker
+    # image: ubuntu:22.04
+    # isolation-scope: USER
+    # idle-ttl-seconds: 600
+  rate-limit:
+    max-requests: 1000
+    window-seconds: 60
+  security:
+    jwt:
+      secret: local-dev-secret-please-override-in-prod-0123456789abcdef
+      ttl-seconds: 43200
+
+logging:
+  level:
+    io.agentscope: DEBUG
