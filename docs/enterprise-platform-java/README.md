@@ -44,6 +44,7 @@ QwenPaw 是 **Python 产品**。框架有"等价物" ≠ QwenPaw 代码能直接
 | 08 | [渠道 / 技能 / 安全审计](./08-channels-skills-security.md) | Channel SPI、技能市场、PermissionEngine、审计 |
 | 09 | [部署与可观测性](./09-deployment-observability.md) | K8s 拓扑、OTel、Micrometer、SLA |
 | 10 | [实施路线图](./10-roadmap.md) | 分阶段（含重建工作量）、风险 |
+| 11 | [前端改造方案](./11-frontend-migration.md) | 基于 agentscope Web UI 扩展、AG-UI 协议对接、Admin Dashboard、分期计划 |
 
 ## 一页速读
 
