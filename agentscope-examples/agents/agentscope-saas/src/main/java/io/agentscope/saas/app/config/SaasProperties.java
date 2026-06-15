@@ -132,27 +132,45 @@ public class SaasProperties {
         /** Whether sandbox-backed command execution is enabled. */
         private boolean enabled = false;
 
-        /** Backend type: {@code "docker"} (now) or {@code "cube"} (future, E2B-compatible REST). */
-        private String type = "docker";
+        /** Backend type: {@code "e2b"} (cloud), {@code "docker"} (local), or {@code "cube"} (future). */
+        private String type = "e2b";
 
         /** Docker image for sandbox containers (type=docker only). */
         private String image = "ubuntu:22.04";
 
-        /** Workspace root path inside the sandbox container. */
-        private String workspaceRoot = "/workspace";
+        /** Workspace root path inside the sandbox. Defaults differ by type (/workspace for docker,
+         * /home/user for e2b). */
+        private String workspaceRoot;
 
         /** Isolation scope: {@code USER} (default, one sandbox per user), {@code SESSION},
          * {@code AGENT}, or {@code GLOBAL}. */
         private String isolationScope = "USER";
 
-        /** Memory limit per sandbox in bytes ({@code null} = unlimited). */
+        /** Memory limit per sandbox in bytes ({@code null} = unlimited, type=docker only). */
         private Long memoryLimitBytes;
 
-        /** CPU count per sandbox ({@code null} = unlimited). */
+        /** CPU count per sandbox ({@code null} = unlimited, type=docker only). */
         private Long cpuCount;
 
         /** Idle TTL in seconds before a sandbox is eligible for eviction. */
         private int idleTtlSeconds = 600;
+
+        // --- E2B-specific fields ---
+
+        /** E2B API key (required when type=e2b). Obtain from https://e2b.dev/dashboard. */
+        private String e2bApiKey;
+
+        /** E2B API base URL (defaults to {@code https://api.e2b.app}). */
+        private String e2bApiBaseUrl;
+
+        /** E2B template ID (defaults to {@code "base"}). */
+        private String e2bTemplateId;
+
+        /** E2B sandbox domain (defaults to {@code e2b.app}). */
+        private String e2bDomain;
+
+        /** E2B sandbox timeout in seconds (defaults to 300). */
+        private int e2bSandboxTimeoutSeconds = 300;
 
         public boolean isEnabled() {
             return enabled;
@@ -216,6 +234,46 @@ public class SaasProperties {
 
         public void setIdleTtlSeconds(int idleTtlSeconds) {
             this.idleTtlSeconds = idleTtlSeconds;
+        }
+
+        public String getE2bApiKey() {
+            return e2bApiKey;
+        }
+
+        public void setE2bApiKey(String e2bApiKey) {
+            this.e2bApiKey = e2bApiKey;
+        }
+
+        public String getE2bApiBaseUrl() {
+            return e2bApiBaseUrl;
+        }
+
+        public void setE2bApiBaseUrl(String e2bApiBaseUrl) {
+            this.e2bApiBaseUrl = e2bApiBaseUrl;
+        }
+
+        public String getE2bTemplateId() {
+            return e2bTemplateId;
+        }
+
+        public void setE2bTemplateId(String e2bTemplateId) {
+            this.e2bTemplateId = e2bTemplateId;
+        }
+
+        public String getE2bDomain() {
+            return e2bDomain;
+        }
+
+        public void setE2bDomain(String e2bDomain) {
+            this.e2bDomain = e2bDomain;
+        }
+
+        public int getE2bSandboxTimeoutSeconds() {
+            return e2bSandboxTimeoutSeconds;
+        }
+
+        public void setE2bSandboxTimeoutSeconds(int e2bSandboxTimeoutSeconds) {
+            this.e2bSandboxTimeoutSeconds = e2bSandboxTimeoutSeconds;
         }
     }
 

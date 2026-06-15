@@ -70,6 +70,12 @@
             <artifactId>agentscope-extensions-redis</artifactId>
         </dependency>
 
+        <!-- E2B cloud sandbox backend -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-sandbox-e2b</artifactId>
+        </dependency>
+
         <!-- Spring Boot WebFlux (reactive HTTP + SSE) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

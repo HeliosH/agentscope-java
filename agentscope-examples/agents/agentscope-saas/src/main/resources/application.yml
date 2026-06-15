@@ -43,13 +43,18 @@ saas:
     key-prefix: ${SAAS_REDIS_PREFIX:agentscope:saas:}
   sandbox:
     enabled: ${SAAS_SANDBOX_ENABLED:false}
-    type: ${SAAS_SANDBOX_TYPE:docker}
+    type: ${SAAS_SANDBOX_TYPE:e2b}
     image: ${SAAS_SANDBOX_IMAGE:ubuntu:22.04}
-    workspace-root: ${SAAS_SANDBOX_WORKSPACE_ROOT:/workspace}
+    workspace-root: ${SAAS_SANDBOX_WORKSPACE_ROOT:}
     isolation-scope: ${SAAS_SANDBOX_ISOLATION_SCOPE:USER}
     memory-limit-bytes: ${SAAS_SANDBOX_MEMORY_BYTES:}
     cpu-count: ${SAAS_SANDBOX_CPU_COUNT:}
     idle-ttl-seconds: ${SAAS_SANDBOX_IDLE_TTL:600}
+    e2b-api-key: ${E2B_API_KEY:}
+    e2b-api-base-url: ${E2B_API_BASE_URL:}
+    e2b-template-id: ${E2B_TEMPLATE_ID:}
+    e2b-domain: ${E2B_DOMAIN:}
+    e2b-sandbox-timeout-seconds: ${E2B_SANDBOX_TIMEOUT:300}
   rate-limit:
     max-requests: ${SAAS_RATELIMIT_MAX:60}
     window-seconds: ${SAAS_RATELIMIT_WINDOW:60}

@@ -15,6 +15,7 @@
  */
 package io.agentscope.saas.app.config;
 
+import io.agentscope.extensions.sandbox.e2b.E2bFilesystemSpec;
 import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.filesystem.spec.SandboxFilesystemSpec;
 import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
@@ -42,9 +43,8 @@ public class SandboxConfig {
     private static final Logger log = LoggerFactory.getLogger(SandboxConfig.class);
 
     /**
-     * Creates the sandbox filesystem spec from configuration properties. Currently supports
-     * {@code type=docker}; a future {@code type=cube} will be added when the Cube sandbox service
-     * is available.
+     * Creates the sandbox filesystem spec from configuration properties. Supports
+     * {@code type=e2b} (cloud) and {@code type=docker} (local).
      */
     @Bean
     public SandboxFilesystemSpec sandboxFilesystemSpec(
@@ -55,11 +55,39 @@ public class SandboxConfig {
 
         SandboxFilesystemSpec spec =
                 switch (sb.getType()) {
+                    case "e2b" -> {
+                        if (sb.getE2bApiKey() == null || sb.getE2bApiKey().isBlank()) {
+                            throw new IllegalStateException(
+                                    "E2B sandbox requires saas.sandbox.e2b-api-key to be set");
+                        }
+                        E2bFilesystemSpec e2bSpec =
+                                new E2bFilesystemSpec()
+                                        .apiKey(sb.getE2bApiKey())
+                                        .workspaceRoot(
+                                                sb.getWorkspaceRoot() != null
+                                                        ? sb.getWorkspaceRoot()
+                                                        : "/home/user")
+                                        .sandboxTimeoutSeconds(sb.getE2bSandboxTimeoutSeconds());
+                        if (sb.getE2bApiBaseUrl() != null) {
+                            e2bSpec.apiBaseUrl(sb.getE2bApiBaseUrl());
+                        }
+                        if (sb.getE2bTemplateId() != null) {
+                            e2bSpec.templateId(sb.getE2bTemplateId());
+                        }
+                        if (sb.getE2bDomain() != null) {
+                            e2bSpec.domain(sb.getE2bDomain());
+                        }
+                        e2bSpec.isolationScope(scope);
+                        yield e2bSpec;
+                    }
                     case "docker" -> {
                         DockerFilesystemSpec dockerSpec =
                                 new DockerFilesystemSpec()
                                         .image(sb.getImage())
-                                        .workspaceRoot(sb.getWorkspaceRoot());
+                                        .workspaceRoot(
+                                                sb.getWorkspaceRoot() != null
+                                                        ? sb.getWorkspaceRoot()
+                                                        : "/workspace");
                         if (sb.getMemoryLimitBytes() != null) {
                             dockerSpec.memorySizeBytes(sb.getMemoryLimitBytes());
                         }
@@ -74,7 +102,7 @@ public class SandboxConfig {
                             throw new IllegalStateException(
                                     "Unknown sandbox type: "
                                             + sb.getType()
-                                            + ". Supported: docker (cube coming soon)");
+                                            + ". Supported: e2b, docker");
                 };
 
         SandboxExecutionGuard guard = guardProvider.getIfAvailable();

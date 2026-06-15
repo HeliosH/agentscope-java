@@ -29,6 +29,10 @@ saas:
     enabled: false
   sandbox:
     enabled: false
+    # type: e2b
+    # e2b-api-key: <set via E2B_API_KEY env var>
+    # e2b-template-id: base
+    # e2b-sandbox-timeout-seconds: 300
     # type: docker
     # image: ubuntu:22.04
     # isolation-scope: USER
