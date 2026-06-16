@@ -1,0 +1,89 @@
+# ===================================================================
+# AgentScope Enterprise SaaS Platform — default (production) profile
+# Connects PostgreSQL + Valkey/Redis + an internal model gateway.
+# Override any value via environment variables (shown in ${...:default}).
+# ===================================================================
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: agentscope-saas
+  # --- PostgreSQL ---
+  datasource:
+    url: ${SAAS_DB_URL:jdbc:postgresql://localhost:5432/agentscope_saas}
+    username: ${SAAS_DB_USER:agentscope}
+    password: ${SAAS_DB_PASSWORD:agentscope}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  # --- Flyway (PostgreSQL migrations) ---
+  flyway:
+    enabled: true
+    locations: classpath:db/migration/postgresql
+    baseline-on-migrate: true
+
+# --- SaaS platform runtime ---
+saas:
+  model:
+    # stub | gateway | dashscope. Production should use the internal gateway.
+    type: ${SAAS_MODEL_TYPE:gateway}
+    base-url: ${SAAS_MODEL_BASE_URL:}
+    api-key: ${SAAS_MODEL_API_KEY:}
+    name: ${SAAS_MODEL_NAME:qwen-max}
+  redis:
+    enabled: ${SAAS_REDIS_ENABLED:true}
+    uri: ${SAAS_REDIS_URI:redis://localhost:6379}
+    key-prefix: ${SAAS_REDIS_PREFIX:agentscope:saas:}
+  sandbox:
+    enabled: ${SAAS_SANDBOX_ENABLED:false}
+    type: ${SAAS_SANDBOX_TYPE:cube}
+    image: ${SAAS_SANDBOX_IMAGE:ubuntu:22.04}
+    workspace-root: ${SAAS_SANDBOX_WORKSPACE_ROOT:}
+    isolation-scope: ${SAAS_SANDBOX_ISOLATION_SCOPE:USER}
+    memory-limit-bytes: ${SAAS_SANDBOX_MEMORY_BYTES:}
+    cpu-count: ${SAAS_SANDBOX_CPU_COUNT:}
+    idle-ttl-seconds: ${SAAS_SANDBOX_IDLE_TTL:600}
+    cube-api-url: ${CUBE_API_URL:http://localhost:8080}
+    cube-api-key: ${CUBE_API_KEY:}
+    cube-template-id: ${CUBE_TEMPLATE_ID:}
+    cube-domain: ${CUBE_DOMAIN:}
+    cube-envd-host-pattern: ${CUBE_ENVD_HOST_PATTERN:}
+    cube-sandbox-timeout-seconds: ${CUBE_SANDBOX_TIMEOUT:300}
+    snapshot:
+      enabled: ${SAAS_SANDBOX_SNAPSHOT_ENABLED:true}
+      table: ${SAAS_SANDBOX_SNAPSHOT_TABLE:agentscope_sandbox_snapshots}
+  rate-limit:
+    max-requests: ${SAAS_RATELIMIT_MAX:60}
+    window-seconds: ${SAAS_RATELIMIT_WINDOW:60}
+  agent:
+    name: ${SAAS_AGENT_NAME:assistant}
+    max-iters: ${SAAS_AGENT_MAX_ITERS:10}
+  security:
+    jwt:
+      secret: ${SAAS_JWT_SECRET:change-me-saas-dev-secret-please-override-in-prod-0123456789}
+      ttl-seconds: ${SAAS_JWT_TTL:43200}
+      issuer: ${SAAS_JWT_ISSUER:agentscope-saas}
+      # Set issuer-uri or jwk-set-uri to validate tokens from an enterprise IdP (SSO).
+      issuer-uri: ${SAAS_OIDC_ISSUER_URI:}
+      jwk-set-uri: ${SAAS_OIDC_JWK_SET_URI:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    io.agentscope: ${SAAS_LOG_LEVEL:INFO}
+    org.springframework.security: WARN

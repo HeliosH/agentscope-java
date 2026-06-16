@@ -222,6 +222,34 @@ class SandboxManagerIsolationTest {
         verify(stateStore).load(any());
     }
 
+    // ---- Priority 3: snapshot rebind from spec ----
+
+    @Test
+    void priority3_rebindsSnapshotFromSpecBeforeResume() throws Exception {
+        when(stateStore.load(any())).thenReturn(Optional.of(STATE_JSON));
+        when(client.deserializeState(STATE_JSON)).thenReturn(resumedState);
+        when(resumedState.getSessionId()).thenReturn("s42");
+        when(client.resume(resumedState)).thenReturn(resumedSandbox);
+        io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshot rebuilt =
+                mock(io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshot.class);
+        when(snapshotSpec.build("s42")).thenReturn(rebuilt);
+
+        RuntimeContext rtx = RuntimeContext.builder().userId("user-42").build();
+        SandboxContext sCtx =
+                SandboxContext.builder()
+                        .isolationScope(IsolationScope.USER)
+                        .snapshotSpec(snapshotSpec)
+                        .build();
+
+        SandboxAcquireResult result = manager.acquire(sCtx, rtx);
+
+        assertSame(resumedSandbox, result.getSandbox());
+        // The deserialized state lost its (non-serializable) snapshot; acquire must rebuild it
+        // from the call's spec so the resumed sandbox can restore its workspace.
+        verify(snapshotSpec).build("s42");
+        verify(resumedState).setSnapshot(rebuilt);
+    }
+
     // ---- persistState ----
 
     @Test

@@ -103,6 +103,14 @@ public class SandboxManager {
                                 "[sandbox] Priority 3: resuming from persisted state (scope={})",
                                 scopeKey.get());
                         SandboxState state = client.deserializeState(stateJson.get());
+                        // The snapshot holds a live, non-serializable client and is dropped on
+                        // serialization; rebuild it from the call's spec so the resumed sandbox
+                        // can restore its workspace (Branch B/C in AbstractBaseSandbox.start).
+                        if (sandboxContext.getSnapshotSpec() != null
+                                && state.getSessionId() != null) {
+                            state.setSnapshot(
+                                    sandboxContext.getSnapshotSpec().build(state.getSessionId()));
+                        }
                         Sandbox sandbox = client.resume(state);
                         return SandboxAcquireResult.selfManaged(sandbox, lease);
                     }

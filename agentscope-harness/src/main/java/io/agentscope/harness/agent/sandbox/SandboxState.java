@@ -15,6 +15,7 @@
  */
 package io.agentscope.harness.agent.sandbox;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshot;
@@ -39,7 +40,9 @@ public abstract class SandboxState {
     @JsonProperty("manifest")
     private WorkspaceSpec workspaceSpec;
 
-    private SandboxSnapshot snapshot;
+    // Holds a live, non-serializable client (e.g. RemoteSnapshotClient); excluded from JSON and
+    // rebuilt from the call's SandboxSnapshotSpec on resume (see SandboxManager.acquire).
+    @JsonIgnore private SandboxSnapshot snapshot;
     private String workspaceProjectionHash;
     private boolean workspaceRootReady = false;
 

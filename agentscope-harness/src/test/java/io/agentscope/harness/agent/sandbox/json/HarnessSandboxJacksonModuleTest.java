@@ -17,10 +17,12 @@ package io.agentscope.harness.agent.sandbox.json;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.harness.agent.sandbox.SandboxState;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxState;
+import io.agentscope.harness.agent.sandbox.snapshot.LocalSnapshotSpec;
 import org.junit.jupiter.api.Test;
 
 class HarnessSandboxJacksonModuleTest {
@@ -42,5 +44,27 @@ class HarnessSandboxJacksonModuleTest {
         assertInstanceOf(DockerSandboxState.class, parsed);
         assertEquals("sess-1", parsed.getSessionId());
         assertEquals(true, parsed.isWorkspaceRootReady());
+    }
+
+    @Test
+    void roundTripExcludesSnapshot() throws Exception {
+        // A snapshot holds a non-serializable client and has no no-arg constructor; if it were
+        // serialized, deserialization would throw and the harness would silently create a fresh
+        // sandbox, losing the persisted workspace. The field must be ignored on the wire.
+        ObjectMapper mapper =
+                new ObjectMapper()
+                        .findAndRegisterModules()
+                        .registerModule(new HarnessSandboxJacksonModule());
+
+        DockerSandboxState original = new DockerSandboxState();
+        original.setSessionId("sess-snap");
+        original.setSnapshot(new LocalSnapshotSpec("/tmp/snaps").build("sess-snap"));
+
+        String json = mapper.writeValueAsString(original);
+        assertEquals(false, json.contains("\"snapshot\""), "snapshot must not be serialized");
+
+        SandboxState parsed = mapper.readValue(json, SandboxState.class);
+        assertEquals("sess-snap", parsed.getSessionId());
+        assertNull(parsed.getSnapshot(), "snapshot is rebuilt at resume, not deserialized");
     }
 }

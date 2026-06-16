@@ -14,38 +14,27 @@
   ~ See the License for the specific language governing permissions and
   ~ limitations under the License.
 -->
-
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
+
     <parent>
         <groupId>io.agentscope</groupId>
-        <artifactId>agentscope-parent</artifactId>
+        <artifactId>agentscope-saas</artifactId>
         <version>${revision}</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>agentscope-examples</artifactId>
-    <packaging>pom</packaging>
+    <artifactId>agentscope-saas-storage</artifactId>
+    <name>AgentScope Java - SaaS Storage</name>
+    <description>Durable sandbox workspace snapshot storage (PostgreSQL BYTEA RemoteSnapshotClient).</description>
 
-    <name>AgentScope Java - Examples</name>
-
-    <modules>
-        <module>documentation</module>
-        <module>agents/agentscope-builder</module>
-        <module>agents/agentscope-paw</module>
-        <module>agents/agentscope-dataagent</module>
-        <module>agents/agentscope-codingagent</module>
-    </modules>
-
-    <properties>
-        <maven.compiler.source>17</maven.compiler.source>
-        <maven.compiler.target>17</maven.compiler.target>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <maven.deploy.skip>true</maven.deploy.skip>
-        <spring.boot.version>4.0.4</spring.boot.version>
-        <micronaut.version>4.10.13</micronaut.version>
-    </properties>
-
+    <dependencies>
+        <!-- RemoteSnapshotClient interface -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-harness</artifactId>
+        </dependency>
+    </dependencies>
 </project>
