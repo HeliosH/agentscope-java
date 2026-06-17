@@ -19,6 +19,8 @@ import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.extensions.redis.sandbox.RedisSandboxExecutionGuard;
 import io.agentscope.extensions.redis.state.RedisAgentStateStore;
+import io.agentscope.extensions.redis.store.RedisStore;
+import io.agentscope.harness.agent.filesystem.remote.store.BaseStore;
 import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
 import io.agentscope.saas.core.ratelimit.InMemoryRateLimiter;
 import io.agentscope.saas.core.ratelimit.RateLimiter;
@@ -49,6 +51,20 @@ public class RedisConfig {
     public UnifiedJedis unifiedJedis(SaasProperties properties) {
         log.info("Connecting to Redis (Valkey) at {}", properties.getRedis().getUri());
         return new UnifiedJedis(properties.getRedis().getUri());
+    }
+
+    /**
+     * Redis-backed {@link BaseStore} that backs {@code RemoteFilesystemSpec} when the sandbox is off.
+     * Gives each user an isolated workspace (MEMORY.md, skills/, memory/, ...) without Docker/FUSE,
+     * namespaced by {@code IsolationScope.USER}. Only present when Redis is enabled; absent otherwise
+     * so {@code AgentConfig} falls back to a shell-less, filesystem-less agent (the local-profile
+     * behavior).
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "saas.redis", name = "enabled", havingValue = "true")
+    public BaseStore workspaceBaseStore(SaasProperties properties, UnifiedJedis jedis) {
+        log.info("Using Redis-backed workspace store (per-user workspaces without Docker)");
+        return new RedisStore(jedis, properties.getRedis().getKeyPrefix() + "store:");
     }
 
     @Bean(destroyMethod = "")

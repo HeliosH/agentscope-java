@@ -36,6 +36,9 @@ saas:
     base-url: ${SAAS_MODEL_BASE_URL:}
     api-key: ${SAAS_MODEL_API_KEY:}
     name: ${SAAS_MODEL_NAME:qwen-max}
+  # Off by default so the gateway profile runs with zero external deps beyond the model endpoint.
+  # Enable (SAAS_REDIS_ENABLED=true) with the sandbox off to give each user an isolated workspace
+  # (MEMORY.md, skills/, memory/) backed by Redis — no Docker/FUSE (Phase B2′).
   redis:
     enabled: false
   sandbox:

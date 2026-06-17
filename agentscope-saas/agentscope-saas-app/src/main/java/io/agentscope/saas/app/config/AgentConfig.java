@@ -18,6 +18,9 @@ package io.agentscope.saas.app.config;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.harness.agent.IsolationScope;
+import io.agentscope.harness.agent.filesystem.remote.store.BaseStore;
+import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import io.agentscope.harness.agent.filesystem.spec.SandboxFilesystemSpec;
 import io.agentscope.harness.agent.skill.curator.SkillCuratorConfig;
 import io.agentscope.saas.core.middleware.RateLimitMiddleware;
@@ -55,7 +58,8 @@ public class AgentConfig {
             UsageService usageService,
             SaasProperties properties,
             ObjectProvider<SandboxFilesystemSpec> sandboxSpecProvider,
-            ObjectProvider<SandboxBroker> sandboxBrokerProvider) {
+            ObjectProvider<SandboxBroker> sandboxBrokerProvider,
+            ObjectProvider<BaseStore> workspaceStoreProvider) {
 
         SaasProperties.Agent agentCfg = properties.getAgent();
         SaasProperties.RateLimit rl = properties.getRateLimit();
@@ -108,6 +112,22 @@ public class AgentConfig {
                 builder.enableSkillCurator(SkillCuratorConfig.defaults());
             }
         } else {
+            // Sandbox off: optionally give each user an isolated workspace backed by the Redis
+            // store (no Docker/FUSE). RemoteFilesystemSpec routes MEMORY.md/skills/memory/... into
+            // per-user namespaces via IsolationScope.USER. It has no shell, so the shell tool stays
+            // disabled below. The effective AgentStateStore is RedisAgentStateStore (distributed)
+            // whenever the workspace store bean exists, satisfying RemoteFilesystemSpec's
+            // distributed-store requirement; when Redis is off, no store is present and the agent
+            // falls back to a shell-less, filesystem-less config (the local-profile behavior).
+            BaseStore remoteStore = workspaceStoreProvider.getIfAvailable();
+            if (remoteStore != null) {
+                builder.filesystem(
+                        new RemoteFilesystemSpec(remoteStore).isolationScope(IsolationScope.USER));
+                if (agentCfg.getSkills().isSelfEvolution()) {
+                    builder.enableSkillManageTool(true);
+                    builder.enableSkillCurator(SkillCuratorConfig.defaults());
+                }
+            }
             builder.disableShellTool();
         }
 
