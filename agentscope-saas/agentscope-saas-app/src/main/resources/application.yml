@@ -55,6 +55,7 @@ saas:
     cube-template-id: ${CUBE_TEMPLATE_ID:}
     cube-domain: ${CUBE_DOMAIN:}
     cube-envd-host-pattern: ${CUBE_ENVD_HOST_PATTERN:}
+    cube-insecure-skip-tls-verify: ${CUBE_INSECURE_SKIP_TLS_VERIFY:false}
     cube-sandbox-timeout-seconds: ${CUBE_SANDBOX_TIMEOUT:300}
     snapshot:
       enabled: ${SAAS_SANDBOX_SNAPSHOT_ENABLED:true}

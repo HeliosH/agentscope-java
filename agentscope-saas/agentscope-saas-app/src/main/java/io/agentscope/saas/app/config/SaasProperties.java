@@ -178,6 +178,12 @@ public class SaasProperties {
         /** Cube sandbox idle timeout in seconds (defaults to 300). */
         private int cubeSandboxTimeoutSeconds = 300;
 
+        /**
+         * Whether to skip TLS certificate/hostname verification for Cube envd/platform HTTPS calls.
+         * Intended only for private dev/test Cube deployments with self-signed certificates.
+         */
+        private boolean cubeInsecureSkipTlsVerify = false;
+
         @NestedConfigurationProperty private final Snapshot snapshot = new Snapshot();
 
         public Snapshot getSnapshot() {
@@ -323,6 +329,14 @@ public class SaasProperties {
 
         public void setCubeSandboxTimeoutSeconds(int cubeSandboxTimeoutSeconds) {
             this.cubeSandboxTimeoutSeconds = cubeSandboxTimeoutSeconds;
+        }
+
+        public boolean isCubeInsecureSkipTlsVerify() {
+            return cubeInsecureSkipTlsVerify;
+        }
+
+        public void setCubeInsecureSkipTlsVerify(boolean cubeInsecureSkipTlsVerify) {
+            this.cubeInsecureSkipTlsVerify = cubeInsecureSkipTlsVerify;
         }
     }
 

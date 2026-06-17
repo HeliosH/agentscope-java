@@ -19,6 +19,7 @@ import io.agentscope.saas.app.auth.JwtProperties;
 import io.jsonwebtoken.security.Keys;
 import java.nio.charset.StandardCharsets;
 import javax.crypto.SecretKey;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -38,6 +39,11 @@ import org.springframework.security.web.server.SecurityWebFilterChain;
  * <p>The {@link ReactiveJwtDecoder} is chosen by configuration: an external IdP issuer/JWK set
  * (enterprise SSO) when configured, otherwise a local symmetric (HS256) decoder matching the tokens
  * minted by {@link io.agentscope.saas.app.auth.JwtService}.
+ *
+ * <p>The {@code securityWebFilterChain} and {@code reactiveJwtDecoder} beans are skipped when
+ * {@code saas.security.dev.enabled=true}; {@link DevSecurityConfig} then provides a permit-all chain.
+ * The {@code PasswordEncoder} and {@link JwtProperties} beans stay always-on so {@code AuthController}
+ * / {@code JwtService} can wire regardless of mode.
  */
 @Configuration
 @EnableWebFluxSecurity
@@ -45,6 +51,11 @@ import org.springframework.security.web.server.SecurityWebFilterChain;
 public class SecurityConfig {
 
     @Bean
+    @ConditionalOnProperty(
+            prefix = "saas.security.dev",
+            name = "enabled",
+            havingValue = "false",
+            matchIfMissing = true)
     public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
         http.csrf(ServerHttpSecurity.CsrfSpec::disable)
                 .authorizeExchange(
@@ -67,6 +78,11 @@ public class SecurityConfig {
     }
 
     @Bean
+    @ConditionalOnProperty(
+            prefix = "saas.security.dev",
+            name = "enabled",
+            havingValue = "false",
+            matchIfMissing = true)
     public ReactiveJwtDecoder reactiveJwtDecoder(JwtProperties properties) {
         if (properties.getJwkSetUri() != null && !properties.getJwkSetUri().isBlank()) {
             return NimbusReactiveJwtDecoder.withJwkSetUri(properties.getJwkSetUri()).build();

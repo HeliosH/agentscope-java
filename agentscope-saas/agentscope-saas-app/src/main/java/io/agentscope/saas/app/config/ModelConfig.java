@@ -18,6 +18,7 @@ package io.agentscope.saas.app.config;
 import io.agentscope.core.model.DashScopeChatModel;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.OpenAIChatModel;
+import io.agentscope.saas.model.ScriptedToolModel;
 import io.agentscope.saas.model.StubChatModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,6 +31,8 @@ import org.springframework.context.annotation.Configuration;
  *
  * <ul>
  *   <li>{@code stub} — zero-dependency echo model (local smoke testing)</li>
+ *   <li>{@code scripted} — zero-dependency model that drives the ReAct agent to execute the user's
+ *       message as a shell command in the sandbox (dev profile functional verification)</li>
  *   <li>{@code gateway} — OpenAI-compatible internal model gateway (recommended for production; see
  *       {@code docs/enterprise-platform-java/07-model-gateway.md})</li>
  *   <li>{@code dashscope} — Alibaba DashScope (Qwen) direct</li>
@@ -65,6 +68,10 @@ public class ModelConfig {
                         .modelName(cfg.getName())
                         .stream(true)
                         .build();
+            }
+            case "scripted" -> {
+                log.info("Using scripted tool-driving model (dev verification, no external LLM)");
+                return new ScriptedToolModel();
             }
             default -> {
                 log.info("Using stub echo model (no external LLM)");

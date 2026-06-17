@@ -1,0 +1,71 @@
+# ===================================================================
+# AgentScope Enterprise SaaS Platform — dev profile
+# Functional verification against a real CubeSandbox test environment.
+# Zero external dependencies beyond the sandbox itself: H2 in-memory DB,
+# in-memory session/state, scripted tool-driving model (no LLM), and a
+# dev auth bypass (no login). Sandbox execution + snapshot persistence
+# are exercised against the configured CubeSandbox endpoint.
+# Activate with: --spring.profiles.active=dev
+# ===================================================================
+spring:
+  datasource:
+    url: jdbc:h2:mem:saas;DB_CLOSE_DELAY=-1;MODE=PostgreSQL
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration/h2
+    baseline-on-migrate: true
+
+server:
+  port: ${SERVER_PORT:8080}
+
+saas:
+  model:
+    # Scripted model: treats the chat message as a shell command and drives the
+    # ReAct agent to execute it via the "execute" tool in the sandbox. No LLM.
+    type: scripted
+  redis:
+    enabled: false
+  sandbox:
+    enabled: true
+    type: cube
+    isolation-scope: USER
+    workspace-root: /home/user
+    idle-ttl-seconds: 120
+    cube-api-url: http://cubesandbox.dev.comnova.cc:3000
+    cube-api-key: ""
+    cube-template-id: tpl-72d9b3147a4c4029b9b10dfe
+    cube-domain: cubesandbox.dev.comnova.cc
+    cube-envd-host-pattern: "https://{port}-{sandboxId}.{domain}"
+    cube-insecure-skip-tls-verify: true
+    cube-sandbox-timeout-seconds: 300
+    snapshot:
+      enabled: true
+      table: agentscope_sandbox_snapshots
+  rate-limit:
+    max-requests: 1000
+    window-seconds: 60
+  agent:
+    name: assistant
+    max-iters: 10
+  security:
+    dev:
+      enabled: true
+      org-id: dev-org
+      user-id: dev-user
+      role: owner
+      tier: privileged
+      max-sandboxes: 2
+
+logging:
+  level:
+    io.agentscope: DEBUG

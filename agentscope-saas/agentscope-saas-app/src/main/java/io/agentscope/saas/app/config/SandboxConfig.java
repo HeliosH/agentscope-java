@@ -75,7 +75,8 @@ public class SandboxConfig {
                                                 sb.getWorkspaceRoot() != null
                                                         ? sb.getWorkspaceRoot()
                                                         : "/home/user")
-                                        .sandboxTimeoutSeconds(sb.getCubeSandboxTimeoutSeconds());
+                                        .sandboxTimeoutSeconds(sb.getCubeSandboxTimeoutSeconds())
+                                        .insecureSkipTlsVerify(sb.isCubeInsecureSkipTlsVerify());
                         if (sb.getCubeApiKey() != null) {
                             cubeSpec.apiKey(sb.getCubeApiKey());
                         }

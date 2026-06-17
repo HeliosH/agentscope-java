@@ -21,8 +21,8 @@ import io.agentscope.core.agui.event.AguiEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.harness.agent.HarnessAgent;
-import io.agentscope.saas.core.tenant.JwtTenantResolver;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.core.tenant.TenantResolver;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +38,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * AG-UI compatible streaming chat endpoint. Accepts a user message, injects the authenticated
@@ -55,10 +57,10 @@ public class SaasChatController {
     public record ChatRequest(String agentId, String sessionId, String message) {}
 
     private final HarnessAgent agent;
-    private final JwtTenantResolver tenantResolver;
+    private final TenantResolver tenantResolver;
     private final AguiEventEncoder encoder = new AguiEventEncoder();
 
-    public SaasChatController(HarnessAgent agent, JwtTenantResolver tenantResolver) {
+    public SaasChatController(HarnessAgent agent, TenantResolver tenantResolver) {
         this.agent = agent;
         this.tenantResolver = tenantResolver;
     }
@@ -66,14 +68,14 @@ public class SaasChatController {
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> stream(
             @AuthenticationPrincipal Jwt jwt, @RequestBody ChatRequest request) {
-        if (jwt == null) {
-            return Flux.error(new IllegalStateException("unauthenticated"));
-        }
         if (request == null || request.message() == null || request.message().isBlank()) {
             return Flux.error(new IllegalArgumentException("message is required"));
         }
 
-        TenantContext tenant = tenantResolver.resolve(jwt.getClaims());
+        // In dev (auth bypass) the principal is null; the TenantResolver (a DevTenantResolver)
+        // returns a fixed tenant for empty claims. In production jwt is always present.
+        Map<String, Object> claims = jwt != null ? jwt.getClaims() : Map.of();
+        TenantContext tenant = tenantResolver.resolve(claims);
         String sessionId =
                 request.sessionId() != null && !request.sessionId().isBlank()
                         ? request.sessionId()
@@ -108,7 +110,9 @@ public class SaasChatController {
         Flux<AguiEvent> aguiEvents =
                 Flux.concat(
                         Flux.just(converter.runStarted()),
-                        agent.streamEvents(List.of(userMsg), ctx)
+                        Mono.fromCallable(() -> ctx)
+                                .flatMapMany(c -> agent.streamEvents(List.of(userMsg), c))
+                                .subscribeOn(Schedulers.boundedElastic())
                                 .concatMapIterable(converter::convert),
                         Flux.defer(() -> Flux.fromIterable(converter.runFinished())));
 
