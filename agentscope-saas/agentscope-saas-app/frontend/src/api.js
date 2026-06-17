@@ -121,3 +121,12 @@ export async function fetchSkills(token, agentId) {
   if (!res.ok) throw new Error(`failed to load skills (${res.status})`);
   return res.json();
 }
+
+export async function upsertSkill(token, agentId, name, markdown, resources) {
+  const res = await fetch(
+    `/api/agents/${agentId}/skills/workspace/${encodeURIComponent(name)}`,
+    { method: 'PUT', headers: authHeaders(token), body: JSON.stringify({ markdown, resources: resources || {} }) },
+  );
+  if (!res.ok) throw new Error(`failed to save skill (${res.status})`);
+  return res.json();
+}

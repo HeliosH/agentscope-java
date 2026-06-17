@@ -16,13 +16,16 @@
 package io.agentscope.saas.app.skill;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.model.FileInfo;
+import io.agentscope.harness.agent.filesystem.model.FileUploadResponse;
 import io.agentscope.harness.agent.filesystem.model.LsResult;
 import io.agentscope.harness.agent.filesystem.model.ReadResult;
 import io.agentscope.saas.core.persistence.entity.AgentEntity;
 import io.agentscope.saas.core.persistence.repo.AgentRepository;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -39,6 +42,8 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
@@ -47,11 +52,12 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 /**
- * Read-only skill listing + delete for the multi-user assistant (Phase B5′). Lists and reads the
- * agent's workspace skills ({@code skills/<name>/SKILL.md} + resources) from the caller's per-user
- * {@link AbstractFilesystem} (resolved via {@link HarnessAgent#workspaceFor(String, String)}), so
- * skills created by the agent during a chat (via {@code SkillManageTool}) are visible and isolated
- * per user when the sandbox is off and Redis is on. The agent-id path variable is validated against
+ * Skill management for the multi-user assistant (Phase B5′). Lists, reads, creates/edits, and
+ * deletes the agent's workspace skills ({@code skills/<name>/SKILL.md} + resources) from the
+ * caller's per-user {@link AbstractFilesystem} (resolved via
+ * {@link HarnessAgent#workspaceFor(String, String)}), so skills — whether created by the agent
+ * during a chat (via {@code SkillManageTool}) or by the user here — are visible and isolated per
+ * user when the sandbox is off and Redis is on. The agent-id path variable is validated against
  * the caller's org (404 when absent). Ported from {@code agentscope-builder}'s
  * {@code AgentSkillsController}, dropping the builder-only catalog/guard/marketplace dependencies.
  */
@@ -60,6 +66,7 @@ import reactor.core.scheduler.Schedulers;
 public class AgentSkillsController {
 
     private static final Logger log = LoggerFactory.getLogger(AgentSkillsController.class);
+    private static final RuntimeContext FS_RC = RuntimeContext.empty();
     private static final Pattern FRONT_MATTER =
             Pattern.compile("^---\\s*\\n(.*?)\\n---\\s*\\n", Pattern.DOTALL);
     private static final Pattern DESCRIPTION_LINE =
@@ -118,6 +125,44 @@ public class AgentSkillsController {
                             Map<String, String> resources = collectResources(fs, name);
                             String description = parseFrontMatterField(markdown, DESCRIPTION_LINE);
                             return new WorkspaceSkillDetail(name, description, markdown, resources);
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * Creates or overwrites a workspace skill. Writes {@code skills/<name>/SKILL.md} from the
+     * request markdown (frontmatter + body) and any optional resource files, then returns the
+     * resulting skill info. Overwrites an existing skill of the same name. The write lands in the
+     * caller's per-user namespace, so it is visible to the agent during that user's chats.
+     */
+    @PutMapping("/workspace/{name}")
+    public Mono<WorkspaceSkillInfo> upsertWorkspaceSkill(
+            @PathVariable String agentId,
+            @PathVariable String name,
+            @RequestBody WorkspaceSkillUpsertRequest req,
+            @AuthenticationPrincipal Jwt jwt) {
+        UUID orgId = orgId(jwt);
+        return Mono.fromCallable(
+                        () -> {
+                            validateSkillName(name);
+                            if (req == null || req.markdown() == null || req.markdown().isBlank()) {
+                                throw new ResponseStatusException(
+                                        HttpStatus.BAD_REQUEST, "markdown is required");
+                            }
+                            AbstractFilesystem fs = resolveFilesystem(orgId, userId(jwt), agentId);
+                            writeUtf8(fs, "skills/" + name + "/SKILL.md", req.markdown());
+                            if (req.resources() != null) {
+                                for (Map.Entry<String, String> e : req.resources().entrySet()) {
+                                    String key = e.getKey();
+                                    if (key == null || key.isBlank()) continue;
+                                    String safe = sanitiseRelativePath(key);
+                                    writeUtf8(
+                                            fs,
+                                            "skills/" + name + "/" + safe,
+                                            e.getValue() != null ? e.getValue() : "");
+                                }
+                            }
+                            return readWorkspaceSkill(fs, name);
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -269,6 +314,38 @@ public class AgentSkillsController {
         return r.fileData().content();
     }
 
+    /** Writes {@code content} to {@code absPath} (workspace-relative or leading-slash) via uploadFiles. */
+    private static void writeUtf8(AbstractFilesystem fs, String absPath, String content) {
+        String rel = absPath.startsWith("/") ? absPath.substring(1) : absPath;
+        List<FileUploadResponse> ur =
+                fs.uploadFiles(
+                        FS_RC, List.of(Map.entry(rel, content.getBytes(StandardCharsets.UTF_8))));
+        if (ur.isEmpty() || !ur.get(0).isSuccess()) {
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Failed to write "
+                            + absPath
+                            + ": "
+                            + (ur.isEmpty() ? "no response" : ur.get(0).error()));
+        }
+    }
+
+    /** Normalises a resource path to workspace-relative form, rejecting traversal. */
+    private static String sanitiseRelativePath(String relative) {
+        if (relative == null || relative.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Resource path is required");
+        }
+        String normalized = relative.replace('\\', '/');
+        while (normalized.startsWith("/")) {
+            normalized = normalized.substring(1);
+        }
+        if (normalized.isEmpty() || normalized.contains("..")) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "Invalid resource path: " + relative);
+        }
+        return normalized;
+    }
+
     private static String parseFrontMatterField(String markdown, Pattern fieldPattern) {
         if (markdown == null) return null;
         Matcher m = FRONT_MATTER.matcher(markdown);
@@ -325,4 +402,7 @@ public class AgentSkillsController {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record WorkspaceSkillDetail(
             String name, String description, String markdown, Map<String, String> resources) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record WorkspaceSkillUpsertRequest(String markdown, Map<String, String> resources) {}
 }

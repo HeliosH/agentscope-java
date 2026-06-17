@@ -14,6 +14,7 @@ import {
   readFile,
   register,
   saveSession,
+  upsertSkill,
   writeFile,
 } from './api.js';
 
@@ -304,6 +305,17 @@ function WorkspacePanel({ token, agentId }) {
       .finally(() => setBusy(false));
   }
 
+  function newSkill() {
+    const name = window.prompt('New skill name (e.g. greet):');
+    if (!name) return;
+    const markdown = `---\nname: ${name}\ndescription: \n---\n# ${name}\n\nDescribe what this skill does.\n`;
+    setBusy(true); setError(null);
+    upsertSkill(token, agentId, name, markdown)
+      .then(() => { refresh(); openFile(`skills/${name}/SKILL.md`); })
+      .catch((err) => setError(err.message))
+      .finally(() => setBusy(false));
+  }
+
   if (!agentId) {
     return (
       <div style={styles.main}>
@@ -325,12 +337,17 @@ function WorkspacePanel({ token, agentId }) {
           {(tree || []).map((n) => (
             <FileTreeItem key={n.path} node={n} depth={0} selectedPath={selected} onSelect={openFile} />
           ))}
-          <div style={{ padding: '12px 10px 6px', borderTop: '1px solid #eee', marginTop: 8 }}>
+          <div style={{ padding: '12px 10px 6px', borderTop: '1px solid #eee', marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <strong style={{ fontSize: 13 }}>Skills</strong>
+            <button style={styles.ghostBtn} onClick={newSkill} disabled={busy}>+ New</button>
           </div>
           {skills.length === 0 && <div style={{ ...styles.meta, padding: '0 10px' }}>No skills yet.</div>}
           {skills.map((s) => (
-            <div key={s.dirName} style={{ padding: '4px 10px', fontSize: 13 }}>
+            <div
+              key={s.dirName}
+              style={{ padding: '4px 10px', fontSize: 13, cursor: 'pointer', background: selected === `skills/${s.dirName}/SKILL.md` ? '#e0ecff' : 'transparent' }}
+              onClick={() => openFile(`skills/${s.dirName}/SKILL.md`)}
+            >
               <strong>{s.name}</strong>
               {s.description && <div style={styles.meta}>{s.description}</div>}
             </div>
