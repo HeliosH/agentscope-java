@@ -19,6 +19,7 @@ import io.agentscope.core.model.Model;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.filesystem.spec.SandboxFilesystemSpec;
+import io.agentscope.harness.agent.skill.curator.SkillCuratorConfig;
 import io.agentscope.saas.core.middleware.RateLimitMiddleware;
 import io.agentscope.saas.core.middleware.TenantContextMiddleware;
 import io.agentscope.saas.core.middleware.UsageMeteringMiddleware;
@@ -96,6 +97,15 @@ public class AgentConfig {
                                 broker,
                                 properties.getSandbox().getType(),
                                 properties.getSandbox().getIdleTtlSeconds()));
+            }
+            // Skill self-evolution (Phase B): with a workspace filesystem present, let the agent
+            // propose/promote skills from its own runs and run the background curator that
+            // consolidates them. The framework's HarnessSkillMiddleware + WorkspaceSkillRepository
+            // (wired by default) resolve skills per-request via RuntimeContext, so each user's
+            // sandbox workspace holds its own isolated skill tree.
+            if (agentCfg.getSkills().isSelfEvolution()) {
+                builder.enableSkillManageTool(true);
+                builder.enableSkillCurator(SkillCuratorConfig.defaults());
             }
         } else {
             builder.disableShellTool();

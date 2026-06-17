@@ -368,6 +368,7 @@ public class SaasProperties {
         private String sysPrompt =
                 "You are a helpful enterprise AI assistant. Answer concisely and accurately.";
         private int maxIters = 10;
+        @NestedConfigurationProperty private final Skills skills = new Skills();
 
         public String getName() {
             return name;
@@ -391,6 +392,27 @@ public class SaasProperties {
 
         public void setMaxIters(int maxIters) {
             this.maxIters = maxIters;
+        }
+
+        public Skills getSkills() {
+            return skills;
+        }
+    }
+
+    /**
+     * Skill self-evolution settings. When enabled and a workspace filesystem is present (sandbox
+     * on), the agent can propose/promote skills from its runs and a background curator consolidates
+     * them — mirroring QwenPaw's self-evolving skill tree, per-user via the sandbox workspace.
+     */
+    public static class Skills {
+        private boolean selfEvolution = true;
+
+        public boolean isSelfEvolution() {
+            return selfEvolution;
+        }
+
+        public void setSelfEvolution(boolean selfEvolution) {
+            this.selfEvolution = selfEvolution;
         }
     }
 }
