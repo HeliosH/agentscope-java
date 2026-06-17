@@ -69,3 +69,55 @@ export async function fetchMessages(token, sessionId) {
   if (!res.ok) throw new Error(`failed to load history (${res.status})`);
   return res.json();
 }
+
+// --- Workspace + skills (Phase B5′). The agentId is a real UUID from GET /api/agents; it acts
+// only as an org-scoped guard — the workspace itself is isolated per user server-side. ---
+
+export async function fetchAgents(token) {
+  const res = await fetch('/api/agents', { headers: authHeaders(token) });
+  if (!res.ok) throw new Error(`failed to load agents (${res.status})`);
+  return res.json();
+}
+
+export async function fetchFileTree(token, agentId, recursive = true) {
+  const res = await fetch(
+    `/api/agents/${agentId}/workspace/files?recursive=${recursive}`,
+    { headers: authHeaders(token) },
+  );
+  if (!res.ok) throw new Error(`failed to load files (${res.status})`);
+  return res.json();
+}
+
+export async function readFile(token, agentId, path) {
+  const res = await fetch(
+    `/api/agents/${agentId}/workspace/file?path=${encodeURIComponent(path)}`,
+    { headers: authHeaders(token) },
+  );
+  if (!res.ok) throw new Error(`failed to read file (${res.status})`);
+  return res.text();
+}
+
+export async function writeFile(token, agentId, path, content) {
+  const res = await fetch(
+    `/api/agents/${agentId}/workspace/file?path=${encodeURIComponent(path)}`,
+    { method: 'PUT', headers: authHeaders(token), body: JSON.stringify({ content }) },
+  );
+  if (!res.ok) throw new Error(`failed to write file (${res.status})`);
+  return res.json();
+}
+
+export async function deleteFile(token, agentId, path) {
+  const res = await fetch(
+    `/api/agents/${agentId}/workspace/file?path=${encodeURIComponent(path)}`,
+    { method: 'DELETE', headers: authHeaders(token) },
+  );
+  if (!res.ok) throw new Error(`failed to delete file (${res.status})`);
+}
+
+export async function fetchSkills(token, agentId) {
+  const res = await fetch(`/api/agents/${agentId}/skills/workspace`, {
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new Error(`failed to load skills (${res.status})`);
+  return res.json();
+}

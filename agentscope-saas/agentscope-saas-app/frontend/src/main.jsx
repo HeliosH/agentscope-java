@@ -3,12 +3,18 @@ import { createRoot } from 'react-dom/client';
 import { runChat } from './aguiStream.js';
 import {
   clearSession,
+  deleteFile,
+  fetchAgents,
+  fetchFileTree,
   fetchMessages,
   fetchSessions,
+  fetchSkills,
   loadSession,
   login,
+  readFile,
   register,
   saveSession,
+  writeFile,
 } from './api.js';
 
 const styles = {
@@ -21,6 +27,8 @@ const styles = {
   input: { width: '100%', padding: 10, borderRadius: 8, border: '1px solid #ccc', boxSizing: 'border-box', marginBottom: 8 },
   button: { padding: '10px 16px', borderRadius: 8, border: 'none', background: '#2563eb', color: '#fff', cursor: 'pointer' },
   ghostBtn: { padding: '6px 10px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', cursor: 'pointer', fontSize: 13 },
+  tab: { padding: '4px 12px', borderRadius: 8, border: '1px solid #ccc', background: '#fff', cursor: 'pointer', fontSize: 13 },
+  tabActive: { padding: '4px 12px', borderRadius: 8, border: '1px solid #2563eb', background: '#2563eb', color: '#fff', cursor: 'pointer', fontSize: 13 },
   msgUser: { background: '#eff6ff', padding: '10px 14px', borderRadius: 10, margin: '8px 0', whiteSpace: 'pre-wrap' },
   msgAssistant: { background: '#f3f4f6', padding: '10px 14px', borderRadius: 10, margin: '8px 0', whiteSpace: 'pre-wrap' },
   tool: { background: '#fef9c3', padding: '6px 10px', borderRadius: 8, margin: '4px 0', fontSize: 13, fontFamily: 'monospace' },
@@ -220,18 +228,165 @@ function ChatPanel({ token, activeSessionId, onSessionAdopted, onSessionChanged 
   );
 }
 
+function FileTreeItem({ node, depth, selectedPath, onSelect }) {
+  const pad = { padding: '4px 10px', paddingLeft: 10 + depth * 14, cursor: 'pointer', whiteSpace: 'nowrap' };
+  const isSel = node.path === selectedPath;
+  const icon = node.type === 'dir' ? '📁' : '📄';
+  return (
+    <>
+      <div
+        style={{ ...pad, background: isSel ? '#e0ecff' : 'transparent' }}
+        onClick={() => node.type === 'file' && onSelect(node.path)}
+      >
+        <span style={{ marginRight: 6 }}>{icon}</span>
+        <span style={{ fontWeight: node.type === 'dir' ? 600 : 400 }}>{node.name}</span>
+      </div>
+      {node.type === 'dir' && (node.children || []).map((c) => (
+        <FileTreeItem key={c.path} node={c} depth={depth + 1} selectedPath={selectedPath} onSelect={onSelect} />
+      ))}
+    </>
+  );
+}
+
+function WorkspacePanel({ token, agentId }) {
+  const [tree, setTree] = useState([]);
+  const [skills, setSkills] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [draft, setDraft] = useState('');
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  function refresh() {
+    if (!agentId) return;
+    Promise.all([fetchFileTree(token, agentId), fetchSkills(token, agentId)])
+      .then(([files, sks]) => { setTree(files || []); setSkills(sks || []); })
+      .catch((err) => setError(err.message));
+  }
+
+  useEffect(() => { refresh(); setSelected(null); setDraft(''); setDirty(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, agentId]);
+
+  function openFile(path) {
+    setBusy(true); setError(null);
+    readFile(token, agentId, path)
+      .then((text) => { setSelected(path); setDraft(text); setDirty(false); })
+      .catch((err) => setError(err.message))
+      .finally(() => setBusy(false));
+  }
+
+  function save() {
+    if (!selected) return;
+    setBusy(true); setError(null);
+    writeFile(token, agentId, selected, draft)
+      .then(() => { setDirty(false); refresh(); })
+      .catch((err) => setError(err.message))
+      .finally(() => setBusy(false));
+  }
+
+  function newFile() {
+    const path = window.prompt('New file path (e.g. notes.md):');
+    if (!path) return;
+    setBusy(true); setError(null);
+    writeFile(token, agentId, path, '')
+      .then(() => { refresh(); openFile(path); })
+      .catch((err) => setError(err.message))
+      .finally(() => setBusy(false));
+  }
+
+  function remove() {
+    if (!selected || !window.confirm(`Delete ${selected}?`)) return;
+    setBusy(true); setError(null);
+    deleteFile(token, agentId, selected)
+      .then(() => { setSelected(null); setDraft(''); setDirty(false); refresh(); })
+      .catch((err) => setError(err.message))
+      .finally(() => setBusy(false));
+  }
+
+  if (!agentId) {
+    return (
+      <div style={styles.main}>
+        <div style={{ padding: 24, ...styles.meta }}>
+          No agent yet. Start a chat to initialize your workspace, then switch back here.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.main}>
+      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+        <div style={{ width: 280, borderRight: '1px solid #e2e2e2', overflowY: 'auto', background: '#fafafa' }}>
+          <div style={{ padding: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <strong style={{ fontSize: 13 }}>Files</strong>
+            <button style={styles.ghostBtn} onClick={newFile} disabled={busy}>+ New</button>
+          </div>
+          {(tree || []).map((n) => (
+            <FileTreeItem key={n.path} node={n} depth={0} selectedPath={selected} onSelect={openFile} />
+          ))}
+          <div style={{ padding: '12px 10px 6px', borderTop: '1px solid #eee', marginTop: 8 }}>
+            <strong style={{ fontSize: 13 }}>Skills</strong>
+          </div>
+          {skills.length === 0 && <div style={{ ...styles.meta, padding: '0 10px' }}>No skills yet.</div>}
+          {skills.map((s) => (
+            <div key={s.dirName} style={{ padding: '4px 10px', fontSize: 13 }}>
+              <strong>{s.name}</strong>
+              {s.description && <div style={styles.meta}>{s.description}</div>}
+            </div>
+          ))}
+        </div>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          {selected ? (
+            <>
+              <div style={{ padding: '8px 12px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontFamily: 'monospace', fontSize: 13 }}>{selected}{dirty ? ' •' : ''}</span>
+                <span style={{ display: 'flex', gap: 8 }}>
+                  <button style={styles.ghostBtn} onClick={save} disabled={busy || !dirty}>{busy ? 'Saving…' : 'Save'}</button>
+                  <button style={{ ...styles.ghostBtn, color: '#b91c1c' }} onClick={remove} disabled={busy}>Delete</button>
+                </span>
+              </div>
+              <textarea
+                style={{ flex: 1, width: '100%', border: 'none', outline: 'none', padding: 12, fontFamily: 'monospace', fontSize: 13, resize: 'none', boxSizing: 'border-box' }}
+                value={draft}
+                onChange={(e) => { setDraft(e.target.value); setDirty(true); }}
+                disabled={busy}
+              />
+            </>
+          ) : (
+            <div style={{ padding: 24, ...styles.meta }}>Select a file to view or edit it.</div>
+          )}
+        </div>
+      </div>
+      {error && <div style={{ ...styles.error, padding: '0 16px 8px' }}>{error}</div>}
+    </div>
+  );
+}
+
 function App() {
   const [session, setSession] = useState(() => loadSession());
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
+  const [view, setView] = useState('chat');
+  const [agentId, setAgentId] = useState(null);
 
   function refreshSessions() {
     if (!session) return;
     fetchSessions(session.token).then(setSessions).catch(() => {});
   }
 
+  function refreshAgent() {
+    if (!session) return;
+    fetchAgents(session.token)
+      .then((agents) => { setAgentId(agents && agents.length ? agents[0].id : null); })
+      .catch(() => setAgentId(null));
+  }
+
   useEffect(() => {
-    if (session) refreshSessions();
+    if (session) {
+      refreshSessions();
+      refreshAgent();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
@@ -246,6 +401,8 @@ function App() {
     setSession(null);
     setSessions([]);
     setActiveSessionId(null);
+    setView('chat');
+    setAgentId(null);
   }
 
   function newChat() {
@@ -264,20 +421,38 @@ function App() {
   return (
     <div style={styles.page}>
       <div style={styles.topbar}>
-        <strong>AgentScope Enterprise Assistant</strong>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <strong>AgentScope Enterprise Assistant</strong>
+          <span style={{ display: 'inline-flex', gap: 4, marginLeft: 8 }}>
+            <button
+              style={view === 'chat' ? styles.tabActive : styles.tab}
+              onClick={() => setView('chat')}
+            >Chat</button>
+            <button
+              style={view === 'workspace' ? styles.tabActive : styles.tab}
+              onClick={() => setView('workspace')}
+            >Workspace</button>
+          </span>
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={styles.meta}>{session.email} · {session.role} · {session.tier}</span>
           <button style={styles.ghostBtn} onClick={handleLogout}>Sign out</button>
         </div>
       </div>
       <div style={styles.body}>
-        <Sidebar sessions={sessions} activeId={activeSessionId} onSelect={(s) => setActiveSessionId(s.id)} onNew={newChat} />
-        <ChatPanel
-          token={session.token}
-          activeSessionId={activeSessionId}
-          onSessionAdopted={(id) => setActiveSessionId(id)}
-          onSessionChanged={refreshSessions}
-        />
+        {view === 'chat' ? (
+          <>
+            <Sidebar sessions={sessions} activeId={activeSessionId} onSelect={(s) => setActiveSessionId(s.id)} onNew={newChat} />
+            <ChatPanel
+              token={session.token}
+              activeSessionId={activeSessionId}
+              onSessionAdopted={(id) => setActiveSessionId(id)}
+              onSessionChanged={refreshSessions}
+            />
+          </>
+        ) : (
+          <WorkspacePanel token={session.token} agentId={agentId} />
+        )}
       </div>
     </div>
   );
