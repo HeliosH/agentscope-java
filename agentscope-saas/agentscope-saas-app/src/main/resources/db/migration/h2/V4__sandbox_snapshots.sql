@@ -20,6 +20,8 @@
 
 CREATE TABLE agentscope_sandbox_snapshots (
     snapshot_id  VARCHAR(512) PRIMARY KEY,
-    data         BLOB NOT NULL,
+    -- BYTEA (PostgreSQL binary type) is recognized by H2 in PostgreSQL mode; BLOB is not.
+    -- PgRemoteSnapshotClient uses setBytes/getBytes, which work with BYTEA.
+    data         BYTEA NOT NULL,
     created_at   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

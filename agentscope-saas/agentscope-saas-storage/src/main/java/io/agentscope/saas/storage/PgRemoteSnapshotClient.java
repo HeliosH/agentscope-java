@@ -26,14 +26,13 @@ import java.util.Objects;
 import javax.sql.DataSource;
 
 /**
- * PostgreSQL-compatible {@link RemoteSnapshotClient} that stores sandbox workspace tar archives as
- * {@code BYTEA} BLOBs.
+ * JDBC {@link RemoteSnapshotClient} that stores sandbox workspace tar archives as
+ * {@code BYTEA} BLOBs. Works on PostgreSQL and H2 (PostgreSQL mode) via a portable two-step
+ * upsert (update-then-insert) so that dev/local H2 verification doesn't require a separate
+ * object store.
  *
- * <p>The framework ships a JDBC snapshot client in the MySQL extension, but it uses MySQL-only
- * syntax ({@code ON DUPLICATE KEY UPDATE}, {@code LONGBLOB}). This implementation uses
- * {@code INSERT ... ON CONFLICT ... DO UPDATE} and {@code BYTEA} so it works on the SaaS platform's
- * PostgreSQL datastore without introducing a separate object store. The backing table is created by
- * Flyway, not here (the app runs with {@code hibernate.ddl-auto=validate}).
+ * <p>The backing table is created by Flyway, not here (the app runs with
+ * {@code hibernate.ddl-auto=validate}).
  */
 public class PgRemoteSnapshotClient implements RemoteSnapshotClient {
 
@@ -48,17 +47,27 @@ public class PgRemoteSnapshotClient implements RemoteSnapshotClient {
     @Override
     public void upload(String snapshotId, InputStream data) throws Exception {
         byte[] bytes = data.readAllBytes();
-        String sql =
-                "INSERT INTO "
-                        + table
-                        + " (snapshot_id, data, created_at) VALUES (?, ?, NOW()) "
-                        + "ON CONFLICT (snapshot_id) DO UPDATE SET data = EXCLUDED.data, "
-                        + "created_at = NOW()";
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, snapshotId);
-            ps.setBytes(2, bytes);
-            ps.executeUpdate();
+        // Portable upsert: UPDATE first, then INSERT if no matching row existed.
+        try (Connection conn = dataSource.getConnection()) {
+            String updateSql =
+                    "UPDATE " + table + " SET data = ?, created_at = NOW() WHERE snapshot_id = ?";
+            try (PreparedStatement ps = conn.prepareStatement(updateSql)) {
+                ps.setBytes(1, bytes);
+                ps.setString(2, snapshotId);
+                int rows = ps.executeUpdate();
+                if (rows > 0) {
+                    return;
+                }
+            }
+            String insertSql =
+                    "INSERT INTO "
+                            + table
+                            + " (snapshot_id, data, created_at) VALUES (?, ?, NOW())";
+            try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
+                ps.setString(1, snapshotId);
+                ps.setBytes(2, bytes);
+                ps.executeUpdate();
+            }
         }
     }
 

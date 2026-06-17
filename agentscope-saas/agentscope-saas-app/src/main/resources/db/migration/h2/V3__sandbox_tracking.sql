@@ -35,4 +35,6 @@ CREATE TABLE sandboxes (
 
 CREATE INDEX ix_sandboxes_org_user ON sandboxes(org_id, user_id);
 CREATE INDEX ix_sandboxes_status ON sandboxes(status);
-CREATE INDEX ix_sandboxes_expires ON sandboxes(expires_at) WHERE status = 'active';
+-- H2 does not support partial indexes (the PostgreSQL migration uses
+-- "... WHERE status = 'active'"); use a plain index here for the H2 variant.
+CREATE INDEX ix_sandboxes_expires ON sandboxes(expires_at);
