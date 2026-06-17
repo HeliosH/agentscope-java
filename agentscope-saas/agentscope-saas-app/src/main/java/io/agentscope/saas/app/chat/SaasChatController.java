@@ -18,9 +18,13 @@ package io.agentscope.saas.app.chat;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.agui.encoder.AguiEventEncoder;
 import io.agentscope.core.agui.event.AguiEvent;
+import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.saas.core.persistence.entity.AgentEntity;
+import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantResolver;
 import java.util.HashMap;
@@ -46,6 +50,11 @@ import reactor.core.scheduler.Schedulers;
  * tenant context into the agent {@link RuntimeContext}, runs the agent via
  * {@code streamEvents(msgs, ctx)}, and streams the resulting events back as AG-UI Server-Sent
  * Events. The wire format matches the frontend's {@code agui-stream.ts} consumer.
+ *
+ * <p>When the tenant ids are real UUIDs (production login), the user message and the final assistant
+ * reply are persisted via {@link ChatPersistenceService} so the conversation survives refresh and
+ * re-login. In dev auth-bypass mode (non-UUID ids) persistence is skipped and the endpoint behaves
+ * as a pure streaming pass-through.
  */
 @RestController
 @RequestMapping("/api/chat")
@@ -58,11 +67,14 @@ public class SaasChatController {
 
     private final HarnessAgent agent;
     private final TenantResolver tenantResolver;
+    private final ChatPersistenceService persistence;
     private final AguiEventEncoder encoder = new AguiEventEncoder();
 
-    public SaasChatController(HarnessAgent agent, TenantResolver tenantResolver) {
+    public SaasChatController(
+            HarnessAgent agent, TenantResolver tenantResolver, ChatPersistenceService persistence) {
         this.agent = agent;
         this.tenantResolver = tenantResolver;
+        this.persistence = persistence;
     }
 
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -76,12 +88,56 @@ public class SaasChatController {
         // returns a fixed tenant for empty claims. In production jwt is always present.
         Map<String, Object> claims = jwt != null ? jwt.getClaims() : Map.of();
         TenantContext tenant = tenantResolver.resolve(claims);
+        boolean persistable = isPersistable(tenant);
+
+        if (persistable) {
+            return streamingWithPersistence(tenant, request);
+        }
+        return streamingWithoutPersistence(tenant, request);
+    }
+
+    /** Production path: resolve agent/session, persist user + assistant messages around the run. */
+    private Flux<ServerSentEvent<String>> streamingWithPersistence(
+            TenantContext tenant, ChatRequest request) {
+        return Mono.fromCallable(
+                        () -> {
+                            AgentEntity agentEntity =
+                                    persistence.resolveAgent(tenant, request.agentId());
+                            ChatSessionEntity session =
+                                    persistence.resolveSession(
+                                            tenant,
+                                            agentEntity.getId(),
+                                            request.sessionId(),
+                                            request.message());
+                            persistence.saveUserMessage(
+                                    tenant,
+                                    session.getId(),
+                                    agentEntity.getId(),
+                                    request.message());
+                            return new ResolvedRun(agentEntity.getId(), session.getId());
+                        })
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMapMany(resolved -> runAgent(tenant, request, resolved, true));
+    }
+
+    /** Dev/bypass path: no persistence, ephemeral session id. */
+    private Flux<ServerSentEvent<String>> streamingWithoutPersistence(
+            TenantContext tenant, ChatRequest request) {
         String sessionId =
                 request.sessionId() != null && !request.sessionId().isBlank()
                         ? request.sessionId()
                         : UUID.randomUUID().toString();
+        return runAgent(tenant, request, new ResolvedRun(null, UUID.fromString(sessionId)), false);
+    }
+
+    /** Runs the agent and emits AG-UI SSE events; optionally persists the assistant reply. */
+    private Flux<ServerSentEvent<String>> runAgent(
+            TenantContext tenant, ChatRequest request, ResolvedRun resolved, boolean persist) {
+        String sessionId = resolved.sessionId().toString();
         String threadId = sessionId;
         String runId = UUID.randomUUID().toString();
+        AguiEventConverter converter = new AguiEventConverter(threadId, runId);
+        AssistantTextAccumulator accumulator = new AssistantTextAccumulator();
 
         RuntimeContext ctx =
                 RuntimeContext.builder()
@@ -98,25 +154,42 @@ public class SaasChatController {
                         .textContent(request.message())
                         .build();
 
-        AguiEventConverter converter = new AguiEventConverter(threadId, runId);
-
         log.debug(
                 "Chat stream org={} user={} session={} agent={}",
                 tenant.orgId(),
                 tenant.userId(),
                 sessionId,
-                request.agentId());
+                resolved.agentId());
 
-        Flux<AguiEvent> aguiEvents =
-                Flux.concat(
-                        Flux.just(converter.runStarted()),
-                        Mono.fromCallable(() -> ctx)
-                                .flatMapMany(c -> agent.streamEvents(List.of(userMsg), c))
-                                .subscribeOn(Schedulers.boundedElastic())
-                                .concatMapIterable(converter::convert),
-                        Flux.defer(() -> Flux.fromIterable(converter.runFinished())));
+        Flux<AguiEvent> agentEvents =
+                agent.streamEvents(List.of(userMsg), ctx)
+                        .subscribeOn(Schedulers.boundedElastic())
+                        .doOnNext(accumulator::onEvent)
+                        .concatMapIterable(converter::convert);
 
-        return aguiEvents
+        Flux<AguiEvent> withPersistence =
+                persist
+                        ? Flux.concat(
+                                Flux.just(converter.runStarted()),
+                                agentEvents,
+                                Mono.fromCallable(
+                                                () -> {
+                                                    persistence.saveAssistantMessage(
+                                                            tenant,
+                                                            resolved.sessionId(),
+                                                            resolved.agentId(),
+                                                            accumulator.text());
+                                                    return (Object) null;
+                                                })
+                                        .subscribeOn(Schedulers.boundedElastic())
+                                        .flatMapMany(v -> Flux.empty()),
+                                Flux.defer(() -> Flux.fromIterable(converter.runFinished())))
+                        : Flux.concat(
+                                Flux.just(converter.runStarted()),
+                                agentEvents,
+                                Flux.defer(() -> Flux.fromIterable(converter.runFinished())));
+
+        return withPersistence
                 .map(this::toSse)
                 .onErrorResume(
                         error -> {
@@ -138,5 +211,42 @@ public class SaasChatController {
         // encodeToJson returns " {json}"; trim the SSE-compatibility leading space — Spring writes
         // the "data:" prefix itself.
         return ServerSentEvent.<String>builder().data(encoder.encodeToJson(event).trim()).build();
+    }
+
+    /** Persistence requires UUID-shaped tenant ids (production JWT); dev bypass uses string ids. */
+    private static boolean isPersistable(TenantContext tenant) {
+        return isUuid(tenant.orgId()) && isUuid(tenant.userId());
+    }
+
+    private static boolean isUuid(String s) {
+        if (s == null || s.isBlank()) {
+            return false;
+        }
+        try {
+            UUID.fromString(s);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
+    /** Captured agent + session ids for a resolved run. */
+    private record ResolvedRun(UUID agentId, UUID sessionId) {}
+
+    /** Accumulates the assistant's streamed text deltas so the final reply can be persisted. */
+    private static final class AssistantTextAccumulator {
+        private final StringBuilder buffer = new StringBuilder();
+
+        void onEvent(AgentEvent event) {
+            if (event instanceof TextBlockDeltaEvent e
+                    && e.getDelta() != null
+                    && !e.getDelta().isEmpty()) {
+                buffer.append(e.getDelta());
+            }
+        }
+
+        String text() {
+            return buffer.toString();
+        }
     }
 }

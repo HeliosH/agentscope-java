@@ -1,0 +1,71 @@
+// Minimal API helpers for the SaaS console. All calls are same-origin (the SPA is served by the
+// backend); the bearer token is attached for authenticated routes.
+
+const TOKEN_KEY = 'saas.token';
+const SESSION_KEY = 'saas.session';
+
+export function loadSession() {
+  try {
+    const raw = localStorage.getItem(TOKEN_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export function saveSession(session) {
+  localStorage.setItem(TOKEN_KEY, JSON.stringify(session));
+  localStorage.setItem(SESSION_KEY, session ? JSON.stringify(session) : '');
+}
+
+export function clearSession() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(SESSION_KEY);
+}
+
+function authHeaders(token) {
+  const h = { 'Content-Type': 'application/json' };
+  if (token) h.Authorization = `Bearer ${token}`;
+  return h;
+}
+
+export async function login(email, password) {
+  const res = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `login failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function register(email, password, displayName) {
+  const res = await fetch('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, displayName }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `registration failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function fetchSessions(token) {
+  const res = await fetch('/api/sessions', { headers: authHeaders(token) });
+  if (!res.ok) throw new Error(`failed to load sessions (${res.status})`);
+  return res.json();
+}
+
+export async function fetchMessages(token, sessionId) {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new Error(`failed to load history (${res.status})`);
+  return res.json();
+}

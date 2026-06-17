@@ -45,6 +45,7 @@ QwenPaw 是 **Python 产品**。框架有"等价物" ≠ QwenPaw 代码能直接
 | 09 | [部署与可观测性](./09-deployment-observability.md) | K8s 拓扑、OTel、Micrometer、SLA |
 | 10 | [实施路线图](./10-roadmap.md) | 分阶段（含重建工作量）、风险 |
 | 11 | [前端改造方案](./11-frontend-migration.md) | 基于 agentscope Web UI 扩展、AG-UI 协议对接、Admin Dashboard、分期计划 |
+| 12 | [具体实施方案](./12-implementation-plan.md) | 简单登录+完整 QwenPaw 对齐（不含 IM）：paw 产品层移植进 SaaS 多租户壳、分阶段 A–D |
 
 ## 一页速读
 

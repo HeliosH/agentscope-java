@@ -54,7 +54,7 @@ public class JwtService {
                 .claim("email", email == null ? "" : email)
                 .claim("role", role == null ? "member" : role)
                 .claim("tier", tier == null ? "standard" : tier)
-                .signWith(key)
+                .signWith(key, Jwts.SIG.HS256)
                 .compact();
     }
 

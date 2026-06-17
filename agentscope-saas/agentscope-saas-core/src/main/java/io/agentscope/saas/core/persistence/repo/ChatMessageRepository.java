@@ -15,20 +15,13 @@
  */
 package io.agentscope.saas.core.persistence.repo;
 
-import io.agentscope.saas.core.persistence.entity.AgentEntity;
+import io.agentscope.saas.core.persistence.entity.ChatMessageEntity;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
 
-/** Repository for {@link AgentEntity}, with org-scoped queries. */
-public interface AgentRepository extends JpaRepository<AgentEntity, UUID> {
+/** Repository for {@link ChatMessageEntity}, with session-scoped queries for history replay. */
+public interface ChatMessageRepository extends JpaRepository<ChatMessageEntity, UUID> {
 
-    List<AgentEntity> findByOrgId(UUID orgId);
-
-    Optional<AgentEntity> findByIdAndOrgId(UUID id, UUID orgId);
-
-    List<AgentEntity> findByOrgIdAndUserIdOrderByIdAsc(UUID orgId, UUID userId);
-
-    Optional<AgentEntity> findByOrgIdAndUserIdAndName(UUID orgId, UUID userId, String name);
+    List<ChatMessageEntity> findBySessionIdOrderByCreatedAtAsc(UUID sessionId);
 }

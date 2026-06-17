@@ -63,6 +63,7 @@ public class SecurityConfig {
                                 exchanges
                                         .pathMatchers(
                                                 "/api/auth/login",
+                                                "/api/auth/register",
                                                 "/api/auth/sso/**",
                                                 "/actuator/health",
                                                 "/actuator/info")

@@ -1,0 +1,63 @@
+# ===================================================================
+# AgentScope Enterprise SaaS Platform — gateway profile
+# End-to-end verification against a real OpenAI-compatible LLM gateway, with
+# zero infrastructure beyond the model endpoint: H2 in-memory DB, in-memory
+# session/state/rate-limit. Sandbox execution is off by default (flip
+# saas.sandbox.enabled and configure a cube/docker endpoint to exercise tools).
+# Activate with: --spring.profiles.active=gateway
+# Required env: SAAS_MODEL_BASE_URL, SAAS_MODEL_API_KEY, SAAS_MODEL_NAME
+# ===================================================================
+spring:
+  datasource:
+    url: jdbc:h2:mem:saas;DB_CLOSE_DELAY=-1;MODE=PostgreSQL
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration/h2
+    baseline-on-migrate: true
+
+server:
+  port: ${SERVER_PORT:8080}
+
+saas:
+  model:
+    # OpenAI-compatible gateway (e.g. an internal vLLM/Ollama endpoint, or any
+    # /v1/chat/completions-compatible service). The framework streams responses.
+    type: gateway
+    base-url: ${SAAS_MODEL_BASE_URL:}
+    api-key: ${SAAS_MODEL_API_KEY:}
+    name: ${SAAS_MODEL_NAME:qwen-max}
+  redis:
+    enabled: false
+  sandbox:
+    enabled: ${SAAS_SANDBOX_ENABLED:false}
+    type: ${SAAS_SANDBOX_TYPE:docker}
+    image: ${SAAS_SANDBOX_IMAGE:ubuntu:22.04}
+    isolation-scope: USER
+    idle-ttl-seconds: ${SAAS_SANDBOX_IDLE_TTL:600}
+    snapshot:
+      enabled: true
+      table: agentscope_sandbox_snapshots
+  rate-limit:
+    max-requests: 1000
+    window-seconds: 60
+  agent:
+    name: assistant
+    max-iters: 12
+  security:
+    jwt:
+      secret: gateway-dev-secret-please-override-in-prod-0123456789abcdef
+      ttl-seconds: 43200
+
+logging:
+  level:
+    io.agentscope: DEBUG
