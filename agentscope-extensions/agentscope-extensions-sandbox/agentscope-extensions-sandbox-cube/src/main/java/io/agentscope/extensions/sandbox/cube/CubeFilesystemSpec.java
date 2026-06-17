@@ -90,6 +90,11 @@ public class CubeFilesystemSpec extends SandboxFilesystemSpec {
         return this;
     }
 
+    public CubeFilesystemSpec insecureSkipTlsVerify(boolean insecureSkipTlsVerify) {
+        options.setInsecureSkipTlsVerify(insecureSkipTlsVerify);
+        return this;
+    }
+
     public CubeFilesystemSpec snapshotSpec(SandboxSnapshotSpec snapshotSpec) {
         this.snapshotSpec = snapshotSpec;
         return this;

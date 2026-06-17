@@ -63,6 +63,13 @@ public class CubeSandboxClientOptions extends SandboxClientOptions {
     /** Maximum number of retries for transient failures. */
     private int maxRetries = 3;
 
+    /**
+     * Whether to skip TLS certificate/hostname verification for envd/platform HTTP clients. This is
+     * useful for private test deployments with self-signed certificates; leave disabled in
+     * production.
+     */
+    private boolean insecureSkipTlsVerify = false;
+
     @Override
     public String getType() {
         return "cube";
@@ -168,5 +175,13 @@ public class CubeSandboxClientOptions extends SandboxClientOptions {
 
     public void setMaxRetries(int maxRetries) {
         this.maxRetries = maxRetries;
+    }
+
+    public boolean isInsecureSkipTlsVerify() {
+        return insecureSkipTlsVerify;
+    }
+
+    public void setInsecureSkipTlsVerify(boolean insecureSkipTlsVerify) {
+        this.insecureSkipTlsVerify = insecureSkipTlsVerify;
     }
 }

@@ -157,6 +157,8 @@ public class CubeSandboxClient implements SandboxClient<CubeSandboxClientOptions
                 override.getMaxRetries() != 3
                         ? override.getMaxRetries()
                         : defaultOptions.getMaxRetries());
+        merged.setInsecureSkipTlsVerify(
+                override.isInsecureSkipTlsVerify() || defaultOptions.isInsecureSkipTlsVerify());
         merged.setHttpClient(
                 override.getHttpClient() != null
                         ? override.getHttpClient()
@@ -177,6 +179,7 @@ public class CubeSandboxClient implements SandboxClient<CubeSandboxClientOptions
         c.setConnectTimeoutSeconds(src.getConnectTimeoutSeconds());
         c.setReadTimeoutSeconds(src.getReadTimeoutSeconds());
         c.setMaxRetries(src.getMaxRetries());
+        c.setInsecureSkipTlsVerify(src.isInsecureSkipTlsVerify());
         c.setHttpClient(src.getHttpClient());
         return c;
     }

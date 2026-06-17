@@ -25,7 +25,6 @@ import io.agentscope.harness.agent.sandbox.SandboxException;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InterruptedIOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -37,15 +36,12 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-/**
- * Minimal Connect+protobuf client for envd {@code process.Process/Start} (server streaming),
- * sufficient for {@code sh -c} command execution and binary tar streaming on stdout.
- *
- * <p>Uses the same envd protocol as E2B, but with a configurable host pattern for Cube's
- * private deployment topology.
- */
 final class CubeEnvdProcessClient {
+
+    private static final Logger log = LoggerFactory.getLogger(CubeEnvdProcessClient.class);
 
     private static final MediaType CONNECT_PROTO = MediaType.get("application/connect+proto");
     private static final int ENVD_PORT = 49983;
@@ -60,15 +56,7 @@ final class CubeEnvdProcessClient {
 
     CubeEnvdProcessClient(CubeSandboxClientOptions opt) throws Exception {
         this.opt = Objects.requireNonNull(opt, "opt");
-        if (opt.getHttpClient() != null) {
-            this.http = opt.getHttpClient();
-        } else {
-            this.http =
-                    new OkHttpClient.Builder()
-                            .connectTimeout(opt.getConnectTimeoutSeconds(), TimeUnit.SECONDS)
-                            .readTimeout(opt.getReadTimeoutSeconds(), TimeUnit.SECONDS)
-                            .build();
-        }
+        this.http = CubeHttpClients.create(opt);
         try (InputStream in =
                 CubeEnvdProcessClient.class.getResourceAsStream("/e2b-process-fdp.pb")) {
             if (in == null) {
@@ -150,9 +138,22 @@ final class CubeEnvdProcessClient {
             try (InputStream in = res.body().byteStream()) {
                 exit = drainStartStream(in, stdout, stderr);
             }
-        } catch (InterruptedIOException e) {
-            throw new SandboxException.ExecTimeoutException(shellCommand, timeoutSeconds);
+        } catch (Exception e) {
+            log.warn(
+                    "[cube-envd] exec failed cmd={} host={} exit={} stdout='{}' stderr='{}'",
+                    shellCommand,
+                    host,
+                    exit,
+                    new String(stdout.toByteArray(), StandardCharsets.UTF_8).trim(),
+                    new String(stderr.toByteArray(), StandardCharsets.UTF_8).trim(),
+                    e);
+            throw e;
         }
+        log.debug(
+                "[cube-envd] exit={} stdout='{}' stderr='{}'",
+                exit,
+                new String(stdout.toByteArray(), StandardCharsets.UTF_8).trim(),
+                new String(stderr.toByteArray(), StandardCharsets.UTF_8).trim());
         return new ShellCapture(exit, stdout, stderr);
     }
 
@@ -162,7 +163,7 @@ final class CubeEnvdProcessClient {
     private int drainStartStream(
             InputStream in, ByteArrayOutputStream stdout, ByteArrayOutputStream stderr)
             throws IOException {
-        int exit = -1;
+        int exit = 0; // default success; overridden by end.exit_code if present
         Descriptors.FieldDescriptor srEventF = startResponseDesc.findFieldByName("event");
         Descriptors.FieldDescriptor peDataF = processEventDesc.findFieldByName("data");
         Descriptors.FieldDescriptor peEndF = processEventDesc.findFieldByName("end");
@@ -183,7 +184,7 @@ final class CubeEnvdProcessClient {
             if (data.length < len) {
                 break;
             }
-            if (flags != 0x00) {
+            if (flags != 0x00 && flags != 0x02) {
                 continue;
             }
             DynamicMessage sr;

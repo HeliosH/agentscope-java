@@ -51,7 +51,7 @@ final class CubeSandbox extends AbstractBaseSandbox {
         this.opt = opt;
         this.platform =
                 new CubePlatformHttp(
-                        createOrReuseHttp(opt),
+                        CubeHttpClients.create(opt),
                         new com.fasterxml.jackson.databind.ObjectMapper(),
                         opt);
     }
@@ -103,42 +103,27 @@ final class CubeSandbox extends AbstractBaseSandbox {
         if (raw.length == 0) {
             return;
         }
-        // Base64-encode the tar, write in 4KB chunks via Python one-liners, then decode + extract
+        // Write base64-encoded tar in chunks via shell printf, then decode+extract.
+        // Uses only base64 + tar (GNU coreutils) — no Python dependency.
         String b64 = Base64.getEncoder().encodeToString(raw);
         String tmpFile = "/tmp/agentscope-ws.b64";
 
-        // Write base64 chunks
         int chunkSize = 4000;
         for (int i = 0; i < b64.length(); i += chunkSize) {
             String chunk = b64.substring(i, Math.min(i + chunkSize, b64.length()));
+            // base64 chars are all safe for single-quoted printf; escape single quotes only
             String escaped = chunk.replace("'", "'\\''");
-            String writeCmd =
-                    "python3 -c \""
-                            + "from pathlib import Path; "
-                            + "Path('"
-                            + tmpFile
-                            + "').open('a').write('"
-                            + escaped
-                            + "')"
-                            + "\"";
+            String writeCmd = "printf '%s' '" + escaped + "' >> " + tmpFile;
             envd().runShell(state, state.getWorkspaceRoot(), writeCmd, 60);
         }
 
-        // Decode and extract
         String extractCmd =
-                "python3 -c \""
-                        + "import base64, subprocess; "
-                        + "from pathlib import Path; "
-                        + "data = base64.b64decode(Path('"
+                "base64 -d "
                         + tmpFile
-                        + "').read_text()); "
-                        + "Path('"
-                        + tmpFile
-                        + "').unlink(missing_ok=True); "
-                        + "subprocess.run(['tar', 'xf', '-', '-C', '"
+                        + " | tar xf - -C "
                         + state.getWorkspaceRoot()
-                        + "'], input=data, check=True)"
-                        + "\"";
+                        + " && rm -f "
+                        + tmpFile;
         envd().runShell(state, state.getWorkspaceRoot(), extractCmd, 120);
     }
 
@@ -223,17 +208,5 @@ final class CubeSandbox extends AbstractBaseSandbox {
 
     private static String shellSingleQuote(String s) {
         return "'" + s.replace("'", "'\\''") + "'";
-    }
-
-    private static okhttp3.OkHttpClient createOrReuseHttp(CubeSandboxClientOptions opt) {
-        return opt.getHttpClient() != null
-                ? opt.getHttpClient()
-                : new okhttp3.OkHttpClient.Builder()
-                        .connectTimeout(
-                                opt.getConnectTimeoutSeconds(),
-                                java.util.concurrent.TimeUnit.SECONDS)
-                        .readTimeout(
-                                opt.getReadTimeoutSeconds(), java.util.concurrent.TimeUnit.SECONDS)
-                        .build();
     }
 }
