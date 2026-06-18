@@ -24,6 +24,7 @@ import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.core.util.JsonUtils;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.saas.core.persistence.entity.AgentEntity;
 import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
@@ -243,17 +244,22 @@ public class SaasChatController {
         List<ConfirmResult> results =
                 request.confirmResults().stream()
                         .map(
-                                r ->
-                                        new ConfirmResult(
-                                                r.confirmed(),
-                                                ToolUseBlock.builder()
-                                                        .id(r.toolCallId())
-                                                        .name(r.toolName())
-                                                        .input(
-                                                                r.input() != null
-                                                                        ? r.input()
-                                                                        : Map.of())
-                                                        .build()))
+                                r -> {
+                                    Map<String, Object> input =
+                                            r.input() != null ? r.input() : Map.of();
+                                    // content is the raw JSON of the tool arguments; the
+                                    // framework's
+                                    // tool-execution validation requires it to be non-null.
+                                    String contentJson = JsonUtils.getJsonCodec().toJson(input);
+                                    return new ConfirmResult(
+                                            r.confirmed(),
+                                            ToolUseBlock.builder()
+                                                    .id(r.toolCallId())
+                                                    .name(r.toolName())
+                                                    .input(input)
+                                                    .content(contentJson)
+                                                    .build());
+                                })
                         .toList();
         return Map.of(Msg.METADATA_CONFIRM_RESULTS, results);
     }
