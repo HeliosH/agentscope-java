@@ -133,7 +133,7 @@ public class SaasProperties {
         /** Whether sandbox-backed command execution is enabled. */
         private boolean enabled = false;
 
-        /** Backend type: {@code "cube"} (private deployment), {@code "docker"} (local). */
+        /** Backend type: {@code "cube"} (private deployment), {@code "docker"} (local), {@code "e2b"} (official hosted). */
         private String type = "cube";
 
         /** Docker image for sandbox containers (type=docker only). */
@@ -184,6 +184,26 @@ public class SaasProperties {
          * Intended only for private dev/test Cube deployments with self-signed certificates.
          */
         private boolean cubeInsecureSkipTlsVerify = false;
+
+        // --- E2B-specific fields ---
+
+        /** E2B API key (official hosted service). Required when type=e2b. */
+        private String e2bApiKey;
+
+        /**
+         * E2B API base URL (defaults to {@code https://api.e2b.app}). Override only for an
+         * E2B-compatible private deployment.
+         */
+        private String e2bApiBaseUrl;
+
+        /** E2B template ID (defaults to the official {@code "base"} template when null). */
+        private String e2bTemplateId;
+
+        /** E2B sandbox domain (defaults to {@code e2b.app}). Override for private deployments. */
+        private String e2bDomain;
+
+        /** E2B sandbox idle timeout in seconds (defaults to 300). */
+        private int e2bSandboxTimeoutSeconds = 300;
 
         @NestedConfigurationProperty private final Snapshot snapshot = new Snapshot();
 
@@ -338,6 +358,46 @@ public class SaasProperties {
 
         public void setCubeInsecureSkipTlsVerify(boolean cubeInsecureSkipTlsVerify) {
             this.cubeInsecureSkipTlsVerify = cubeInsecureSkipTlsVerify;
+        }
+
+        public String getE2bApiKey() {
+            return e2bApiKey;
+        }
+
+        public void setE2bApiKey(String e2bApiKey) {
+            this.e2bApiKey = e2bApiKey;
+        }
+
+        public String getE2bApiBaseUrl() {
+            return e2bApiBaseUrl;
+        }
+
+        public void setE2bApiBaseUrl(String e2bApiBaseUrl) {
+            this.e2bApiBaseUrl = e2bApiBaseUrl;
+        }
+
+        public String getE2bTemplateId() {
+            return e2bTemplateId;
+        }
+
+        public void setE2bTemplateId(String e2bTemplateId) {
+            this.e2bTemplateId = e2bTemplateId;
+        }
+
+        public String getE2bDomain() {
+            return e2bDomain;
+        }
+
+        public void setE2bDomain(String e2bDomain) {
+            this.e2bDomain = e2bDomain;
+        }
+
+        public int getE2bSandboxTimeoutSeconds() {
+            return e2bSandboxTimeoutSeconds;
+        }
+
+        public void setE2bSandboxTimeoutSeconds(int e2bSandboxTimeoutSeconds) {
+            this.e2bSandboxTimeoutSeconds = e2bSandboxTimeoutSeconds;
         }
     }
 

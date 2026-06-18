@@ -16,6 +16,7 @@
 package io.agentscope.saas.app.config;
 
 import io.agentscope.extensions.sandbox.cube.CubeFilesystemSpec;
+import io.agentscope.extensions.sandbox.e2b.E2bFilesystemSpec;
 import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.filesystem.spec.SandboxFilesystemSpec;
 import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
@@ -115,11 +116,38 @@ public class SandboxConfig {
                         }
                         yield dockerSpec;
                     }
+                    case "e2b" -> {
+                        if (sb.getE2bApiKey() == null || sb.getE2bApiKey().isBlank()) {
+                            throw new IllegalStateException(
+                                    "E2B sandbox requires saas.sandbox.e2b-api-key to be set");
+                        }
+                        E2bFilesystemSpec e2bSpec =
+                                new E2bFilesystemSpec()
+                                        .apiKey(sb.getE2bApiKey())
+                                        .sandboxTimeoutSeconds(sb.getE2bSandboxTimeoutSeconds());
+                        if (sb.getWorkspaceRoot() != null && !sb.getWorkspaceRoot().isBlank()) {
+                            e2bSpec.workspaceRoot(sb.getWorkspaceRoot());
+                        }
+                        if (sb.getE2bApiBaseUrl() != null && !sb.getE2bApiBaseUrl().isBlank()) {
+                            e2bSpec.apiBaseUrl(sb.getE2bApiBaseUrl());
+                        }
+                        if (sb.getE2bTemplateId() != null && !sb.getE2bTemplateId().isBlank()) {
+                            e2bSpec.templateId(sb.getE2bTemplateId());
+                        }
+                        if (sb.getE2bDomain() != null && !sb.getE2bDomain().isBlank()) {
+                            e2bSpec.domain(sb.getE2bDomain());
+                        }
+                        e2bSpec.isolationScope(scope);
+                        if (snapshotSpec != null) {
+                            e2bSpec.snapshotSpec(snapshotSpec);
+                        }
+                        yield e2bSpec;
+                    }
                     default ->
                             throw new IllegalStateException(
                                     "Unknown sandbox type: "
                                             + sb.getType()
-                                            + ". Supported: cube, docker");
+                                            + ". Supported: cube, docker, e2b");
                 };
 
         SandboxExecutionGuard guard = guardProvider.getIfAvailable();

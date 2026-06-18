@@ -78,6 +78,13 @@
             <version>${revision}</version>
         </dependency>
 
+        <!-- E2B (official hosted sandbox service, e2b.app) -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-sandbox-e2b</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
         <!-- Spring Boot WebFlux (reactive HTTP + SSE) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
