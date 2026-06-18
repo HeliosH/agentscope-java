@@ -16,6 +16,10 @@
 package io.agentscope.saas.app.config;
 
 import io.agentscope.core.model.Model;
+import io.agentscope.core.permission.PermissionBehavior;
+import io.agentscope.core.permission.PermissionContextState;
+import io.agentscope.core.permission.PermissionMode;
+import io.agentscope.core.permission.PermissionRule;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.IsolationScope;
@@ -131,6 +135,39 @@ public class AgentConfig {
             builder.disableShellTool();
         }
 
+        // Permission engine (tool_guard, Phase B4′): tool-name-level ALLOW/ASK/DENY rules so
+        // read-only tools are auto-allowed, mutating/shell tools require confirmation (HITL via
+        // REQUIRE_USER_CONFIRM), and explicitly denied tools are blocked. Mode DEFAULT pauses on
+        // ASK; DONT_ASK demotes ASK to DENY for unattended runs. Unset tool names are no-ops.
+        PermissionContextState permissionContext = buildPermissionContext(agentCfg);
+        builder.permissionContext(permissionContext);
+        log.info(
+                "Permission tool_guard mode={} allow={} ask={} deny={}",
+                agentCfg.getPermission().getMode(),
+                permissionContext.getAllowRules().size(),
+                permissionContext.getAskRules().size(),
+                permissionContext.getDenyRules().size());
+
         return builder.build();
+    }
+
+    /** Builds the per-agent permission context from the tool_guard config (ALLOW/ASK/DENY rules). */
+    private static PermissionContextState buildPermissionContext(SaasProperties.Agent agentCfg) {
+        SaasProperties.Permission p = agentCfg.getPermission();
+        PermissionMode mode = PermissionMode.valueOf(p.getMode().toUpperCase());
+        PermissionContextState.Builder b = PermissionContextState.builder().mode(mode);
+        for (String tool : p.getAllowTools()) {
+            b.addAllowRule(
+                    tool, new PermissionRule(tool, null, PermissionBehavior.ALLOW, "tool_guard"));
+        }
+        for (String tool : p.getAskTools()) {
+            b.addAskRule(
+                    tool, new PermissionRule(tool, null, PermissionBehavior.ASK, "tool_guard"));
+        }
+        for (String tool : p.getDenyTools()) {
+            b.addDenyRule(
+                    tool, new PermissionRule(tool, null, PermissionBehavior.DENY, "tool_guard"));
+        }
+        return b.build();
     }
 }

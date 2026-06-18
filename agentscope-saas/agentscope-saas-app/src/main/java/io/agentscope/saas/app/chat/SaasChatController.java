@@ -19,9 +19,11 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.agui.encoder.AguiEventEncoder;
 import io.agentscope.core.agui.event.AguiEvent;
 import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.event.ConfirmResult;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
+import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.saas.core.persistence.entity.AgentEntity;
 import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
@@ -62,8 +64,17 @@ public class SaasChatController {
 
     private static final Logger log = LoggerFactory.getLogger(SaasChatController.class);
 
-    /** Chat request payload. */
-    public record ChatRequest(String agentId, String sessionId, String message) {}
+    /** Chat request payload. {@code confirmResults} resumes a paused HITL run (same sessionId). */
+    public record ChatRequest(
+            String agentId,
+            String sessionId,
+            String message,
+            List<ConfirmResultInput> confirmResults) {
+
+        /** A single user confirmation decision for a pending tool call (HITL resume). */
+        public record ConfirmResultInput(
+                boolean confirmed, String toolCallId, String toolName, Map<String, Object> input) {}
+    }
 
     private final HarnessAgent agent;
     private final TenantResolver tenantResolver;
@@ -80,7 +91,12 @@ public class SaasChatController {
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> stream(
             @AuthenticationPrincipal Jwt jwt, @RequestBody ChatRequest request) {
-        if (request == null || request.message() == null || request.message().isBlank()) {
+        boolean hasConfirm =
+                request != null
+                        && request.confirmResults() != null
+                        && !request.confirmResults().isEmpty();
+        if (request == null
+                || ((request.message() == null || request.message().isBlank()) && !hasConfirm)) {
             return Flux.error(new IllegalArgumentException("message is required"));
         }
 
@@ -103,17 +119,18 @@ public class SaasChatController {
                         () -> {
                             AgentEntity agentEntity =
                                     persistence.resolveAgent(tenant, request.agentId());
+                            String message =
+                                    request.message() != null && !request.message().isBlank()
+                                            ? request.message()
+                                            : "[tool confirmation]";
                             ChatSessionEntity session =
                                     persistence.resolveSession(
                                             tenant,
                                             agentEntity.getId(),
                                             request.sessionId(),
-                                            request.message());
+                                            message);
                             persistence.saveUserMessage(
-                                    tenant,
-                                    session.getId(),
-                                    agentEntity.getId(),
-                                    request.message());
+                                    tenant, session.getId(), agentEntity.getId(), message);
                             return new ResolvedRun(agentEntity.getId(), session.getId());
                         })
                 .subscribeOn(Schedulers.boundedElastic())
@@ -151,7 +168,8 @@ public class SaasChatController {
                 Msg.builder()
                         .role(MsgRole.USER)
                         .name(tenant.userId() != null ? tenant.userId() : "user")
-                        .textContent(request.message())
+                        .textContent(request.message() != null ? request.message() : "")
+                        .metadata(buildMetadata(request))
                         .build();
 
         log.debug(
@@ -211,6 +229,33 @@ public class SaasChatController {
         // encodeToJson returns " {json}"; trim the SSE-compatibility leading space — Spring writes
         // the "data:" prefix itself.
         return ServerSentEvent.<String>builder().data(encoder.encodeToJson(event).trim()).build();
+    }
+
+    /**
+     * Builds the user-message metadata. When the request carries {@code confirmResults} (a HITL
+     * resume), they are attached under {@link Msg#METADATA_CONFIRM_RESULTS} so the agent applies
+     * the user's approve/deny decisions to the paused tool calls. Returns an empty map otherwise.
+     */
+    private static Map<String, Object> buildMetadata(ChatRequest request) {
+        if (request.confirmResults() == null || request.confirmResults().isEmpty()) {
+            return Map.of();
+        }
+        List<ConfirmResult> results =
+                request.confirmResults().stream()
+                        .map(
+                                r ->
+                                        new ConfirmResult(
+                                                r.confirmed(),
+                                                ToolUseBlock.builder()
+                                                        .id(r.toolCallId())
+                                                        .name(r.toolName())
+                                                        .input(
+                                                                r.input() != null
+                                                                        ? r.input()
+                                                                        : Map.of())
+                                                        .build()))
+                        .toList();
+        return Map.of(Msg.METADATA_CONFIRM_RESULTS, results);
     }
 
     /** Persistence requires UUID-shaped tenant ids (production JWT); dev bypass uses string ids. */

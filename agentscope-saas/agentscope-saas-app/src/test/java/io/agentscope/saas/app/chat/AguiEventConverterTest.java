@@ -20,11 +20,14 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.agentscope.core.agui.event.AguiEvent;
+import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.event.TextBlockEndEvent;
 import io.agentscope.core.event.TextBlockStartEvent;
+import io.agentscope.core.message.ToolUseBlock;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /** Verifies the framework {@code AgentEvent} → AG-UI event mapping used by the chat endpoint. */
@@ -68,5 +71,30 @@ class AguiEventConverterTest {
         assertTrue(
                 events.stream().anyMatch(e -> e instanceof AguiEvent.TextMessageEnd),
                 "expected an auto-emitted TEXT_MESSAGE_END");
+    }
+
+    @Test
+    void mapsRequireUserConfirmToCustomEvent() {
+        AguiEventConverter converter = new AguiEventConverter("thread-1", "run-1");
+        ToolUseBlock toolCall =
+                ToolUseBlock.builder()
+                        .id("call-1")
+                        .name("writeFile")
+                        .input(Map.of("path", "notes.md", "content", "hi"))
+                        .build();
+        List<AguiEvent> events =
+                converter.convert(new RequireUserConfirmEvent("reply-1", List.of(toolCall)));
+
+        assertEquals(1, events.size());
+        AguiEvent.Custom custom = assertInstanceOf(AguiEvent.Custom.class, events.get(0));
+        assertEquals("require_user_confirm", custom.name());
+        assertEquals("thread-1", custom.threadId());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> value = (Map<String, Object>) custom.value();
+        assertEquals("reply-1", value.get("replyId"));
+        @SuppressWarnings("unchecked")
+        List<ToolUseBlock> toolCalls = (List<ToolUseBlock>) value.get("toolCalls");
+        assertEquals(1, toolCalls.size());
+        assertEquals("writeFile", toolCalls.get(0).getName());
     }
 }

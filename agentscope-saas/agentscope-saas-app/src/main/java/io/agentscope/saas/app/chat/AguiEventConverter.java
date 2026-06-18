@@ -17,6 +17,7 @@ package io.agentscope.saas.app.chat;
 
 import io.agentscope.core.agui.event.AguiEvent;
 import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.event.TextBlockEndEvent;
 import io.agentscope.core.event.TextBlockStartEvent;
@@ -26,7 +27,9 @@ import io.agentscope.core.event.ToolResultEndEvent;
 import io.agentscope.core.event.ToolResultStartEvent;
 import io.agentscope.core.event.ToolResultTextDeltaEvent;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Converts framework {@link AgentEvent}s (from {@code ReActAgent.streamEvents}) into AG-UI protocol
@@ -111,8 +114,16 @@ public class AguiEventConverter {
             }
         } else if (event instanceof ToolResultEndEvent) {
             // Tool result completion is implied by the next text message / run finish.
+        } else if (event instanceof RequireUserConfirmEvent e) {
+            // HITL: the agent is asking the user to approve tool calls before execution. Forward as
+            // an AG-UI Custom event so the frontend can render a confirm card and resume the run.
+            closeTextIfOpen(out);
+            Map<String, Object> value = new LinkedHashMap<>();
+            value.put("replyId", e.getReplyId());
+            value.put("toolCalls", e.getToolCalls());
+            out.add(new AguiEvent.Custom(threadId, runId, "require_user_confirm", value));
         }
-        // Other event types (thinking, data blocks, hints, confirms) are not mapped in Phase 1.
+        // Other event types (thinking, data blocks, hints) are not mapped in Phase 1.
         return out;
     }
 

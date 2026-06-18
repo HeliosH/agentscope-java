@@ -114,6 +114,7 @@ function ChatPanel({ token, activeSessionId, onSessionAdopted, onSessionChanged 
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [pendingConfirm, setPendingConfirm] = useState(null);
 
   // Load history when the active session changes.
   useEffect(() => {
@@ -192,6 +193,43 @@ function ChatPanel({ token, activeSessionId, onSessionAdopted, onSessionChanged 
             break;
           case 'CUSTOM':
             if (event.name === 'error') setError((event.value && event.value.message) || 'stream error');
+            if (event.name === 'require_user_confirm' && event.value) {
+              setPendingConfirm({ replyId: event.value.replyId, toolCalls: event.value.toolCalls || [] });
+            }
+            break;
+          default:
+            break;
+        }
+      }
+      onSessionChanged();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Resume a paused HITL run: approve or deny each pending tool call by posting confirmResults
+  // on the same sessionId (the agent's per-session permission engine remembers the pause).
+  async function respondConfirm(toolCall, confirmed) {
+    if (!pendingConfirm || busy) return;
+    const confirmResults = [{ confirmed, toolCallId: toolCall.id, toolName: toolCall.name, input: toolCall.input }];
+    setBusy(true);
+    setError(null);
+    setPendingConfirm(null);
+    try {
+      for await (const event of runChat({
+        token,
+        agentId: 'default',
+        sessionId: activeSessionId || undefined,
+        confirmResults,
+      })) {
+        switch (event.type) {
+          case 'CUSTOM':
+            if (event.name === 'error') setError((event.value && event.value.message) || 'stream error');
+            if (event.name === 'require_user_confirm' && event.value) {
+              setPendingConfirm({ replyId: event.value.replyId, toolCalls: event.value.toolCalls || [] });
+            }
             break;
           default:
             break;
@@ -219,6 +257,21 @@ function ChatPanel({ token, activeSessionId, onSessionAdopted, onSessionChanged 
             ))}
           </div>
         ))}
+        {pendingConfirm && (
+          <div style={{ ...styles.card, margin: '12px 0', borderColor: '#f59e0b' }}>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>⏸ Approval required</div>
+            {(pendingConfirm.toolCalls || []).map((tc) => (
+              <div key={tc.id} style={{ borderTop: '1px solid #eee', paddingTop: 8, marginTop: 8 }}>
+                <div style={{ fontFamily: 'monospace', fontSize: 13 }}>{tc.name}</div>
+                {tc.input && <pre style={{ margin: '4px 0', fontSize: 12, maxHeight: 120, overflow: 'auto' }}>{JSON.stringify(tc.input, null, 2)}</pre>}
+                <span style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                  <button style={styles.button} onClick={() => respondConfirm(tc, true)} disabled={busy}>Approve</button>
+                  <button style={{ ...styles.ghostBtn, color: '#b91c1c' }} onClick={() => respondConfirm(tc, false)} disabled={busy}>Deny</button>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <form style={{ padding: 16, borderTop: '1px solid #e2e2e2', maxWidth: 820, width: '100%', margin: '0 auto', boxSizing: 'border-box', display: 'flex', gap: 8 }} onSubmit={send}>
         <input style={{ ...styles.input, marginBottom: 0, flex: 1 }} value={input} onChange={(e) => setInput(e.target.value)} placeholder="Type a message…" disabled={busy} />

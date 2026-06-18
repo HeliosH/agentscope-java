@@ -15,6 +15,7 @@
  */
 package io.agentscope.saas.app.config;
 
+import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
@@ -369,6 +370,7 @@ public class SaasProperties {
                 "You are a helpful enterprise AI assistant. Answer concisely and accurately.";
         private int maxIters = 10;
         @NestedConfigurationProperty private final Skills skills = new Skills();
+        @NestedConfigurationProperty private final Permission permission = new Permission();
 
         public String getName() {
             return name;
@@ -397,6 +399,10 @@ public class SaasProperties {
         public Skills getSkills() {
             return skills;
         }
+
+        public Permission getPermission() {
+            return permission;
+        }
     }
 
     /**
@@ -413,6 +419,62 @@ public class SaasProperties {
 
         public void setSelfEvolution(boolean selfEvolution) {
             this.selfEvolution = selfEvolution;
+        }
+    }
+
+    /**
+     * Permission engine (tool_guard) settings. Configures the framework's {@code
+     * PermissionContextState} with tool-name-level ALLOW/ASK/DENY rules — mirroring QwenPaw's
+     * tool_guard so read-only tools are auto-allowed, mutating/shell tools require confirmation
+     * (ASK), and explicitly denied tools are blocked. Mode {@code DEFAULT} pauses on ASK for HITL
+     * (the frontend renders a confirm card and resumes); {@code DONT_ASK} demotes ASK to DENY for
+     * unattended runs.
+     */
+    public static class Permission {
+        private String mode = "DEFAULT";
+        private List<String> allowTools =
+                List.of(
+                        "readFile",
+                        "grepFiles",
+                        "glob_files",
+                        "listFiles",
+                        "memory_get",
+                        "memory_search",
+                        "session_search");
+        private List<String> askTools =
+                List.of("writeFile", "editFile", "propose_skill", "skill_manage", "execute");
+        private List<String> denyTools = List.of();
+
+        public String getMode() {
+            return mode;
+        }
+
+        public void setMode(String mode) {
+            this.mode = mode;
+        }
+
+        public List<String> getAllowTools() {
+            return allowTools;
+        }
+
+        public void setAllowTools(List<String> allowTools) {
+            this.allowTools = allowTools;
+        }
+
+        public List<String> getAskTools() {
+            return askTools;
+        }
+
+        public void setAskTools(List<String> askTools) {
+            this.askTools = askTools;
+        }
+
+        public List<String> getDenyTools() {
+            return denyTools;
+        }
+
+        public void setDenyTools(List<String> denyTools) {
+            this.denyTools = denyTools;
         }
     }
 }

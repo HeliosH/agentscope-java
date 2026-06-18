@@ -1,14 +1,14 @@
 // Minimal AG-UI SSE consumer. POSTs to /api/chat/stream with a bearer token and yields
 // parsed AG-UI events. Wire-compatible with the backend's AguiEventEncoder / AguiEvent types.
 
-export async function* runChat({ token, agentId, sessionId, message, signal }) {
+export async function* runChat({ token, agentId, sessionId, message, confirmResults, signal }) {
   const res = await fetch('/api/chat/stream', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ agentId, sessionId, message }),
+    body: JSON.stringify({ agentId, sessionId, message, confirmResults }),
     signal,
   });
 
