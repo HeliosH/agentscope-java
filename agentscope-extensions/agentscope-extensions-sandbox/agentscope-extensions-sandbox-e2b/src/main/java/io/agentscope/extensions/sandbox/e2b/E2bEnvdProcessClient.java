@@ -47,6 +47,10 @@ final class E2bEnvdProcessClient {
     private static final MediaType CONNECT_PROTO = MediaType.get("application/connect+proto");
     private static final int ENVD_PORT = 49983;
     private static final int OUTPUT_TRUNCATE_BYTES = 512 * 1024;
+    private static final java.util.regex.Pattern EXIT_STATUS_PATTERN =
+            java.util.regex.Pattern.compile("exit status (\\d+)");
+    private static final java.util.regex.Pattern SIGNAL_PATTERN =
+            java.util.regex.Pattern.compile("signal (\\d+)");
 
     private final OkHttpClient http;
     private final Descriptors.FileDescriptor fileDescriptor;
@@ -163,6 +167,7 @@ final class E2bEnvdProcessClient {
         Descriptors.FieldDescriptor srEventF = startResponseDesc.findFieldByName("event");
         Descriptors.FieldDescriptor peDataF = processEventDesc.findFieldByName("data");
         Descriptors.FieldDescriptor peEndF = processEventDesc.findFieldByName("end");
+        int frame = 0;
         while (true) {
             int flags = in.read();
             if (flags == -1) {
@@ -200,15 +205,44 @@ final class E2bEnvdProcessClient {
             }
             if (pe.hasField(peEndF)) {
                 DynamicMessage end = (DynamicMessage) pe.getField(peEndF);
-                Descriptors.FieldDescriptor ec =
-                        end.getDescriptorForType().findFieldByName("exit_code");
-                if (end.hasField(ec)) {
-                    Object v = end.getField(ec);
-                    exit = v instanceof Integer ? (Integer) v : ((Long) v).intValue();
+                int parsed = parseExitCode(end);
+                if (parsed != -1) {
+                    exit = parsed;
                 }
             }
+            frame++;
         }
         return exit;
+    }
+
+    /**
+     * Extracts the process exit code from an envd {@code EndEvent}.
+     *
+     * <p>envd {@code <= 0.2.x} populated the {@code exit_code} field directly. envd {@code 0.6.x}
+     * omits {@code exit_code} and instead emits {@code exited} (bool) plus a {@code status} string
+     * of the form {@code "exit status N"} (or a signal description). We honour both shapes:
+     * prefer {@code exit_code} when present, otherwise parse {@code status}.
+     */
+    private static int parseExitCode(DynamicMessage end) {
+        Descriptors.Descriptor d = end.getDescriptorForType();
+        Descriptors.FieldDescriptor ecF = d.findFieldByName("exit_code");
+        if (ecF != null && end.hasField(ecF)) {
+            Object v = end.getField(ecF);
+            return v instanceof Integer ? (Integer) v : ((Long) v).intValue();
+        }
+        Descriptors.FieldDescriptor statusF = d.findFieldByName("status");
+        if (statusF != null && end.hasField(statusF)) {
+            String status = (String) end.getField(statusF);
+            java.util.regex.Matcher m = EXIT_STATUS_PATTERN.matcher(status);
+            if (m.find()) {
+                return Integer.parseInt(m.group(1));
+            }
+            java.util.regex.Matcher sig = SIGNAL_PATTERN.matcher(status);
+            if (sig.find()) {
+                return 128 + Integer.parseInt(sig.group(1));
+            }
+        }
+        return -1;
     }
 
     private static void appendDataStream(
