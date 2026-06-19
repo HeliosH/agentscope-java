@@ -47,7 +47,7 @@ public class UsageMeteringMiddleware implements MiddlewareBase {
             RuntimeContext ctx,
             AgentInput input,
             Function<AgentInput, Flux<AgentEvent>> next) {
-        TenantContext tc = ctx.get(TenantContext.class);
+        TenantContext tc = TenantContext.from(ctx);
         AtomicLong modelCalls = new AtomicLong(0);
         return next.apply(input)
                 .doOnNext(

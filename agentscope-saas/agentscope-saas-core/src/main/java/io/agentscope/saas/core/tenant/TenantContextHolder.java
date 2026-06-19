@@ -20,10 +20,13 @@ package io.agentscope.saas.core.tenant;
  * layer so {@code TenantAwareDataSource} can issue {@code SET LOCAL app.current_org} for Row-Level
  * Security.
  *
- * <p>Bridged across Reactor's {@code boundedElastic} scheduler boundary by {@code
- * TenantContextWebFilter} + a {@code Schedulers.onScheduleHook}: the filter sets the holder on the
- * Netty request thread, and the schedule hook copies it onto the worker thread that runs each
- * {@code Mono.fromCallable} repository call.
+ * <p>Bridged across two scheduler boundaries: (1) Reactor's various schedulers (Netty request
+ * thread, {@code parallel-N}, {@code boundedElastic}) by a {@code Hooks.onEachOperator} hook (see
+ * {@code TenantContextPropagator}) that re-applies the org id from the Reactor {@code Context}
+ * (written by {@code TenantRlsWebFilter}) onto whichever thread runs each operator — so repository
+ * {@code Mono.fromCallable} calls on {@code boundedElastic} see the GUC set correctly; (2) Spring's
+ * async {@code TaskExecutor} by a {@code TaskDecorator} (see {@code TenantAsyncConfig}) — so {@code @Async} methods that write tenant tables (e.g. usage
+ * metering) also run with the GUC set and are not denied by Row-Level Security.
  */
 public final class TenantContextHolder {
 

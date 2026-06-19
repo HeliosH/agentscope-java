@@ -194,7 +194,7 @@ public class AgentConfig {
         if (rc == null) {
             return List.of("org", "_anonymous", "user", "_anonymous");
         }
-        TenantContext tc = rc.get(TenantContext.class);
+        TenantContext tc = TenantContext.from(rc);
         if (tc == null) {
             return List.of("org", "_anonymous", "user", "_anonymous");
         }

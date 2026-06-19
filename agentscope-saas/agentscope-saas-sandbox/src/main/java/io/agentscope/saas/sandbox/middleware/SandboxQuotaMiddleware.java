@@ -51,7 +51,7 @@ public class SandboxQuotaMiddleware implements MiddlewareBase {
             AgentInput input,
             Function<AgentInput, Flux<AgentEvent>> next) {
 
-        TenantContext tc = ctx.get(TenantContext.class);
+        TenantContext tc = TenantContext.from(ctx);
         if (tc != null && tc.orgId() != null && tc.userId() != null) {
             broker.checkQuota(
                     UUID.fromString(tc.orgId()), UUID.fromString(tc.userId()), tc.maxSandboxes());

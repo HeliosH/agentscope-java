@@ -24,24 +24,33 @@ import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebFilter;
 import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Mono;
+import reactor.util.context.Context;
 
 /**
- * Sets {@link TenantContextHolder} from the authenticated JWT's {@code org_id} claim for the
- * duration of the request, so {@link TenantAwareDataSourceConfig} can scope every DB connection to
- * the tenant for Row-Level Security.
+ * Writes the authenticated JWT's {@code org_id} claim into the Reactor {@link Context} (key {@link
+ * #ORG_ID_KEY}) for the duration of the request, so {@link TenantContextPropagator} can sync it onto
+ * the {@link TenantContextHolder} ThreadLocal on every thread that Reactor hops to — including the
+ * {@code boundedElastic} workers where repository {@code Mono.fromCallable} calls execute and
+ * {@link TenantAwareDataSourceConfig} reads the holder to set the RLS GUC.
  *
- * <p>Runs on the Netty request thread; the value is bridged onto {@code boundedElastic} worker
- * threads (where repository {@code Mono.fromCallable} calls execute) by {@link
- * TenantRlsSchedulerHook}, which copies the holder across the schedule boundary. Both the set and
- * the clear run on the same thread, and the scheduler hook re-applies on each worker, so no leakage
- * occurs across pooled requests.
+ * <p>The org id is carried in the Reactor Context (not the ThreadLocal directly) because the security
+ * context resolves on a Reactor {@code parallel-N} scheduler that is neither the Netty request thread
+ * nor the eventual {@code boundedElastic} worker. A ThreadLocal set on {@code parallel-N} does not
+ * survive the subsequent {@code subscribeOn(boundedElastic)} hop, so the scheduler hook captured
+ * {@code null} and RLS denied every authenticated tenant-table write. The Reactor Context flows with
+ * the subscription through every operator and scheduler, so {@link TenantContextPropagator}
+ * (a {@code Hooks.onEachOperator} hook) re-applies it as a ThreadLocal on whichever thread runs each
+ * operator — making the GUC set correctly regardless of the thread topology.
  *
- * <p>Unauthenticated requests (login, register, health, dev bypass) leave the holder empty, which
- * RLS treats as "deny all tenant rows" — those endpoints must use only non-tenant tables (orgs/
- * users by exact email lookup, tier_policies) or be exempted via the service layer.
+ * <p>Unauthenticated requests (login, register, health, dev bypass) write nothing, so the holder stays
+ * empty and RLS denies all tenant rows — those endpoints must use only non-tenant tables (orgs/users
+ * by exact email lookup via the admin bypass, tier_policies) or be exempted via the service layer.
  */
 @Component
 public class TenantRlsWebFilter implements WebFilter {
+
+    /** Reactor Context key carrying the current request's org id (a UUID string, or absent). */
+    public static final String ORG_ID_KEY = "saas.orgId";
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
@@ -52,14 +61,16 @@ public class TenantRlsWebFilter implements WebFilter {
                             if (auth != null && auth.getPrincipal() instanceof Jwt jwt) {
                                 String orgId = jwt.getClaimAsString("org_id");
                                 if (orgId != null && !orgId.isBlank()) {
-                                    TenantContextHolder.setOrgId(orgId);
+                                    return orgId;
                                 }
                             }
-                            return (Void) null;
+                            return "";
                         })
-                .onErrorResume(e -> Mono.empty())
-                .switchIfEmpty(Mono.<Void>empty())
-                .then(chain.filter(exchange))
-                .doFinally(s -> TenantContextHolder.clear());
+                .onErrorResume(e -> Mono.just(""))
+                .switchIfEmpty(Mono.just(""))
+                .flatMap(
+                        orgId ->
+                                chain.filter(exchange)
+                                        .contextWrite(Context.of(ORG_ID_KEY, (Object) orgId)));
     }
 }

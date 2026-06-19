@@ -62,7 +62,7 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
             AgentInput input,
             Function<AgentInput, Flux<AgentEvent>> next) {
 
-        TenantContext tc = ctx.get(TenantContext.class);
+        TenantContext tc = TenantContext.from(ctx);
         if (tc == null || tc.orgId() == null || tc.userId() == null) {
             return next.apply(input);
         }

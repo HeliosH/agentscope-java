@@ -15,6 +15,8 @@
  */
 package io.agentscope.saas.core.tenant;
 
+import io.agentscope.core.agent.RuntimeContext;
+
 /**
  * Immutable per-request tenant context, derived from the authenticated principal (JWT claims) and
  * the user's quota tier policy. Injected into the agent {@code RuntimeContext} by
@@ -31,6 +33,30 @@ package io.agentscope.saas.core.tenant;
 public record TenantContext(
         String orgId, String userId, String role, String tier, int maxSandboxes, long tokenQuota) {
 
-    /** RuntimeContext attribute key used when storing this context as a string extra (debugging). */
+    /**
+     * RuntimeContext attribute key under which this context is stored as a string extra. The harness
+     * rebuilds the {@link RuntimeContext} in {@code ensureSessionDefaults} via {@code putAll(ctx.getExtra())},
+     * which copies string extras but NOT typed singletons — so this string key is the only storage
+     * that survives that rebuild. Middlewares must therefore read via {@link #from(RuntimeContext)}
+     * (string key), not {@code ctx.get(TenantContext.class)} (typed), which returns {@code null} on
+     * the rebuilt context.
+     */
     public static final String ATTR_KEY = "tenantContext";
+
+    /**
+     * Reads this context from a {@link RuntimeContext}, preferring the typed singleton and falling
+     * back to the {@link #ATTR_KEY} string extra (the only slot that survives the harness's context
+     * rebuild). Returns {@code null} if absent.
+     */
+    public static TenantContext from(RuntimeContext ctx) {
+        if (ctx == null) {
+            return null;
+        }
+        TenantContext typed = ctx.get(TenantContext.class);
+        if (typed != null) {
+            return typed;
+        }
+        Object v = ctx.getExtra().get(ATTR_KEY);
+        return v instanceof TenantContext tc ? tc : null;
+    }
 }

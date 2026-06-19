@@ -49,7 +49,7 @@ public class RateLimitMiddleware implements MiddlewareBase {
             RuntimeContext ctx,
             AgentInput input,
             Function<AgentInput, Flux<AgentEvent>> next) {
-        TenantContext tc = ctx.get(TenantContext.class);
+        TenantContext tc = TenantContext.from(ctx);
         String bucket = tc != null && tc.orgId() != null ? tc.orgId() : "anonymous";
         if (!rateLimiter.tryAcquire(bucket, maxRequests, windowSeconds)) {
             return Flux.error(

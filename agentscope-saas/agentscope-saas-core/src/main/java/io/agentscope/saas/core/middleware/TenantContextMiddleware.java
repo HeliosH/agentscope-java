@@ -43,7 +43,7 @@ public class TenantContextMiddleware implements MiddlewareBase {
             RuntimeContext ctx,
             AgentInput input,
             Function<AgentInput, Flux<AgentEvent>> next) {
-        TenantContext tc = ctx.get(TenantContext.class);
+        TenantContext tc = TenantContext.from(ctx);
         if (tc == null) {
             log.warn(
                     "No TenantContext present on RuntimeContext for agent {}; proceeding as"
