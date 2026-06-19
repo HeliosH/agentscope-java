@@ -68,7 +68,17 @@ saas:
     e2b-sandbox-timeout-seconds: ${SAAS_SANDBOX_E2B_TIMEOUT:300}
     snapshot:
       enabled: ${SAAS_SANDBOX_SNAPSHOT_ENABLED:true}
+      # pg = Postgres BYTEA (dev/H2 fallback, zero infra); minio = S3 object storage (production).
+      backend: ${SAAS_SANDBOX_SNAPSHOT_BACKEND:pg}
       table: ${SAAS_SANDBOX_SNAPSHOT_TABLE:agentscope_sandbox_snapshots}
+    # --- MinIO/S3 snapshot backend (used when snapshot.backend=minio). ---
+    minio:
+      endpoint: ${SAAS_SANDBOX_MINIO_ENDPOINT:http://localhost:9000}
+      access-key: ${SAAS_SANDBOX_MINIO_ACCESS_KEY:minioadmin}
+      secret-key: ${SAAS_SANDBOX_MINIO_SECRET_KEY:minioadmin}
+      bucket: ${SAAS_SANDBOX_MINIO_BUCKET:agentscope-saas}
+      key-prefix: ${SAAS_SANDBOX_MINIO_KEY_PREFIX:snapshots/}
+      region: ${SAAS_SANDBOX_MINIO_REGION:}
   rate-limit:
     max-requests: ${SAAS_RATELIMIT_MAX:60}
     window-seconds: ${SAAS_RATELIMIT_WINDOW:60}

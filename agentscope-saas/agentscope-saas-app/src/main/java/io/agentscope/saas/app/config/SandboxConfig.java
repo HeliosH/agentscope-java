@@ -167,7 +167,15 @@ public class SandboxConfig {
     /**
      * Builds the durable workspace snapshot spec. Without this, sandbox workspaces (including the
      * agent's MEMORY.md) are discarded when the sandbox is stopped or evicted by TTL — the user's
-     * memory would not survive. Backed by the platform's PostgreSQL datastore (no extra infra).
+     * memory would not survive.
+     *
+     * <p>Backend is selected by {@code saas.sandbox.snapshot.backend}:
+     *
+     * <ul>
+     *   <li>{@code pg} (default) — Postgres {@code BYTEA}; zero-infra dev/H2 fallback.
+     *   <li>{@code minio} — S3-compatible object storage; production. Requires a running MinIO/S3
+     *       at {@code saas.sandbox.minio.endpoint}. Object keys are {@code <keyPrefix>/<snapshotId>.tar.gz}.
+     * </ul>
      */
     private SandboxSnapshotSpec buildSnapshotSpec(
             SaasProperties.Sandbox sb, ObjectProvider<DataSource> dataSourceProvider) {
@@ -177,11 +185,24 @@ public class SandboxConfig {
                             + "will be lost when a sandbox is evicted.");
             return null;
         }
+        String backend =
+                sb.getSnapshot().getBackend() == null ? "pg" : sb.getSnapshot().getBackend();
+        if ("minio".equalsIgnoreCase(backend)) {
+            SaasProperties.Sandbox.Minio m = sb.getMinio();
+            return new RemoteSnapshotSpec(
+                    io.agentscope.saas.storage.MinioSnapshotClientFactory.create(
+                            m.getEndpoint(),
+                            m.getAccessKey(),
+                            m.getSecretKey(),
+                            m.getRegion(),
+                            m.getBucket(),
+                            m.getKeyPrefix()));
+        }
         DataSource ds = dataSourceProvider.getIfAvailable();
         if (ds == null) {
             log.warn(
-                    "Sandbox snapshot persistence requested but no DataSource is available; "
-                            + "workspace persistence is disabled.");
+                    "Sandbox snapshot persistence requested (backend=pg) but no DataSource is "
+                            + "available; workspace persistence is disabled.");
             return null;
         }
         return new RemoteSnapshotSpec(new PgRemoteSnapshotClient(ds, sb.getSnapshot().getTable()));

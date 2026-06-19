@@ -220,6 +220,12 @@ public class SaasProperties {
             /** Whether to persist sandbox workspaces to durable storage. */
             private boolean enabled = true;
 
+            /**
+             * Durable storage backend: {@code pg} (Postgres BYTEA, dev/H2 fallback) or {@code minio}
+             * (S3-compatible object storage, production). Defaults to {@code pg} for zero-infra dev.
+             */
+            private String backend = "pg";
+
             /** Storage table for workspace tar archives (JDBC/Postgres backend). */
             private String table = "agentscope_sandbox_snapshots";
 
@@ -231,12 +237,98 @@ public class SaasProperties {
                 this.enabled = enabled;
             }
 
+            public String getBackend() {
+                return backend;
+            }
+
+            public void setBackend(String backend) {
+                this.backend = backend;
+            }
+
             public String getTable() {
                 return table;
             }
 
             public void setTable(String table) {
                 this.table = table;
+            }
+        }
+
+        /**
+         * MinIO/S3 object-storage configuration for the {@code minio} snapshot backend. Only used
+         * when {@code snapshot.backend=minio}. Leave disabled to fall back to Postgres BYTEA.
+         */
+        @NestedConfigurationProperty private final Minio minio = new Minio();
+
+        public Minio getMinio() {
+            return minio;
+        }
+
+        public static class Minio {
+            /** MinIO/S3 endpoint URL (e.g. {@code http://localhost:9000}). */
+            private String endpoint = "http://localhost:9000";
+
+            /** Access key. */
+            private String accessKey = "minioadmin";
+
+            /** Secret key. */
+            private String secretKey = "minioadmin";
+
+            /** Bucket name (created if absent). */
+            private String bucket = "agentscope-saas";
+
+            /** Object key prefix (e.g. {@code "snapshots/"}). */
+            private String keyPrefix = "snapshots/";
+
+            /** AWS region (optional, for non-MinIO S3). */
+            private String region;
+
+            public String getEndpoint() {
+                return endpoint;
+            }
+
+            public void setEndpoint(String endpoint) {
+                this.endpoint = endpoint;
+            }
+
+            public String getAccessKey() {
+                return accessKey;
+            }
+
+            public void setAccessKey(String accessKey) {
+                this.accessKey = accessKey;
+            }
+
+            public String getSecretKey() {
+                return secretKey;
+            }
+
+            public void setSecretKey(String secretKey) {
+                this.secretKey = secretKey;
+            }
+
+            public String getBucket() {
+                return bucket;
+            }
+
+            public void setBucket(String bucket) {
+                this.bucket = bucket;
+            }
+
+            public String getKeyPrefix() {
+                return keyPrefix;
+            }
+
+            public void setKeyPrefix(String keyPrefix) {
+                this.keyPrefix = keyPrefix;
+            }
+
+            public String getRegion() {
+                return region;
+            }
+
+            public void setRegion(String region) {
+                this.region = region;
             }
         }
 

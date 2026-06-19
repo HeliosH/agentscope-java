@@ -36,5 +36,12 @@
             <groupId>io.agentscope</groupId>
             <artifactId>agentscope-harness</artifactId>
         </dependency>
+        <!-- MinIO S3-compatible object storage client (optional snapshot backend) -->
+        <dependency>
+            <groupId>io.minio</groupId>
+            <artifactId>minio</artifactId>
+            <version>8.4.3</version>
+            <optional>true</optional>
+        </dependency>
     </dependencies>
 </project>
