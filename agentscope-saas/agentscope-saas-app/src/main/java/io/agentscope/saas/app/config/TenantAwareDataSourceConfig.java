@@ -32,14 +32,17 @@ import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy;
 
 /**
  * Configures the primary {@link DataSource} so every connection checkout sets the PostgreSQL GUC
- * {@code app.current_org} from {@link TenantContextHolder}, driving Row-Level Security (Flyway V6).
+ * {@code app.current_org} from {@link TenantContextHolder}, driving Row-Level Security (Flyway V6,
+ * hardened by V9).
  *
  * <p>HikariCP 5.x removed {@code IConnectionCustomizer}, so we wrap the pool in a {@link
  * TransactionAwareDataSourceProxy} subclass that issues {@code SET app.current_org} on each {@code
  * getConnection()}. The GUC is session-scoped and overwritten on every checkout, so pooled
  * connections never inherit a prior tenant. When the holder is empty (Flyway migrations, system
- * calls), the GUC is reset to empty → {@code current_setting('app.current_org', true)} returns NULL
- * → RLS denies all tenant rows (safe default). The app DB role must NOT be a superuser/BYPASSRLS.
+ * calls, login before tenant context is resolved), the GUC is set to the empty string. The V9
+ * policies wrap the setting in {@code NULLIF(..., '')}, so both the empty-string and unset cases
+ * collapse to NULL and RLS denies all tenant rows (safe default) rather than throwing on the
+ * {@code ::uuid} cast. The app DB role must NOT be a superuser/BYPASSRLS.
  */
 @Configuration
 public class TenantAwareDataSourceConfig {
@@ -88,7 +91,7 @@ public class TenantAwareDataSourceConfig {
             String orgId = TenantContextHolder.getOrgId();
             String value = sanitize(orgId);
             try (Statement st = conn.createStatement()) {
-                // Empty → current_setting(..., true) returns NULL → RLS denies all tenant rows.
+                // Empty string when no tenant context; V9 policies NULLIF it to NULL → deny all.
                 st.execute("SET app.current_org = '" + value + "'");
             } catch (SQLException e) {
                 log.warn("Failed to SET app.current_org on connection: {}", e.getMessage());
