@@ -21,6 +21,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 /**
  * An org-scoped skill marketplace declaration (Phase F5). One row per (org, marketplace_id);
@@ -44,7 +46,8 @@ public class MarketplaceEntity {
     @Column(name = "type", nullable = false)
     private String type;
 
-    @Column(name = "properties", nullable = false, columnDefinition = "TEXT")
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "properties", nullable = false)
     private String properties;
 
     @Column(name = "created_at", insertable = false, updatable = false)

@@ -88,6 +88,19 @@ public class TenantAwareDataSourceConfig {
         }
 
         private static void applyTenantGuc(Connection conn) {
+            // RLS (V6/V9) is PostgreSQL-only; H2 has no custom-GUC syntax and no RLS, so skip
+            // there.
+            // Avoids a noisy SET-syntax warning on every checkout in H2/local/dev tests.
+            try {
+                if (!"PostgreSQL".equals(conn.getMetaData().getDatabaseProductName())) {
+                    return;
+                }
+            } catch (SQLException e) {
+                log.debug(
+                        "Could not determine DB product; skipping app.current_org GUC: {}",
+                        e.getMessage());
+                return;
+            }
             String orgId = TenantContextHolder.getOrgId();
             String value = sanitize(orgId);
             try (Statement st = conn.createStatement()) {

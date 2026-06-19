@@ -14,13 +14,5 @@
 -- limitations under the License.
 --
 
--- H2 version of V7: same column rename. H2 has a native JSON type that Hibernate's SqlTypes.JSON
--- maps to, matching the PostgreSQL jsonb column. Uses H2 2.x JSON_OBJECT (which escapes string
--- values correctly) to build a single TextBlock, wrapped in a JSON array. QUOTE() does not exist
--- in H2, hence this approach.
-ALTER TABLE chat_messages ADD COLUMN content_json JSON;
-UPDATE chat_messages
-   SET content_json =
-       '[' || JSON_OBJECT(KEY 'type' VALUE 'text', KEY 'text' VALUE content) || ']';
-ALTER TABLE chat_messages DROP COLUMN content;
-ALTER TABLE chat_messages ALTER COLUMN content_json SET NOT NULL;
+-- H2 has no roles/RLS; the V10 app-role grants (PostgreSQL-only) are a no-op here.
+SELECT 1;

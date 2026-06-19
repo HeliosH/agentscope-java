@@ -29,6 +29,14 @@ server:
   port: ${SERVER_PORT:8080}
 
 saas:
+  # Admin/bypass DataSource points at the same H2 in-memory DB (no RLS on H2, so bypass is a no-op,
+  # but the AdminDataSourceConfig bean must still resolve).
+  datasource:
+    admin:
+      url: jdbc:h2:mem:saas;DB_CLOSE_DELAY=-1;MODE=PostgreSQL
+      username: sa
+      password: ""
+      driver-class-name: org.h2.Driver
   model:
     # OpenAI-compatible gateway (e.g. an internal vLLM/Ollama endpoint, or any
     # /v1/chat/completions-compatible service). The framework streams responses.

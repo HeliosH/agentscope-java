@@ -17,8 +17,6 @@ package io.agentscope.saas.app.auth;
 
 import io.agentscope.saas.core.persistence.entity.OrgEntity;
 import io.agentscope.saas.core.persistence.entity.UserEntity;
-import io.agentscope.saas.core.persistence.repo.OrgRepository;
-import io.agentscope.saas.core.persistence.repo.UserRepository;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
@@ -59,18 +57,15 @@ public class AuthController {
     /** Slug of the org self-registered users are placed into (seeded by V2__seed.sql). */
     private static final String DEFAULT_ORG_SLUG = "demo";
 
-    private final UserRepository userRepository;
-    private final OrgRepository orgRepository;
+    private final AuthBootstrapRepository bootstrapRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
 
     public AuthController(
-            UserRepository userRepository,
-            OrgRepository orgRepository,
+            AuthBootstrapRepository bootstrapRepository,
             PasswordEncoder passwordEncoder,
             JwtService jwtService) {
-        this.userRepository = userRepository;
-        this.orgRepository = orgRepository;
+        this.bootstrapRepository = bootstrapRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
     }
@@ -100,13 +95,13 @@ public class AuthController {
             return ResponseEntity.badRequest()
                     .body((Object) Map.of("error", "email and password required"));
         }
-        if (userRepository.findByEmail(request.email()).isPresent()) {
+        if (bootstrapRepository.findUserByEmail(request.email()).isPresent()) {
             return ResponseEntity.status(HttpStatus.CONFLICT)
                     .body((Object) Map.of("error", "email already registered"));
         }
         OrgEntity org =
-                orgRepository
-                        .findBySlug(DEFAULT_ORG_SLUG)
+                bootstrapRepository
+                        .findOrgBySlug(DEFAULT_ORG_SLUG)
                         .orElseThrow(
                                 () ->
                                         new IllegalStateException(
@@ -124,7 +119,7 @@ public class AuthController {
         user.setPasswordHash(passwordEncoder.encode(request.password()));
         user.setRole("member");
         user.setTier("standard");
-        UserEntity saved = userRepository.save(user);
+        UserEntity saved = bootstrapRepository.saveUser(user);
         String token =
                 jwtService.issue(
                         saved.getId().toString(),
@@ -148,7 +143,7 @@ public class AuthController {
             return ResponseEntity.badRequest()
                     .body((Object) Map.of("error", "email and password required"));
         }
-        UserEntity user = userRepository.findByEmail(request.email()).orElse(null);
+        UserEntity user = bootstrapRepository.findUserByEmail(request.email()).orElse(null);
         if (user == null
                 || user.getPasswordHash() == null
                 || !passwordEncoder.matches(request.password(), user.getPasswordHash())) {

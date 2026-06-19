@@ -10,9 +10,11 @@ spring:
   application:
     name: agentscope-saas
   # --- PostgreSQL ---
+  # Primary pool connects as the non-superuser `app` role so Row-Level Security (V6/V9) is enforced.
+  # The `app` role is created by db/provisioning/postgres-app-role.sql (run before first boot).
   datasource:
     url: ${SAAS_DB_URL:jdbc:postgresql://localhost:5432/agentscope_saas}
-    username: ${SAAS_DB_USER:agentscope}
+    username: ${SAAS_DB_USER:app}
     password: ${SAAS_DB_PASSWORD:agentscope}
     driver-class-name: org.postgresql.Driver
   jpa:
@@ -24,6 +26,11 @@ spring:
         jdbc:
           time_zone: UTC
   # --- Flyway (PostgreSQL migrations) ---
+  # Flyway uses the @FlywayDataSource-qualified admin DataSource (AdminDataSourceConfig), which
+  # connects as the superuser `agentscope` — required because V6/V8/V9 ENABLE ROW LEVEL SECURITY
+  # and CREATE/DROP POLICY need the table owner, and V10 ALTER DEFAULT PRIVILEGES needs the
+  # agentscope role. FORCE ROW LEVEL SECURITY applies to the owner, so tenant-data migrations after
+  # V6 must run as a superuser/BYPASSRLS role.
   flyway:
     enabled: true
     locations: classpath:db/migration/postgresql
@@ -31,6 +38,15 @@ spring:
 
 # --- SaaS platform runtime ---
 saas:
+  # Admin/bypass DataSource: connects as the superuser `agentscope` and does NOT set the RLS GUC, so
+  # it bypasses Row-Level Security. Used ONLY for bootstrap queries that run before a tenant context
+  # exists (AuthController login/register) — see AdminDataSourceConfig + AuthBootstrapRepository.
+  datasource:
+    admin:
+      url: ${SAAS_DB_ADMIN_URL:jdbc:postgresql://localhost:5432/agentscope_saas}
+      username: ${SAAS_DB_ADMIN_USER:agentscope}
+      password: ${SAAS_DB_ADMIN_PASSWORD:agentscope}
+      driver-class-name: org.postgresql.Driver
   model:
     # stub | gateway | dashscope. Production should use the internal gateway.
     type: ${SAAS_MODEL_TYPE:gateway}

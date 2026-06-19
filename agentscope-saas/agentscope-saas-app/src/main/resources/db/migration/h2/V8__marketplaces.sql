@@ -14,15 +14,15 @@
 -- limitations under the License.
 --
 
--- H2 variant of V8: org-scoped skill marketplaces. JSONB replaced with TEXT (H2 has no native
--- JSONB); H2 has no RLS so no policy is added here.
+-- H2 variant of V8: org-scoped skill marketplaces. H2 has a native JSON type that Hibernate's
+-- SqlTypes.JSON maps to, matching the PostgreSQL jsonb column; H2 has no RLS so no policy is added.
 
 CREATE TABLE marketplaces (
     id             UUID PRIMARY KEY,
     org_id         UUID NOT NULL,
     marketplace_id VARCHAR(64) NOT NULL,
     type           VARCHAR(16) NOT NULL,
-    properties     TEXT NOT NULL,
+    properties     JSON NOT NULL,
     created_at     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (org_id, marketplace_id)

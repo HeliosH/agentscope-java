@@ -21,6 +21,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 /** A single chat message (user or assistant) within a {@link ChatSessionEntity}. */
 @Entity
@@ -46,7 +48,8 @@ public class ChatMessageEntity {
     @Column(name = "role", nullable = false)
     private String role;
 
-    @Column(name = "content_json", nullable = false, columnDefinition = "TEXT")
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "content_json", nullable = false)
     private String contentJson;
 
     @Column(name = "created_at", insertable = false, updatable = false)
