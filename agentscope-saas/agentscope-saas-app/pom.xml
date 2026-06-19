@@ -85,6 +85,25 @@
             <version>${revision}</version>
         </dependency>
 
+        <!-- Skill marketplace infrastructure (Phase F5): git + nacos skill sources for the
+             org-scoped MarketplacesController. git-repository brings JGit; nacos-skill brings the
+             Nacos skill client; nacos-maintainer-client exposes the paged SkillMaintainerService. -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-skill-git-repository</artifactId>
+            <version>${revision}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-nacos-skill</artifactId>
+            <version>${revision}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.alibaba.nacos</groupId>
+            <artifactId>nacos-maintainer-client</artifactId>
+            <version>3.2.1-2026.03.30</version>
+        </dependency>
+
         <!-- Spring Boot WebFlux (reactive HTTP + SSE) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

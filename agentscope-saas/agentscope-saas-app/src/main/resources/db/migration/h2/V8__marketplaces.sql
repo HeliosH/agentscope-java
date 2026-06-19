@@ -14,12 +14,17 @@
 -- limitations under the License.
 --
 
--- H2 version of V7: same column rename, JSONB replaced with TEXT (H2 has no native JSONB).
--- Uses H2 2.x JSON_OBJECT (which escapes string values correctly) to build a single TextBlock,
--- wrapped in a JSON array. QUOTE() does not exist in H2, hence this approach.
-ALTER TABLE chat_messages ADD COLUMN content_json TEXT;
-UPDATE chat_messages
-   SET content_json =
-       '[' || JSON_OBJECT(KEY 'type' VALUE 'text', KEY 'text' VALUE content) || ']';
-ALTER TABLE chat_messages DROP COLUMN content;
-ALTER TABLE chat_messages ALTER COLUMN content_json SET NOT NULL;
+-- H2 variant of V8: org-scoped skill marketplaces. JSONB replaced with TEXT (H2 has no native
+-- JSONB); H2 has no RLS so no policy is added here.
+
+CREATE TABLE marketplaces (
+    id             UUID PRIMARY KEY,
+    org_id         UUID NOT NULL,
+    marketplace_id VARCHAR(64) NOT NULL,
+    type           VARCHAR(16) NOT NULL,
+    properties     TEXT NOT NULL,
+    created_at     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (org_id, marketplace_id)
+);
+CREATE INDEX ix_marketplaces_org ON marketplaces(org_id);
