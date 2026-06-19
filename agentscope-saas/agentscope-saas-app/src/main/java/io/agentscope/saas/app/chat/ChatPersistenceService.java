@@ -15,6 +15,10 @@
  */
 package io.agentscope.saas.app.chat;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.agentscope.core.message.ContentBlock;
+import io.agentscope.core.message.TextBlock;
 import io.agentscope.saas.core.persistence.entity.AgentEntity;
 import io.agentscope.saas.core.persistence.entity.ChatMessageEntity;
 import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
@@ -23,6 +27,7 @@ import io.agentscope.saas.core.persistence.repo.ChatMessageRepository;
 import io.agentscope.saas.core.persistence.repo.ChatSessionRepository;
 import io.agentscope.saas.core.tenant.TenantContext;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -42,14 +47,17 @@ public class ChatPersistenceService {
     private final AgentRepository agentRepository;
     private final ChatSessionRepository sessionRepository;
     private final ChatMessageRepository messageRepository;
+    private final ObjectMapper objectMapper;
 
     public ChatPersistenceService(
             AgentRepository agentRepository,
             ChatSessionRepository sessionRepository,
-            ChatMessageRepository messageRepository) {
+            ChatMessageRepository messageRepository,
+            ObjectMapper objectMapper) {
         this.agentRepository = agentRepository;
         this.sessionRepository = sessionRepository;
         this.messageRepository = messageRepository;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -125,27 +133,46 @@ public class ChatPersistenceService {
     @Transactional
     public ChatMessageEntity saveUserMessage(
             TenantContext tenant, UUID sessionId, UUID agentId, String content) {
-        ChatMessageEntity msg = newMessage(tenant, sessionId, agentId, "user", content);
+        ChatMessageEntity msg =
+                newMessage(
+                        tenant,
+                        sessionId,
+                        agentId,
+                        "user",
+                        List.of(TextBlock.builder().text(content == null ? "" : content).build()));
         ChatMessageEntity saved = messageRepository.save(msg);
         touchSession(saved.getSessionId());
         return saved;
     }
 
-    /** Persists the final assistant reply and bumps the session's message count/timestamp. */
+    /**
+     * Persists the final assistant reply and bumps the session's message count/timestamp.
+     *
+     * @param blocks the structured content blocks (text + tool calls + reasoning) captured from the
+     *     agent's terminal {@code AgentResultEvent}; serialized to {@code content_json} so the
+     *     history can be faithfully replayed.
+     */
     @Transactional
     public ChatMessageEntity saveAssistantMessage(
-            TenantContext tenant, UUID sessionId, UUID agentId, String content) {
-        if (content == null || content.isBlank()) {
+            TenantContext tenant, UUID sessionId, UUID agentId, List<ContentBlock> blocks) {
+        if (blocks == null || blocks.isEmpty()) {
             return null;
         }
-        ChatMessageEntity msg = newMessage(tenant, sessionId, agentId, "assistant", content);
+        if (blocks.stream().allMatch(b -> b instanceof TextBlock t && t.getText().isEmpty())) {
+            return null;
+        }
+        ChatMessageEntity msg = newMessage(tenant, sessionId, agentId, "assistant", blocks);
         ChatMessageEntity saved = messageRepository.save(msg);
         touchSession(saved.getSessionId());
         return saved;
     }
 
     private ChatMessageEntity newMessage(
-            TenantContext tenant, UUID sessionId, UUID agentId, String role, String content) {
+            TenantContext tenant,
+            UUID sessionId,
+            UUID agentId,
+            String role,
+            List<ContentBlock> blocks) {
         ChatMessageEntity msg = new ChatMessageEntity();
         msg.setId(UUID.randomUUID());
         msg.setOrgId(UUID.fromString(tenant.orgId()));
@@ -153,8 +180,16 @@ public class ChatPersistenceService {
         msg.setSessionId(sessionId);
         msg.setAgentId(agentId);
         msg.setRole(role);
-        msg.setContent(content);
+        msg.setContentJson(serializeBlocks(blocks));
         return msg;
+    }
+
+    private String serializeBlocks(List<ContentBlock> blocks) {
+        try {
+            return objectMapper.writeValueAsString(blocks);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to serialize content blocks", e);
+        }
     }
 
     private void touchSession(UUID sessionId) {

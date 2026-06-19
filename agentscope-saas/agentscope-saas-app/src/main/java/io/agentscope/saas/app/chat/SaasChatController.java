@@ -19,8 +19,10 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.agui.encoder.AguiEventEncoder;
 import io.agentscope.core.agui.event.AguiEvent;
 import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.event.AgentResultEvent;
 import io.agentscope.core.event.ConfirmResult;
 import io.agentscope.core.event.TextBlockDeltaEvent;
+import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.ToolUseBlock;
@@ -182,7 +184,7 @@ public class SaasChatController {
         String threadId = sessionId;
         String runId = UUID.randomUUID().toString();
         AguiEventConverter converter = new AguiEventConverter(threadId, runId);
-        AssistantTextAccumulator accumulator = new AssistantTextAccumulator();
+        AssistantContentAccumulator accumulator = new AssistantContentAccumulator();
 
         RuntimeContext ctx =
                 RuntimeContext.builder()
@@ -224,7 +226,7 @@ public class SaasChatController {
                                                             tenant,
                                                             resolved.sessionId(),
                                                             resolved.agentId(),
-                                                            accumulator.text());
+                                                            accumulator.blocks());
                                                     return (Object) null;
                                                 })
                                         .subscribeOn(Schedulers.boundedElastic())
@@ -311,20 +313,40 @@ public class SaasChatController {
     /** Captured agent + session ids for a resolved run. */
     private record ResolvedRun(UUID agentId, UUID sessionId) {}
 
-    /** Accumulates the assistant's streamed text deltas so the final reply can be persisted. */
-    private static final class AssistantTextAccumulator {
-        private final StringBuilder buffer = new StringBuilder();
+    /**
+     * Captures the assistant's final content blocks so the reply can be persisted as structured
+     * {@code content_json}. Prefers the terminal {@link AgentResultEvent}'s {@link Msg#getContent()}
+     * (text + tool calls + reasoning); falls back to accumulating {@link TextBlockDeltaEvent} deltas
+     * when no result event is emitted (e.g. an interrupted/erroring run).
+     */
+    private static final class AssistantContentAccumulator {
+        private List<ContentBlock> resultBlocks = null;
+        private final StringBuilder textBuffer = new StringBuilder();
 
         void onEvent(AgentEvent event) {
-            if (event instanceof TextBlockDeltaEvent e
+            if (event instanceof AgentResultEvent e && e.getResult() != null) {
+                List<ContentBlock> blocks = e.getResult().getContent();
+                if (blocks != null && !blocks.isEmpty()) {
+                    resultBlocks = blocks;
+                }
+            } else if (event instanceof TextBlockDeltaEvent e
                     && e.getDelta() != null
                     && !e.getDelta().isEmpty()) {
-                buffer.append(e.getDelta());
+                textBuffer.append(e.getDelta());
             }
         }
 
-        String text() {
-            return buffer.toString();
+        List<ContentBlock> blocks() {
+            if (resultBlocks != null) {
+                return resultBlocks;
+            }
+            if (textBuffer.length() == 0) {
+                return List.of();
+            }
+            return List.of(
+                    io.agentscope.core.message.TextBlock.builder()
+                            .text(textBuffer.toString())
+                            .build());
         }
     }
 }

@@ -46,8 +46,8 @@ public class ChatMessageEntity {
     @Column(name = "role", nullable = false)
     private String role;
 
-    @Column(name = "content", nullable = false, columnDefinition = "TEXT")
-    private String content;
+    @Column(name = "content_json", nullable = false, columnDefinition = "TEXT")
+    private String contentJson;
 
     @Column(name = "created_at", insertable = false, updatable = false)
     private OffsetDateTime createdAt;
@@ -100,12 +100,12 @@ public class ChatMessageEntity {
         this.role = role;
     }
 
-    public String getContent() {
-        return content;
+    public String getContentJson() {
+        return contentJson;
     }
 
-    public void setContent(String content) {
-        this.content = content;
+    public void setContentJson(String contentJson) {
+        this.contentJson = contentJson;
     }
 
     public OffsetDateTime getCreatedAt() {

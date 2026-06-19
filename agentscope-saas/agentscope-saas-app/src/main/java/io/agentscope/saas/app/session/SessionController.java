@@ -49,7 +49,7 @@ public class SessionController {
             String id, String agentId, String title, Integer messageCount, String source) {}
 
     /** Message view returned to clients for history replay. */
-    public record MessageView(String id, String role, String content, String createdAt) {}
+    public record MessageView(String id, String role, String contentJson, String createdAt) {}
 
     private final ChatSessionRepository sessionRepository;
     private final ChatMessageRepository messageRepository;
@@ -232,7 +232,7 @@ public class SessionController {
         return new MessageView(
                 e.getId().toString(),
                 e.getRole(),
-                e.getContent(),
+                e.getContentJson(),
                 e.getCreatedAt() == null ? null : e.getCreatedAt().toString());
     }
 }
