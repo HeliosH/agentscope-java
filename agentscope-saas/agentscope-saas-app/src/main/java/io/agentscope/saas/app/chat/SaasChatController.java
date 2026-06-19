@@ -40,9 +40,9 @@ import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -60,22 +60,29 @@ import reactor.core.scheduler.Schedulers;
  * as a pure streaming pass-through.
  */
 @RestController
-@RequestMapping("/api/chat")
 public class SaasChatController {
 
     private static final Logger log = LoggerFactory.getLogger(SaasChatController.class);
 
     /** Chat request payload. {@code confirmResults} resumes a paused HITL run (same sessionId). */
     public record ChatRequest(
-            String agentId,
-            String sessionId,
-            String message,
-            List<ConfirmResultInput> confirmResults) {
+            String sessionId, String message, List<ConfirmResultInput> confirmResults) {
 
         /** A single user confirmation decision for a pending tool call (HITL resume). */
         public record ConfirmResultInput(
                 boolean confirmed, String toolCallId, String toolName, Map<String, Object> input) {}
     }
+
+    /**
+     * Legacy request payload for the deprecated {@code /api/chat/stream} route, which carries {@code
+     * agentId} in the body instead of the path. Retained only until the console frontend switches
+     * to the agent-scoped route (Phase F6).
+     */
+    public record LegacyChatRequest(
+            String agentId,
+            String sessionId,
+            String message,
+            List<ChatRequest.ConfirmResultInput> confirmResults) {}
 
     private final HarnessAgent agent;
     private final TenantResolver tenantResolver;
@@ -89,9 +96,13 @@ public class SaasChatController {
         this.persistence = persistence;
     }
 
-    @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @PostMapping(
+            value = "/api/agents/{agentId}/chat/stream",
+            produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> stream(
-            @AuthenticationPrincipal Jwt jwt, @RequestBody ChatRequest request) {
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String agentId,
+            @RequestBody ChatRequest request) {
         boolean hasConfirm =
                 request != null
                         && request.confirmResults() != null
@@ -108,18 +119,34 @@ public class SaasChatController {
         boolean persistable = isPersistable(tenant);
 
         if (persistable) {
-            return streamingWithPersistence(tenant, request);
+            return streamingWithPersistence(tenant, agentId, request);
         }
-        return streamingWithoutPersistence(tenant, request);
+        return streamingWithoutPersistence(tenant, agentId, request);
+    }
+
+    /**
+     * Deprecated flat route {@code POST /api/chat/stream} that carries {@code agentId} in the body.
+     * Forwards to the agent-scoped route. Remove once the console frontend migrates to {@code
+     * /api/agents/{agentId}/chat/stream} (Phase F6).
+     */
+    @Deprecated(since = "F2", forRemoval = true)
+    @PostMapping(value = "/api/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> streamLegacy(
+            @AuthenticationPrincipal Jwt jwt, @RequestBody LegacyChatRequest legacy) {
+        if (legacy == null || legacy.agentId() == null || legacy.agentId().isBlank()) {
+            return Flux.error(new IllegalArgumentException("agentId is required"));
+        }
+        ChatRequest req =
+                new ChatRequest(legacy.sessionId(), legacy.message(), legacy.confirmResults());
+        return stream(jwt, legacy.agentId(), req);
     }
 
     /** Production path: resolve agent/session, persist user + assistant messages around the run. */
     private Flux<ServerSentEvent<String>> streamingWithPersistence(
-            TenantContext tenant, ChatRequest request) {
+            TenantContext tenant, String agentId, ChatRequest request) {
         return Mono.fromCallable(
                         () -> {
-                            AgentEntity agentEntity =
-                                    persistence.resolveAgent(tenant, request.agentId());
+                            AgentEntity agentEntity = persistence.resolveAgent(tenant, agentId);
                             String message =
                                     request.message() != null && !request.message().isBlank()
                                             ? request.message()
@@ -140,7 +167,7 @@ public class SaasChatController {
 
     /** Dev/bypass path: no persistence, ephemeral session id. */
     private Flux<ServerSentEvent<String>> streamingWithoutPersistence(
-            TenantContext tenant, ChatRequest request) {
+            TenantContext tenant, String agentId, ChatRequest request) {
         String sessionId =
                 request.sessionId() != null && !request.sessionId().isBlank()
                         ? request.sessionId()

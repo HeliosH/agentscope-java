@@ -24,4 +24,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface ChatMessageRepository extends JpaRepository<ChatMessageEntity, UUID> {
 
     List<ChatMessageEntity> findBySessionIdOrderByCreatedAtAsc(UUID sessionId);
+
+    /** Deletes all messages belonging to a session (cascading delete on session removal). */
+    void deleteBySessionId(UUID sessionId);
 }

@@ -15,6 +15,7 @@
  */
 package io.agentscope.saas.app.config;
 
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.permission.PermissionBehavior;
 import io.agentscope.core.permission.PermissionContextState;
@@ -31,10 +32,12 @@ import io.agentscope.saas.core.middleware.RateLimitMiddleware;
 import io.agentscope.saas.core.middleware.TenantContextMiddleware;
 import io.agentscope.saas.core.middleware.UsageMeteringMiddleware;
 import io.agentscope.saas.core.ratelimit.RateLimiter;
+import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.usage.UsageService;
 import io.agentscope.saas.sandbox.SandboxBroker;
 import io.agentscope.saas.sandbox.middleware.SandboxQuotaMiddleware;
 import io.agentscope.saas.sandbox.middleware.SandboxTrackingMiddleware;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -126,7 +129,9 @@ public class AgentConfig {
             BaseStore remoteStore = workspaceStoreProvider.getIfAvailable();
             if (remoteStore != null) {
                 builder.filesystem(
-                        new RemoteFilesystemSpec(remoteStore).isolationScope(IsolationScope.USER));
+                        new RemoteFilesystemSpec(remoteStore)
+                                .isolationScope(IsolationScope.USER)
+                                .namespaceFactory(AgentConfig::tenantNamespace));
                 if (agentCfg.getSkills().isSelfEvolution()) {
                     builder.enableSkillManageTool(true);
                     builder.enableSkillCurator(SkillCuratorConfig.defaults());
@@ -169,5 +174,32 @@ public class AgentConfig {
                     tool, new PermissionRule(tool, null, PermissionBehavior.DENY, "tool_guard"));
         }
         return b.build();
+    }
+
+    /**
+     * Store-namespace factory that adds the {@code org} dimension to the per-user workspace, so
+     * storage keys are physically partitioned by tenant as well as user: {@code [org, orgId, user,
+     * userId]}. Sourced from the {@link TenantContext} carried in the per-call {@link
+     * RuntimeContext}.
+     *
+     * <p>This is the multi-tenant isolation guarantee for the no-sandbox (Redis/MinIO BaseStore)
+     * workspace path: even if two users across orgs happened to share a user id, their workspaces
+     * (MEMORY.md, skills/, memory/, …) remain isolated by the org segment. The per-route segment
+     * (memory/skills/…) is appended by {@link RemoteFilesystemSpec} on top of this.
+     *
+     * <p>When no tenant context is present (e.g. unauthenticated/system calls), degrades to an
+     * {@code _anonymous} namespace so the call still resolves rather than failing.
+     */
+    static List<String> tenantNamespace(RuntimeContext rc) {
+        if (rc == null) {
+            return List.of("org", "_anonymous", "user", "_anonymous");
+        }
+        TenantContext tc = rc.get(TenantContext.class);
+        if (tc == null) {
+            return List.of("org", "_anonymous", "user", "_anonymous");
+        }
+        String orgId = tc.orgId() != null && !tc.orgId().isBlank() ? tc.orgId() : "_anonymous";
+        String userId = tc.userId() != null && !tc.userId().isBlank() ? tc.userId() : "_anonymous";
+        return List.of("org", orgId, "user", userId);
     }
 }

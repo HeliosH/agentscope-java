@@ -79,6 +79,7 @@ public class RemoteFilesystemSpec {
     private String anonymousUserId = "_default";
     private IsolationScope isolationScope = IsolationScope.USER;
     private WorkspaceIndex workspaceIndex = null;
+    private NamespaceFactory namespaceFactoryOverride = null;
 
     /**
      * Creates a remote filesystem spec that defers store resolution to
@@ -157,6 +158,29 @@ public class RemoteFilesystemSpec {
 
     public IsolationScope getIsolationScope() {
         return isolationScope;
+    }
+
+    /**
+     * Overrides the default store-namespace derivation with a custom factory.
+     *
+     * <p>When set, this factory <em>replaces</em> the {@link IsolationScope}-based namespace
+     * (e.g. the default {@code [agents, agentId, users, userId]} for {@link IsolationScope#USER}).
+     * The per-route segment (e.g. {@code memory}, {@code skills}) is still appended by this spec on
+     * top of whatever the factory returns, so the factory should produce the <em>identity</em>
+     * portion only (org/user/agent), not the route.
+     *
+     * <p>This is the extension point for multi-tenant deployments that need an extra dimension —
+     * e.g. an {@code org} segment — in the namespace, sourced from a tenant context carried in the
+     * {@link io.agentscope.core.agent.RuntimeContext}. Without it, cross-tenant users sharing a
+     * user id (rare) or a desire to physically partition storage by org cannot be expressed.
+     *
+     * @param factory namespace factory; {@code null} clears the override and restores scope-based
+     *     derivation
+     * @return this spec
+     */
+    public RemoteFilesystemSpec namespaceFactory(NamespaceFactory factory) {
+        this.namespaceFactoryOverride = factory;
+        return this;
     }
 
     /**
@@ -287,6 +311,9 @@ public class RemoteFilesystemSpec {
 
     private NamespaceFactory storeNamespace(String agentId) {
         return rc -> {
+            if (namespaceFactoryOverride != null) {
+                return namespaceFactoryOverride.getNamespace(rc);
+            }
             String uid = rc != null ? rc.getUserId() : null;
             String sid = rc != null ? rc.getSessionId() : null;
 
