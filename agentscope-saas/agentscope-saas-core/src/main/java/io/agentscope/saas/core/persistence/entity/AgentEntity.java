@@ -21,6 +21,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 /** An org-scoped agent definition owned by a user. */
 @Entity
@@ -46,8 +48,30 @@ public class AgentEntity {
     @Column(name = "status")
     private String status;
 
+    @Column(name = "description")
+    private String description;
+
+    @Column(name = "sys_prompt")
+    private String sysPrompt;
+
+    @Column(name = "max_iters")
+    private Integer maxIters;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "tools")
+    private String tools;
+
+    @Column(name = "workspace_path")
+    private String workspacePath;
+
+    @Column(name = "builtin", nullable = false)
+    private boolean builtin;
+
     @Column(name = "created_at", insertable = false, updatable = false)
     private OffsetDateTime createdAt;
+
+    @Column(name = "updated_at")
+    private OffsetDateTime updatedAt;
 
     public UUID getId() {
         return id;
@@ -99,5 +123,61 @@ public class AgentEntity {
 
     public OffsetDateTime getCreatedAt() {
         return createdAt;
+    }
+
+    public String getDescription() {
+        return description;
+    }
+
+    public void setDescription(String description) {
+        this.description = description;
+    }
+
+    public String getSysPrompt() {
+        return sysPrompt;
+    }
+
+    public void setSysPrompt(String sysPrompt) {
+        this.sysPrompt = sysPrompt;
+    }
+
+    public Integer getMaxIters() {
+        return maxIters;
+    }
+
+    public void setMaxIters(Integer maxIters) {
+        this.maxIters = maxIters;
+    }
+
+    public String getTools() {
+        return tools;
+    }
+
+    public void setTools(String tools) {
+        this.tools = tools;
+    }
+
+    public String getWorkspacePath() {
+        return workspacePath;
+    }
+
+    public void setWorkspacePath(String workspacePath) {
+        this.workspacePath = workspacePath;
+    }
+
+    public boolean isBuiltin() {
+        return builtin;
+    }
+
+    public void setBuiltin(boolean builtin) {
+        this.builtin = builtin;
+    }
+
+    public OffsetDateTime getUpdatedAt() {
+        return updatedAt;
+    }
+
+    public void setUpdatedAt(OffsetDateTime updatedAt) {
+        this.updatedAt = updatedAt;
     }
 }

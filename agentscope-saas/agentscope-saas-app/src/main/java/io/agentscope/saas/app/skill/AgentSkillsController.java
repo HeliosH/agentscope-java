@@ -16,6 +16,7 @@
 package io.agentscope.saas.app.skill;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
@@ -23,9 +24,13 @@ import io.agentscope.harness.agent.filesystem.model.FileInfo;
 import io.agentscope.harness.agent.filesystem.model.FileUploadResponse;
 import io.agentscope.harness.agent.filesystem.model.LsResult;
 import io.agentscope.harness.agent.filesystem.model.ReadResult;
+import io.agentscope.saas.app.marketplace.MarketSkillContent;
+import io.agentscope.saas.app.marketplace.Marketplace;
+import io.agentscope.saas.app.marketplace.MarketplaceRegistry;
 import io.agentscope.saas.core.persistence.entity.AgentEntity;
 import io.agentscope.saas.core.persistence.repo.AgentRepository;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -42,6 +47,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -67,6 +73,7 @@ public class AgentSkillsController {
 
     private static final Logger log = LoggerFactory.getLogger(AgentSkillsController.class);
     private static final RuntimeContext FS_RC = RuntimeContext.empty();
+    private static final String INSTALL_META_FILE = "_install.meta.json";
     private static final Pattern FRONT_MATTER =
             Pattern.compile("^---\\s*\\n(.*?)\\n---\\s*\\n", Pattern.DOTALL);
     private static final Pattern DESCRIPTION_LINE =
@@ -76,10 +83,18 @@ public class AgentSkillsController {
 
     private final HarnessAgent agent;
     private final AgentRepository agentRepository;
+    private final MarketplaceRegistry marketplaceRegistry;
+    private final ObjectMapper objectMapper;
 
-    public AgentSkillsController(HarnessAgent agent, AgentRepository agentRepository) {
+    public AgentSkillsController(
+            HarnessAgent agent,
+            AgentRepository agentRepository,
+            MarketplaceRegistry marketplaceRegistry,
+            ObjectMapper objectMapper) {
         this.agent = agent;
         this.agentRepository = agentRepository;
+        this.marketplaceRegistry = marketplaceRegistry;
+        this.objectMapper = objectMapper;
     }
 
     @GetMapping("/workspace")
@@ -189,6 +204,100 @@ public class AgentSkillsController {
     }
 
     // -----------------------------------------------------------------
+    //  Marketplace install
+    // -----------------------------------------------------------------
+
+    /**
+     * Installs a skill from a registered marketplace into the agent's workspace. Writes
+     * {@code skills/<target>/SKILL.md} plus any resources and a {@code _install.meta.json} sidecar
+     * recording the marketplace origin. 409 on conflict unless {@code overwrite=true}.
+     */
+    @PostMapping("/workspace/marketplace-install")
+    public Mono<WorkspaceSkillInfo> installFromMarketplace(
+            @PathVariable String agentId,
+            @RequestBody MarketplaceInstallRequest req,
+            @AuthenticationPrincipal Jwt jwt) {
+        UUID orgId = orgId(jwt);
+        return Mono.fromCallable(
+                        () -> {
+                            if (req == null
+                                    || req.marketplaceId() == null
+                                    || req.marketplaceId().isBlank()
+                                    || req.skillName() == null
+                                    || req.skillName().isBlank()) {
+                                throw new ResponseStatusException(
+                                        HttpStatus.BAD_REQUEST,
+                                        "marketplaceId and skillName are required");
+                            }
+                            AbstractFilesystem fs = resolveFilesystem(orgId, userId(jwt), agentId);
+                            Marketplace mp =
+                                    marketplaceRegistry
+                                            .find(orgId, req.marketplaceId())
+                                            .orElseThrow(
+                                                    () ->
+                                                            new ResponseStatusException(
+                                                                    HttpStatus.NOT_FOUND,
+                                                                    "Marketplace not found: "
+                                                                            + req.marketplaceId()));
+                            MarketSkillContent skill;
+                            try {
+                                skill = mp.fetch(req.skillName());
+                            } catch (RuntimeException e) {
+                                throw new ResponseStatusException(
+                                        HttpStatus.BAD_GATEWAY,
+                                        "Marketplace fetch failed: " + e.getMessage());
+                            }
+                            if (skill == null) {
+                                throw new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND,
+                                        "Skill '" + req.skillName() + "' not found in marketplace");
+                            }
+                            String targetName =
+                                    (req.targetName() != null && !req.targetName().isBlank())
+                                            ? req.targetName()
+                                            : skill.name();
+                            validateSkillName(targetName);
+                            boolean overwrite = Boolean.TRUE.equals(req.overwrite());
+                            if (fs.exists(null, "/skills/" + targetName) && !overwrite) {
+                                throw new ResponseStatusException(
+                                        HttpStatus.CONFLICT,
+                                        "Workspace skill already exists: " + targetName);
+                            }
+                            String markdown = skill.markdown();
+                            if (markdown == null || markdown.isBlank()) {
+                                throw new ResponseStatusException(
+                                        HttpStatus.BAD_GATEWAY,
+                                        "Marketplace returned empty SKILL.md for: "
+                                                + req.skillName());
+                            }
+                            writeUtf8(fs, "skills/" + targetName + "/SKILL.md", markdown);
+                            if (skill.resources() != null) {
+                                for (Map.Entry<String, String> e : skill.resources().entrySet()) {
+                                    String rel = e.getKey();
+                                    if (rel == null || rel.isBlank()) continue;
+                                    String safe = sanitiseRelativePath(rel);
+                                    writeUtf8(
+                                            fs,
+                                            "skills/" + targetName + "/" + safe,
+                                            e.getValue() != null ? e.getValue() : "");
+                                }
+                            }
+                            SkillMarketplaceMeta meta =
+                                    new SkillMarketplaceMeta(
+                                            mp.type(),
+                                            mp.displayLocation(),
+                                            skill.name(),
+                                            Instant.now().toString());
+                            writeUtf8(
+                                    fs,
+                                    "skills/" + targetName + "/" + INSTALL_META_FILE,
+                                    objectMapper.writeValueAsString(meta));
+                            return readWorkspaceSkill(fs, targetName);
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    // -----------------------------------------------------------------
     //  Tenant resolution
     // -----------------------------------------------------------------
 
@@ -231,6 +340,8 @@ public class AgentSkillsController {
             name = dirName;
         }
         SkillSize size = computeSize(fs, dirName);
+        SkillMarketplaceMeta meta = readInstallMeta(fs, dirName);
+        String origin = meta != null ? "marketplace" : "custom";
         return new WorkspaceSkillInfo(
                 dirName,
                 name,
@@ -239,7 +350,19 @@ public class AgentSkillsController {
                 size.resourceCount(),
                 fs.exists(null, "/skills/" + dirName + "/references"),
                 fs.exists(null, "/skills/" + dirName + "/scripts"),
-                "custom");
+                origin,
+                meta);
+    }
+
+    /** Reads the {@code _install.meta.json} sidecar if present (marks a skill as marketplace-installed). */
+    private static SkillMarketplaceMeta readInstallMeta(AbstractFilesystem fs, String dirName) {
+        String json = readUtf8(fs, "/skills/" + dirName + "/" + INSTALL_META_FILE);
+        if (json == null || json.isBlank()) return null;
+        try {
+            return new ObjectMapper().readValue(json, SkillMarketplaceMeta.class);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static Map<String, String> collectResources(AbstractFilesystem fs, String dirName) {
@@ -397,7 +520,17 @@ public class AgentSkillsController {
             int resourceCount,
             boolean hasReferences,
             boolean hasScripts,
-            String origin) {}
+            String origin,
+            SkillMarketplaceMeta marketplace) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record SkillMarketplaceMeta(
+            String repoType, String repoLocation, String originalName, String installedAt) {}
+
+    /** Request body for {@code POST /workspace/marketplace-install}. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record MarketplaceInstallRequest(
+            String marketplaceId, String skillName, String targetName, Boolean overwrite) {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record WorkspaceSkillDetail(

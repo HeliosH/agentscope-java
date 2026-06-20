@@ -49,6 +49,15 @@ public class ChatSessionEntity {
     @Column(name = "source")
     private String source;
 
+    @Column(name = "label")
+    private String label;
+
+    @Column(name = "unread", nullable = false)
+    private boolean unread;
+
+    @Column(name = "last_message")
+    private String lastMessage;
+
     @Column(name = "created_at", insertable = false, updatable = false)
     private OffsetDateTime createdAt;
 
@@ -109,6 +118,30 @@ public class ChatSessionEntity {
 
     public void setSource(String source) {
         this.source = source;
+    }
+
+    public String getLabel() {
+        return label;
+    }
+
+    public void setLabel(String label) {
+        this.label = label;
+    }
+
+    public boolean isUnread() {
+        return unread;
+    }
+
+    public void setUnread(boolean unread) {
+        this.unread = unread;
+    }
+
+    public String getLastMessage() {
+        return lastMessage;
+    }
+
+    public void setLastMessage(String lastMessage) {
+        this.lastMessage = lastMessage;
     }
 
     public OffsetDateTime getCreatedAt() {

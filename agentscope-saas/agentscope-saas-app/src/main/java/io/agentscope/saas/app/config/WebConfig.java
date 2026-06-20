@@ -39,8 +39,14 @@ public class WebConfig {
     @Bean
     public RouterFunction<ServerResponse> spaRouter() {
         Resource index = new ClassPathResource("static/index.html");
+        // Catch-all for any non-API, non-static-asset GET so client-side routes
+        // (/agents/:id/sessions, /login, etc.) all serve index.html. API + asset paths are negated
+        // so they reach their handlers / the resource resolver.
         return RouterFunctions.route(
-                GET("/").or(GET("/login")).or(GET("/chat")).and(path("/api/**").negate()),
+                GET("/**")
+                        .and(path("/api/**").negate())
+                        .and(path("/assets/**").negate())
+                        .and(path("/actuator/**").negate()),
                 request -> {
                     if (!index.exists()) {
                         return ServerResponse.notFound().build();

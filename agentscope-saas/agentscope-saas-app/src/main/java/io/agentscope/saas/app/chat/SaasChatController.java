@@ -30,6 +30,7 @@ import io.agentscope.core.util.JsonUtils;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.saas.core.persistence.entity.AgentEntity;
 import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
+import io.agentscope.saas.core.persistence.repo.ChatSessionRepository;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantResolver;
 import java.util.HashMap;
@@ -42,6 +43,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -89,13 +91,53 @@ public class SaasChatController {
     private final HarnessAgent agent;
     private final TenantResolver tenantResolver;
     private final ChatPersistenceService persistence;
+    private final ChatSessionRepository sessionRepository;
     private final AguiEventEncoder encoder = new AguiEventEncoder();
 
     public SaasChatController(
-            HarnessAgent agent, TenantResolver tenantResolver, ChatPersistenceService persistence) {
+            HarnessAgent agent,
+            TenantResolver tenantResolver,
+            ChatPersistenceService persistence,
+            ChatSessionRepository sessionRepository) {
         this.agent = agent;
         this.tenantResolver = tenantResolver;
         this.persistence = persistence;
+        this.sessionRepository = sessionRepository;
+    }
+
+    /**
+     * Returns the caller's most-recent session for the agent, if any. paw's chat page calls this on
+     * mount to decide whether to fetch turns. {@code sessionKey} equals the session UUID string.
+     */
+    public record CurrentSessionResponse(String sessionKey, boolean exists) {}
+
+    @GetMapping("/api/agents/{agentId}/chat/session")
+    public Mono<CurrentSessionResponse> currentSession(
+            @AuthenticationPrincipal Jwt jwt, @PathVariable String agentId) {
+        Map<String, Object> claims = jwt != null ? jwt.getClaims() : Map.of();
+        TenantContext tenant = tenantResolver.resolve(claims);
+        if (!isUuid(tenant.orgId()) || !isUuid(tenant.userId())) {
+            return Mono.just(new CurrentSessionResponse(null, false));
+        }
+        UUID orgId = UUID.fromString(tenant.orgId());
+        UUID userId = UUID.fromString(tenant.userId());
+        UUID agentUuid;
+        try {
+            agentUuid = UUID.fromString(agentId);
+        } catch (IllegalArgumentException e) {
+            return Mono.just(new CurrentSessionResponse(null, false));
+        }
+        return Mono.fromCallable(
+                        () ->
+                                sessionRepository
+                                        .findFirstByOrgIdAndUserIdAndAgentIdOrderByUpdatedAtDesc(
+                                                orgId, userId, agentUuid)
+                                        .map(
+                                                s ->
+                                                        new CurrentSessionResponse(
+                                                                s.getId().toString(), true))
+                                        .orElseGet(() -> new CurrentSessionResponse(null, false)))
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
     @PostMapping(

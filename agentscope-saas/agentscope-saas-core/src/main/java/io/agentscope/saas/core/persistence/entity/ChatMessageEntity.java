@@ -52,6 +52,20 @@ public class ChatMessageEntity {
     @Column(name = "content_json", nullable = false)
     private String contentJson;
 
+    @Column(name = "parent_id")
+    private UUID parentId;
+
+    @Column(name = "tool_name")
+    private String toolName;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "tool_input")
+    private String toolInput;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "tool_result")
+    private String toolResult;
+
     @Column(name = "created_at", insertable = false, updatable = false)
     private OffsetDateTime createdAt;
 
@@ -109,6 +123,38 @@ public class ChatMessageEntity {
 
     public void setContentJson(String contentJson) {
         this.contentJson = contentJson;
+    }
+
+    public UUID getParentId() {
+        return parentId;
+    }
+
+    public void setParentId(UUID parentId) {
+        this.parentId = parentId;
+    }
+
+    public String getToolName() {
+        return toolName;
+    }
+
+    public void setToolName(String toolName) {
+        this.toolName = toolName;
+    }
+
+    public String getToolInput() {
+        return toolInput;
+    }
+
+    public void setToolInput(String toolInput) {
+        this.toolInput = toolInput;
+    }
+
+    public String getToolResult() {
+        return toolResult;
+    }
+
+    public void setToolResult(String toolResult) {
+        this.toolResult = toolResult;
     }
 
     public OffsetDateTime getCreatedAt() {

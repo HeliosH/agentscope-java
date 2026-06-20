@@ -90,6 +90,8 @@ public class ChatPersistenceService {
                             entity.setName(DEFAULT_AGENT_NAME);
                             entity.setVisibility("private");
                             entity.setStatus("active");
+                            entity.setBuiltin(false);
+                            entity.setUpdatedAt(OffsetDateTime.now());
                             return agentRepository.save(entity);
                         });
     }
@@ -123,8 +125,10 @@ public class ChatPersistenceService {
         entity.setUserId(userId);
         entity.setAgentId(agentId);
         entity.setTitle(truncate(firstMessage, 500));
+        entity.setLabel(truncate(firstMessage, 255));
         entity.setMessageCount(0);
         entity.setSource("user");
+        entity.setUnread(false);
         entity.setUpdatedAt(OffsetDateTime.now());
         return sessionRepository.save(entity);
     }
@@ -141,7 +145,7 @@ public class ChatPersistenceService {
                         "user",
                         List.of(TextBlock.builder().text(content == null ? "" : content).build()));
         ChatMessageEntity saved = messageRepository.save(msg);
-        touchSession(saved.getSessionId());
+        touchSession(saved.getSessionId(), content);
         return saved;
     }
 
@@ -163,8 +167,70 @@ public class ChatPersistenceService {
         }
         ChatMessageEntity msg = newMessage(tenant, sessionId, agentId, "assistant", blocks);
         ChatMessageEntity saved = messageRepository.save(msg);
-        touchSession(saved.getSessionId());
+        touchSession(saved.getSessionId(), extractText(blocks));
         return saved;
+    }
+
+    private static String extractText(List<ContentBlock> blocks) {
+        StringBuilder sb = new StringBuilder();
+        for (ContentBlock b : blocks) {
+            if (b instanceof TextBlock t && t.getText() != null) {
+                sb.append(t.getText());
+            }
+        }
+        return sb.length() == 0 ? null : sb.toString();
+    }
+
+    /**
+     * Soft-resets a session: deletes all its messages and zeroes the bookkeeping fields, keeping the
+     * session row. The caller has already verified the session belongs to the (org, user, agent)
+     * triple; this method performs the destructive writes inside a transaction so the derived
+     * {@code deleteBySessionId} query (which requires an active transaction) succeeds on the
+     * boundedElastic worker.
+     */
+    @Transactional
+    public void resetSession(UUID sessionId) {
+        messageRepository.deleteBySessionId(sessionId);
+        sessionRepository
+                .findById(sessionId)
+                .ifPresent(
+                        s -> {
+                            s.setMessageCount(0);
+                            s.setLastMessage(null);
+                            s.setUnread(false);
+                            sessionRepository.save(s);
+                        });
+    }
+
+    /**
+     * Hard-deletes a session and all of its messages. Wrapped in a transaction for the same reason as
+     * {@link #resetSession(UUID)}: the derived delete query needs a transaction to run on
+     * boundedElastic.
+     */
+    @Transactional
+    public void deleteSession(UUID sessionId) {
+        messageRepository.deleteBySessionId(sessionId);
+        sessionRepository.deleteById(sessionId);
+    }
+
+    /**
+     * Cascades an agent's deletion to its sessions and messages, then deletes the agent itself. All
+     * writes run in one transaction so the per-session {@code deleteBySessionId} derived queries
+     * succeed on boundedElastic. The per-user workspace is intentionally NOT touched (shared across
+     * the user's agents). The caller is responsible for the org/owner authorization check on the
+     * agent; this method trusts the entity it is handed.
+     */
+    @Transactional
+    public void deleteAgentCascade(AgentEntity agent) {
+        sessionRepository
+                .findByOrgIdAndUserIdAndAgentIdOrderByUpdatedAtDesc(
+                        agent.getOrgId(), agent.getUserId(), agent.getId())
+                .forEach(
+                        s -> {
+                            messageRepository.deleteBySessionId(s.getId());
+                            sessionRepository.delete(s);
+                        });
+        agentRepository.delete(agent);
     }
 
     private ChatMessageEntity newMessage(
@@ -192,7 +258,7 @@ public class ChatPersistenceService {
         }
     }
 
-    private void touchSession(UUID sessionId) {
+    private void touchSession(UUID sessionId, String lastMessagePreview) {
         sessionRepository
                 .findById(sessionId)
                 .ifPresent(
@@ -200,6 +266,11 @@ public class ChatPersistenceService {
                             s.setMessageCount(
                                     (s.getMessageCount() == null ? 0 : s.getMessageCount()) + 1);
                             s.setUpdatedAt(OffsetDateTime.now());
+                            if (lastMessagePreview != null) {
+                                s.setLastMessage(truncate(lastMessagePreview, 2000));
+                            }
+                            // New activity since the user's last view → flag the inbox row.
+                            s.setUnread(true);
                             sessionRepository.save(s);
                         });
     }

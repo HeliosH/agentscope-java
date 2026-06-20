@@ -33,4 +33,7 @@ public interface ChatSessionRepository extends JpaRepository<ChatSessionEntity, 
 
     Optional<ChatSessionEntity> findByIdAndOrgIdAndUserIdAndAgentId(
             UUID id, UUID orgId, UUID userId, UUID agentId);
+
+    Optional<ChatSessionEntity> findFirstByOrgIdAndUserIdAndAgentIdOrderByUpdatedAtDesc(
+            UUID orgId, UUID userId, UUID agentId);
 }

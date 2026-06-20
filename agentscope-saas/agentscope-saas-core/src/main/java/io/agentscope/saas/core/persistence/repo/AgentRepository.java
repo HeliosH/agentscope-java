@@ -30,5 +30,9 @@ public interface AgentRepository extends JpaRepository<AgentEntity, UUID> {
 
     List<AgentEntity> findByOrgIdAndUserIdOrderByIdAsc(UUID orgId, UUID userId);
 
+    List<AgentEntity> findByOrgIdAndUserIdOrderByUpdatedAtDesc(UUID orgId, UUID userId);
+
     Optional<AgentEntity> findByOrgIdAndUserIdAndName(UUID orgId, UUID userId, String name);
+
+    long deleteByIdAndOrgId(UUID id, UUID orgId);
 }

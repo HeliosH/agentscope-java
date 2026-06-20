@@ -15,10 +15,15 @@
  */
 package io.agentscope.saas.app.session;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.agentscope.saas.app.chat.ChatPersistenceService;
 import io.agentscope.saas.core.persistence.entity.ChatMessageEntity;
 import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
 import io.agentscope.saas.core.persistence.repo.ChatMessageRepository;
 import io.agentscope.saas.core.persistence.repo.ChatSessionRepository;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
@@ -27,87 +32,93 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 /**
  * Org/user-scoped chat session listing and history replay, nested under the agent resource
- * ({@code /api/agents/{agentId}/sessions}). Sessions are created lazily by the chat endpoint; this
- * controller exposes the inbox for the authenticated user within their tenant, plus the message
- * history of a session for replay after refresh/re-login, plus session deletion.
+ * ({@code /api/agents/{agentId}/sessions}). Sessions are created lazily by the chat endpoint.
+ *
+ * <p>Two shapes are exposed:
+ *
+ * <ul>
+ *   <li><b>paw inbox/turns</b> — {@code GET .../inbox}, {@code GET .../{sessionKey}}, {@code POST
+ *       .../{sessionKey}/reset}, {@code PATCH .../{sessionKey}/read}, {@code DELETE .../{sessionKey}}.
+ *       The session key is the session UUID string (zero mapping), matching paw's frontend contract.
+ *       Turns are reconstructed from the persisted {@code content_json} blocks into paw's {@code
+ *       TurnEntry} shape.
+ *   <li><b>legacy message list</b> — {@code GET .../{sessionId}/messages} retained for back-compat.
+ * </ul>
  *
  * <p>Every query is filtered by {@code (orgId, userId, agentId)} so a user only ever sees sessions
- * for agents they own within their tenant.
+ * for agents they own within their tenant; RLS is the second layer of defense.
  */
 @RestController
 public class SessionController {
 
-    /** Session view returned to clients. */
+    private final ChatSessionRepository sessionRepository;
+    private final ChatMessageRepository messageRepository;
+    private final ChatPersistenceService persistenceService;
+    private final ObjectMapper objectMapper;
+
+    public SessionController(
+            ChatSessionRepository sessionRepository,
+            ChatMessageRepository messageRepository,
+            ChatPersistenceService persistenceService,
+            ObjectMapper objectMapper) {
+        this.sessionRepository = sessionRepository;
+        this.messageRepository = messageRepository;
+        this.persistenceService = persistenceService;
+        this.objectMapper = objectMapper;
+    }
+
+    // -----------------------------------------------------------------
+    //  Legacy session views (pre-paw shape) — retained for back-compat
+    // -----------------------------------------------------------------
+
     public record SessionView(
             String id, String agentId, String title, Integer messageCount, String source) {}
 
-    /** Message view returned to clients for history replay. */
     public record MessageView(String id, String role, String contentJson, String createdAt) {}
-
-    private final ChatSessionRepository sessionRepository;
-    private final ChatMessageRepository messageRepository;
-
-    public SessionController(
-            ChatSessionRepository sessionRepository, ChatMessageRepository messageRepository) {
-        this.sessionRepository = sessionRepository;
-        this.messageRepository = messageRepository;
-    }
 
     @GetMapping("/api/agents/{agentId}/sessions")
     public Mono<ResponseEntity<List<SessionView>>> list(
             @AuthenticationPrincipal Jwt jwt, @PathVariable String agentId) {
-        UUID orgId = UUID.fromString(jwt.getClaimAsString("org_id"));
-        UUID userId = UUID.fromString(jwt.getClaimAsString("user_id"));
+        UUID orgId = orgId(jwt);
+        UUID userId = userId(jwt);
         UUID agentUuid = parseUuid(agentId);
-        if (agentUuid == null) {
-            return Mono.just(ResponseEntity.badRequest().build());
-        }
         return Mono.fromCallable(
                         () ->
                                 sessionRepository
                                         .findByOrgIdAndUserIdAndAgentIdOrderByUpdatedAtDesc(
                                                 orgId, userId, agentUuid)
                                         .stream()
-                                        .map(SessionController::toView)
+                                        .map(SessionController::toLegacyView)
                                         .toList())
                 .subscribeOn(Schedulers.boundedElastic())
                 .map(ResponseEntity::ok);
     }
 
-    /**
-     * Returns the ordered message history of a session. The session must belong to the caller
-     * (org + user + agent), otherwise 404 — users cannot read another user's history.
-     */
     @GetMapping("/api/agents/{agentId}/sessions/{sessionId}/messages")
     public Mono<ResponseEntity<List<MessageView>>> messages(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable String agentId,
             @PathVariable String sessionId) {
-        UUID orgId = UUID.fromString(jwt.getClaimAsString("org_id"));
-        UUID userId = UUID.fromString(jwt.getClaimAsString("user_id"));
+        UUID orgId = orgId(jwt);
+        UUID userId = userId(jwt);
         UUID agentUuid = parseUuid(agentId);
         UUID sessionUuid = parseUuid(sessionId);
-        if (agentUuid == null || sessionUuid == null) {
-            return Mono.just(ResponseEntity.badRequest().build());
-        }
         return Mono.fromCallable(
                         () -> {
                             ChatSessionEntity session =
-                                    sessionRepository
-                                            .findByIdAndOrgIdAndUserIdAndAgentId(
-                                                    sessionUuid, orgId, userId, agentUuid)
-                                            .orElse(null);
-                            if (session == null) {
-                                return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                                        .<List<MessageView>>build();
-                            }
+                                    requireSession(orgId, userId, agentUuid, sessionUuid);
                             List<MessageView> views =
                                     messageRepository
                                             .findBySessionIdOrderByCreatedAtAsc(session.getId())
@@ -119,107 +130,199 @@ public class SessionController {
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
-    /**
-     * Deletes a session and its messages. The session must belong to the caller (org + user +
-     * agent), otherwise 404 — users cannot delete another user's sessions.
-     */
-    @DeleteMapping("/api/agents/{agentId}/sessions/{sessionId}")
-    public Mono<ResponseEntity<Void>> delete(
+    // -----------------------------------------------------------------
+    //  paw inbox / turns / reset / read (sessionKey == sessionId.toString())
+    // -----------------------------------------------------------------
+
+    @GetMapping("/api/agents/{agentId}/sessions/inbox")
+    public Mono<List<InboxEntry>> inbox(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable String agentId,
-            @PathVariable String sessionId) {
-        UUID orgId = UUID.fromString(jwt.getClaimAsString("org_id"));
-        UUID userId = UUID.fromString(jwt.getClaimAsString("user_id"));
+            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(defaultValue = "false") boolean unreadOnly) {
+        UUID orgId = orgId(jwt);
+        UUID userId = userId(jwt);
         UUID agentUuid = parseUuid(agentId);
-        UUID sessionUuid = parseUuid(sessionId);
-        if (agentUuid == null || sessionUuid == null) {
-            return Mono.just(ResponseEntity.badRequest().build());
-        }
         return Mono.fromCallable(
                         () -> {
-                            ChatSessionEntity session =
+                            int effectiveLimit = limit <= 0 ? 50 : Math.min(limit, 500);
+                            List<ChatSessionEntity> sessions =
                                     sessionRepository
-                                            .findByIdAndOrgIdAndUserIdAndAgentId(
-                                                    sessionUuid, orgId, userId, agentUuid)
-                                            .orElse(null);
-                            if (session == null) {
-                                return new ResponseEntity<Void>(HttpStatus.NOT_FOUND);
+                                            .findByOrgIdAndUserIdAndAgentIdOrderByUpdatedAtDesc(
+                                                    orgId, userId, agentUuid);
+                            List<InboxEntry> out = new ArrayList<>();
+                            for (ChatSessionEntity s : sessions) {
+                                if (unreadOnly && !s.isUnread()) continue;
+                                out.add(
+                                        new InboxEntry(
+                                                s.getId().toString(),
+                                                s.getId().toString(),
+                                                s.getAgentId() == null
+                                                        ? null
+                                                        : s.getAgentId().toString(),
+                                                s.getLabel() != null ? s.getLabel() : s.getTitle(),
+                                                toEpochMillis(s.getUpdatedAt()),
+                                                preview(s.getLastMessage()),
+                                                s.isUnread()));
+                                if (out.size() >= effectiveLimit) break;
                             }
-                            messageRepository.deleteBySessionId(session.getId());
-                            sessionRepository.delete(session);
-                            return new ResponseEntity<Void>(HttpStatus.NO_CONTENT);
+                            return out;
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
-    /**
-     * Deprecated flat route listing all of the caller's sessions across agents. Forwards from the
-     * pre-F2 shape {@code GET /api/sessions}. Remove once the console frontend migrates to the
-     * agent-scoped route (Phase F6).
-     */
-    @Deprecated(since = "F2", forRemoval = true)
+    @GetMapping("/api/agents/{agentId}/sessions/{sessionKey}")
+    public Mono<List<TurnEntry>> turns(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String agentId,
+            @PathVariable String sessionKey) {
+        UUID orgId = orgId(jwt);
+        UUID userId = userId(jwt);
+        UUID agentUuid = parseUuid(agentId);
+        UUID sessionUuid = parseUuid(sessionKey);
+        return Mono.fromCallable(
+                        () -> {
+                            ChatSessionEntity session =
+                                    requireSession(orgId, userId, agentUuid, sessionUuid);
+                            List<TurnEntry> turns = new ArrayList<>();
+                            String prevId = null;
+                            for (ChatMessageEntity m :
+                                    messageRepository.findBySessionIdOrderByCreatedAtAsc(
+                                            session.getId())) {
+                                TurnEntry t = toTurn(m, prevId);
+                                turns.add(t);
+                                prevId = t.id();
+                            }
+                            return turns;
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /** Soft reset: clears the session's messages and resets bookkeeping (keeps the row). */
+    @PostMapping("/api/agents/{agentId}/sessions/{sessionKey}/reset")
+    public Mono<ResetResult> reset(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String agentId,
+            @PathVariable String sessionKey) {
+        UUID orgId = orgId(jwt);
+        UUID userId = userId(jwt);
+        UUID agentUuid = parseUuid(agentId);
+        UUID sessionUuid = parseUuid(sessionKey);
+        return Mono.fromCallable(
+                        () -> {
+                            ChatSessionEntity session =
+                                    requireSession(orgId, userId, agentUuid, sessionUuid);
+                            persistenceService.resetSession(session.getId());
+                            return new ResetResult(sessionKey, true);
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    @PatchMapping("/api/agents/{agentId}/sessions/{sessionKey}/read")
+    public Mono<ReadStateResult> markRead(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String agentId,
+            @PathVariable String sessionKey) {
+        UUID orgId = orgId(jwt);
+        UUID userId = userId(jwt);
+        UUID agentUuid = parseUuid(agentId);
+        UUID sessionUuid = parseUuid(sessionKey);
+        return Mono.fromCallable(
+                        () -> {
+                            ChatSessionEntity session =
+                                    requireSession(orgId, userId, agentUuid, sessionUuid);
+                            session.setUnread(false);
+                            sessionRepository.save(session);
+                            return new ReadStateResult(
+                                    sessionKey, System.currentTimeMillis(), false);
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /** paw-style delete by sessionKey (UUID string). 204 on success, 404 when absent/foreign. */
+    @DeleteMapping("/api/agents/{agentId}/sessions/{sessionKey}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public Mono<Void> deleteByKey(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String agentId,
+            @PathVariable String sessionKey) {
+        UUID orgId = orgId(jwt);
+        UUID userId = userId(jwt);
+        UUID agentUuid = parseUuid(agentId);
+        UUID sessionUuid = parseUuid(sessionKey);
+        return Mono.fromRunnable(
+                        () -> {
+                            ChatSessionEntity session =
+                                    requireSession(orgId, userId, agentUuid, sessionUuid);
+                            persistenceService.deleteSession(session.getId());
+                        })
+                .subscribeOn(Schedulers.boundedElastic())
+                .then();
+    }
+
+    // -----------------------------------------------------------------
+    //  Legacy flat routes (deprecated, removed after F6 frontend migration)
+    // -----------------------------------------------------------------
+
     @GetMapping("/api/sessions")
     public Mono<ResponseEntity<List<SessionView>>> listLegacy(@AuthenticationPrincipal Jwt jwt) {
-        UUID orgId = UUID.fromString(jwt.getClaimAsString("org_id"));
-        UUID userId = UUID.fromString(jwt.getClaimAsString("user_id"));
+        UUID orgId = orgId(jwt);
+        UUID userId = userId(jwt);
         return Mono.fromCallable(
                         () ->
                                 sessionRepository
                                         .findByOrgIdAndUserIdOrderByUpdatedAtDesc(orgId, userId)
                                         .stream()
-                                        .map(SessionController::toView)
+                                        .map(SessionController::toLegacyView)
                                         .toList())
                 .subscribeOn(Schedulers.boundedElastic())
                 .map(ResponseEntity::ok);
     }
 
-    /**
-     * Deprecated flat route for session history. Forwards from the pre-F2 shape {@code
-     * GET /api/sessions/{sessionId}/messages} (org+user guarded, cross-agent). Remove at Phase F6.
-     */
-    @Deprecated(since = "F2", forRemoval = true)
-    @GetMapping("/api/sessions/{sessionId}/messages")
-    public Mono<ResponseEntity<List<MessageView>>> messagesLegacy(
-            @AuthenticationPrincipal Jwt jwt, @PathVariable String sessionId) {
-        UUID orgId = UUID.fromString(jwt.getClaimAsString("org_id"));
-        UUID userId = UUID.fromString(jwt.getClaimAsString("user_id"));
-        UUID sessionUuid = parseUuid(sessionId);
-        if (sessionUuid == null) {
-            return Mono.just(ResponseEntity.badRequest().build());
-        }
-        return Mono.fromCallable(
-                        () -> {
-                            ChatSessionEntity session =
-                                    sessionRepository
-                                            .findByIdAndOrgIdAndUserId(sessionUuid, orgId, userId)
-                                            .orElse(null);
-                            if (session == null) {
-                                return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                                        .<List<MessageView>>build();
-                            }
-                            List<MessageView> views =
-                                    messageRepository
-                                            .findBySessionIdOrderByCreatedAtAsc(session.getId())
-                                            .stream()
-                                            .map(SessionController::toMessageView)
-                                            .toList();
-                            return ResponseEntity.ok(views);
-                        })
-                .subscribeOn(Schedulers.boundedElastic());
+    // -----------------------------------------------------------------
+    //  Helpers
+    // -----------------------------------------------------------------
+
+    private ChatSessionEntity requireSession(
+            UUID orgId, UUID userId, UUID agentUuid, UUID sessionUuid) {
+        return sessionRepository
+                .findByIdAndOrgIdAndUserIdAndAgentId(sessionUuid, orgId, userId, agentUuid)
+                .orElseThrow(
+                        () ->
+                                new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND, "Session not found"));
+    }
+
+    private static UUID orgId(Jwt jwt) {
+        return UUID.fromString(jwt.getClaimAsString("org_id"));
+    }
+
+    private static UUID userId(Jwt jwt) {
+        return UUID.fromString(jwt.getClaimAsString("user_id"));
     }
 
     private static UUID parseUuid(String s) {
         if (s == null || s.isBlank()) {
-            return null;
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid id: " + s);
         }
         try {
             return UUID.fromString(s);
         } catch (IllegalArgumentException e) {
-            return null;
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid id: " + s);
         }
     }
 
-    private static SessionView toView(ChatSessionEntity e) {
+    private static long toEpochMillis(java.time.OffsetDateTime t) {
+        return t == null ? 0L : t.toInstant().toEpochMilli();
+    }
+
+    private static String preview(String lastMessage) {
+        if (lastMessage == null || lastMessage.isBlank()) return null;
+        String trimmed = lastMessage.trim();
+        return trimmed.length() > 200 ? trimmed.substring(0, 200) + "…" : trimmed;
+    }
+
+    private static SessionView toLegacyView(ChatSessionEntity e) {
         return new SessionView(
                 e.getId().toString(),
                 e.getAgentId() == null ? null : e.getAgentId().toString(),
@@ -235,4 +338,79 @@ public class SessionController {
                 e.getContentJson(),
                 e.getCreatedAt() == null ? null : e.getCreatedAt().toString());
     }
+
+    /**
+     * Reconstructs a paw {@code TurnEntry} from a persisted message. The {@code content_json} array
+     * of content blocks is flattened to a text {@code content} (concatenated text blocks); a tool-use
+     * block (if present) populates {@code toolName}/{@code toolInput}. The role is upper-cased to
+     * match paw's {@code USER}/{@code ASSISTANT}/{@code TOOL} convention.
+     */
+    private TurnEntry toTurn(ChatMessageEntity m, String parentId) {
+        String text = null;
+        String toolName = m.getToolName();
+        String toolInput = m.getToolInput();
+        if (m.getContentJson() != null && !m.getContentJson().isBlank()) {
+            try {
+                JsonNode blocks = objectMapper.readTree(m.getContentJson());
+                StringBuilder sb = new StringBuilder();
+                for (JsonNode block : blocks) {
+                    String type = block.path("type").asText("");
+                    if ("text".equals(type)) {
+                        String t = block.path("text").asText("");
+                        if (!t.isEmpty()) sb.append(t);
+                    } else if ("tool_use".equals(type) && toolName == null) {
+                        toolName = block.path("name").asText(null);
+                        JsonNode input = block.get("input");
+                        if (input != null && toolInput == null) {
+                            toolInput = input.toString();
+                        }
+                    }
+                }
+                if (sb.length() > 0) text = sb.toString();
+            } catch (Exception ignored) {
+                // leave text null
+            }
+        }
+        String role = m.getRole() == null ? null : m.getRole().toUpperCase();
+        return new TurnEntry(
+                m.getId().toString(),
+                parentId,
+                role,
+                text,
+                toEpochMillis(m.getCreatedAt()),
+                toolName,
+                toolInput,
+                m.getToolResult());
+    }
+
+    // -----------------------------------------------------------------
+    //  DTOs (paw shapes)
+    // -----------------------------------------------------------------
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record InboxEntry(
+            String sessionKey,
+            String sessionId,
+            String agentId,
+            String label,
+            long lastActivityMs,
+            String lastMessage,
+            boolean unread) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record TurnEntry(
+            String id,
+            String parentId,
+            String role,
+            String content,
+            long timestampMs,
+            String toolName,
+            String toolInput,
+            String toolResult) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record ResetResult(String sessionKey, boolean reset) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record ReadStateResult(String sessionKey, long readAtMs, boolean unread) {}
 }
