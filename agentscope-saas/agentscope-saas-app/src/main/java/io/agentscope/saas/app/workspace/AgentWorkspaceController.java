@@ -19,6 +19,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
+import io.agentscope.harness.agent.filesystem.model.FileDownloadResponse;
 import io.agentscope.harness.agent.filesystem.model.FileInfo;
 import io.agentscope.harness.agent.filesystem.model.FileUploadResponse;
 import io.agentscope.harness.agent.filesystem.model.GlobResult;
@@ -39,7 +40,10 @@ import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -217,6 +221,48 @@ public class AgentWorkspaceController {
                                         + " bytes)";
                             }
                             return content;
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * Downloads a workspace file as a binary stream ({@code application/octet-stream} + {@code
+     * Content-Disposition: attachment}). Unlike {@link #readFile} (which returns text and replaces
+     * binaries with a placeholder), this streams the raw bytes so a file produced by the agent in
+     * the sandbox — text or binary — can be saved by the browser. Returns 404 when the file is
+     * absent or the filesystem reports a read failure.
+     */
+    @GetMapping("/file/download")
+    public Mono<ResponseEntity<byte[]>> downloadFile(
+            @PathVariable String agentId,
+            @RequestParam("path") String path,
+            @AuthenticationPrincipal Jwt jwt) {
+        UUID orgId = orgId(jwt);
+        return Mono.fromCallable(
+                        () -> {
+                            AbstractFilesystem fs = resolveFilesystem(orgId, userId(jwt), agentId);
+                            String abs = toAbsFsPath(path);
+                            List<FileDownloadResponse> results =
+                                    fs.downloadFiles(FS_RC, List.of(abs));
+                            FileDownloadResponse result =
+                                    results == null || results.isEmpty() ? null : results.get(0);
+                            if (result == null || !result.isSuccess() || result.content() == null) {
+                                throw new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND,
+                                        result != null && result.error() != null
+                                                ? result.error()
+                                                : "File not found: " + path);
+                            }
+                            String leaf = abs;
+                            int slash = abs.lastIndexOf('/');
+                            if (slash >= 0 && slash < abs.length() - 1) {
+                                leaf = abs.substring(slash + 1);
+                            }
+                            HttpHeaders headers = new HttpHeaders();
+                            headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+                            headers.setContentDispositionFormData("attachment", leaf);
+                            headers.setContentLength(result.content().length);
+                            return new ResponseEntity<>(result.content(), headers, HttpStatus.OK);
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
