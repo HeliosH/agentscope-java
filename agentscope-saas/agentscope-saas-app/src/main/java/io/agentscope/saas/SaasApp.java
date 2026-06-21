@@ -28,8 +28,8 @@ import org.springframework.scheduling.annotation.EnableAsync;
  *
  * <ul>
  *   <li>JWT/SSO authentication ({@code /api/auth/**})</li>
- *   <li>AG-UI compatible streaming chat ({@code POST /api/chat/stream})</li>
- *   <li>Org-scoped agent and session management ({@code /api/agents}, {@code /api/sessions})</li>
+ *   <li>AG-UI compatible streaming chat ({@code POST /api/agents/{agentId}/chat/stream})</li>
+ *   <li>Org-scoped agent and session management ({@code /api/agents/**}, including per-agent sessions)</li>
  * </ul>
  *
  * <p>Run with the {@code local} profile for a zero-dependency smoke test (H2 + in-memory state +

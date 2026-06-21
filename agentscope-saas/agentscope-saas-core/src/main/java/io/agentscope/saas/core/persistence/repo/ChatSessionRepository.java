@@ -24,8 +24,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 /** Repository for {@link ChatSessionEntity}, with org/user-scoped queries. */
 public interface ChatSessionRepository extends JpaRepository<ChatSessionEntity, UUID> {
 
-    List<ChatSessionEntity> findByOrgIdAndUserIdOrderByUpdatedAtDesc(UUID orgId, UUID userId);
-
     List<ChatSessionEntity> findByOrgIdAndUserIdAndAgentIdOrderByUpdatedAtDesc(
             UUID orgId, UUID userId, UUID agentId);
 

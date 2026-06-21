@@ -261,25 +261,6 @@ public class SessionController {
     }
 
     // -----------------------------------------------------------------
-    //  Legacy flat routes (deprecated, removed after F6 frontend migration)
-    // -----------------------------------------------------------------
-
-    @GetMapping("/api/sessions")
-    public Mono<ResponseEntity<List<SessionView>>> listLegacy(@AuthenticationPrincipal Jwt jwt) {
-        UUID orgId = orgId(jwt);
-        UUID userId = userId(jwt);
-        return Mono.fromCallable(
-                        () ->
-                                sessionRepository
-                                        .findByOrgIdAndUserIdOrderByUpdatedAtDesc(orgId, userId)
-                                        .stream()
-                                        .map(SessionController::toLegacyView)
-                                        .toList())
-                .subscribeOn(Schedulers.boundedElastic())
-                .map(ResponseEntity::ok);
-    }
-
-    // -----------------------------------------------------------------
     //  Helpers
     // -----------------------------------------------------------------
 

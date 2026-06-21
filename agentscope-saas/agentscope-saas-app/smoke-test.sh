@@ -28,19 +28,24 @@ echo "==> 4) List agents (org-scoped, expect empty array initially)"
 curl -fsS "$BASE/api/agents" -H "Authorization: Bearer $TOKEN" && echo
 
 echo "==> 5) Create an agent"
-curl -fsS -X POST "$BASE/api/agents" -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' -d '{"name":"my-assistant"}' && echo
+AGENT=$(curl -fsS -X POST "$BASE/api/agents" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"name":"my-assistant"}')
+echo "$AGENT"
+AGENTID=$(printf '%s' "$AGENT" | sed -E 's/.*"id":"([^"]+)".*/\1/')
+if [ -z "$AGENTID" ] || [ "$AGENTID" = "$AGENT" ]; then
+  echo "FAILED to extract agent id"; exit 1
+fi
 
-echo "==> 6) Stream a chat over AG-UI SSE"
-curl -fsS -N -X POST "$BASE/api/chat/stream" \
+echo "==> 6) Stream a chat over AG-UI SSE (agent-scoped)"
+curl -fsS -N -X POST "$BASE/api/agents/$AGENTID/chat/stream" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"agentId":"default","sessionId":"smoke-1","message":"hello there"}'
+  -d '{"message":"hello there"}'
 echo
-echo "==> 7) List sessions"
-curl -fsS "$BASE/api/sessions" -H "Authorization: Bearer $TOKEN" && echo
+echo "==> 7) List sessions for the agent"
+curl -fsS "$BASE/api/agents/$AGENTID/sessions" -H "Authorization: Bearer $TOKEN" && echo
 
 echo "==> 8) Unauthenticated chat should be rejected (401)"
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/chat/stream" \
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/agents/$AGENTID/chat/stream" \
   -H 'Content-Type: application/json' -d '{"message":"x"}')
 echo "unauthenticated chat status: $code (expect 401)"
 

@@ -77,17 +77,6 @@ public class SaasChatController {
                 boolean confirmed, String toolCallId, String toolName, Map<String, Object> input) {}
     }
 
-    /**
-     * Legacy request payload for the deprecated {@code /api/chat/stream} route, which carries {@code
-     * agentId} in the body instead of the path. Retained only until the console frontend switches
-     * to the agent-scoped route (Phase F6).
-     */
-    public record LegacyChatRequest(
-            String agentId,
-            String sessionId,
-            String message,
-            List<ChatRequest.ConfirmResultInput> confirmResults) {}
-
     private final HarnessAgent agent;
     private final TenantResolver tenantResolver;
     private final ChatPersistenceService persistence;
@@ -166,23 +155,6 @@ public class SaasChatController {
             return streamingWithPersistence(tenant, agentId, request);
         }
         return streamingWithoutPersistence(tenant, agentId, request);
-    }
-
-    /**
-     * Deprecated flat route {@code POST /api/chat/stream} that carries {@code agentId} in the body.
-     * Forwards to the agent-scoped route. Remove once the console frontend migrates to {@code
-     * /api/agents/{agentId}/chat/stream} (Phase F6).
-     */
-    @Deprecated(since = "F2", forRemoval = true)
-    @PostMapping(value = "/api/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> streamLegacy(
-            @AuthenticationPrincipal Jwt jwt, @RequestBody LegacyChatRequest legacy) {
-        if (legacy == null || legacy.agentId() == null || legacy.agentId().isBlank()) {
-            return Flux.error(new IllegalArgumentException("agentId is required"));
-        }
-        ChatRequest req =
-                new ChatRequest(legacy.sessionId(), legacy.message(), legacy.confirmResults());
-        return stream(jwt, legacy.agentId(), req);
     }
 
     /** Production path: resolve agent/session, persist user + assistant messages around the run. */
