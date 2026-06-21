@@ -70,7 +70,7 @@ public final class McpServerRegistrar {
     }
 
     private static void registerOne(Toolkit toolkit, String name, McpServerConfig cfg) {
-        McpClientWrapper wrapper = buildClient(name, cfg);
+        McpClientWrapper wrapper = buildWrapper(name, cfg);
         Toolkit.ToolRegistration reg = toolkit.registration().mcpClient(wrapper);
         List<String> enableTools = cfg.getEnableTools();
         if (enableTools != null && !enableTools.isEmpty()) {
@@ -82,6 +82,17 @@ public final class McpServerRegistrar {
                 name,
                 cfg.getTransport(),
                 enableTools);
+    }
+
+    /**
+     * Builds a live {@link McpClientWrapper} for {@code cfg} (synchronously blocking on the async
+     * build). Exposed so runtime callers (e.g. a dynamic per-user MCP middleware) can build a
+     * wrapper without going through the build-time {@link #register} path. Returns {@code null} if
+     * the transport is unsupported or required fields are missing — callers should treat null as
+     * "skip this server" rather than throwing into the agent loop.
+     */
+    public static McpClientWrapper buildWrapper(String name, McpServerConfig cfg) {
+        return buildClient(name, cfg);
     }
 
     private static McpClientWrapper buildClient(String name, McpServerConfig cfg) {

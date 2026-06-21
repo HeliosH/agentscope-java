@@ -21,6 +21,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 /** An organization (tenant). The top of the Org → User isolation hierarchy. */
 @Entity
@@ -39,6 +41,16 @@ public class OrgEntity {
 
     @Column(name = "status")
     private String status;
+
+    /**
+     * Org-wide settings bag stored as a JSONB object (V1 default {@code '{}'}). Currently holds
+     * org-level MCP-server base config under the {@code mcpServers} sub-key (see {@code
+     * OrgToolsConfigController}); extensible for future org policy. Mapped as a raw JSON string so
+     * callers parse/serialize the relevant sub-keys with their own ObjectMapper.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "settings")
+    private String settings;
 
     @Column(name = "created_at", insertable = false, updatable = false)
     private OffsetDateTime createdAt;
@@ -77,5 +89,13 @@ public class OrgEntity {
 
     public OffsetDateTime getCreatedAt() {
         return createdAt;
+    }
+
+    public String getSettings() {
+        return settings;
+    }
+
+    public void setSettings(String settings) {
+        this.settings = settings;
     }
 }

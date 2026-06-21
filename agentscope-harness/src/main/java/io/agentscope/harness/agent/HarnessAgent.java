@@ -1004,6 +1004,18 @@ public class HarnessAgent implements Agent, AutoCloseable {
         boolean disableDefaultWorkspaceSkills = false;
         boolean disableDynamicSubagents = false;
         boolean disableToolsConfig = false;
+        boolean disableDynamicMcp = false;
+
+        /** Live-MCP-client cache shared across the singleton agent's per-user turns. */
+        io.agentscope.harness.agent.tools.McpClientRegistry mcpClientRegistry;
+
+        /** Maps a per-call RuntimeContext to the caller's org id (SaaS-injected; null = no org base). */
+        java.util.function.Function<io.agentscope.core.agent.RuntimeContext, java.util.UUID>
+                mcpOrgIdExtractor;
+
+        /** Loads the org-level base ToolsConfig for an org id (SaaS-injected; null = no org base). */
+        java.util.function.Function<java.util.UUID, io.agentscope.harness.agent.tools.ToolsConfig>
+                mcpOrgBaseLoader;
 
         boolean skillManageToolEnabled = false;
         SkillManageConfig skillManageConfig;
@@ -1747,6 +1759,36 @@ public class HarnessAgent implements Agent, AutoCloseable {
         }
 
         /**
+         * Disables the dynamic per-user MCP middleware (the runtime analogue of {@link
+         * io.agentscope.harness.agent.middleware.DynamicSubagentsMiddleware} for MCP servers).
+         * Set this only when the singleton agent must not re-resolve MCP config per tenant turn.
+         */
+        public Builder disableDynamicMcp() {
+            this.disableDynamicMcp = true;
+            return this;
+        }
+
+        /**
+         * Wires the dynamic per-user MCP middleware: the shared live-client cache, a caller
+         * org-id extractor (read from the per-call RuntimeContext), and an org-base loader (reads
+         * the org-level {@code ToolsConfig}). All three may be {@code null} — the middleware then
+         * no-ops. The user id is read from {@link io.agentscope.core.agent.RuntimeContext#getUserId()}
+         * directly, so no user-id extractor is needed.
+         */
+        public Builder dynamicMcp(
+                io.agentscope.harness.agent.tools.McpClientRegistry registry,
+                java.util.function.Function<io.agentscope.core.agent.RuntimeContext, java.util.UUID>
+                        orgIdExtractor,
+                java.util.function.Function<
+                                java.util.UUID, io.agentscope.harness.agent.tools.ToolsConfig>
+                        orgBaseLoader) {
+            this.mcpClientRegistry = registry;
+            this.mcpOrgIdExtractor = orgIdExtractor;
+            this.mcpOrgBaseLoader = orgBaseLoader;
+            return this;
+        }
+
+        /**
          * Marks this build as a leaf subagent (no nested subagent orchestration). Package-private
          * because only {@link HarnessAgentBuilderSupport} subagent factories should mark agents
          * as leaves.
@@ -2058,6 +2100,35 @@ public class HarnessAgent implements Agent, AutoCloseable {
             }
             if (resolvedToolsConfig != null) {
                 McpServerRegistrar.register(agentToolkit, resolvedToolsConfig.getMcpServers());
+            }
+
+            // ---- Dynamic per-user MCP middleware (multi-tenant SaaS) ----
+            // The build-time block above loads the managed-workspace tools.json once (the default /
+            // global MCP set). The middleware below re-resolves each caller's tools.json (org base
+            // overlaid with the user's workspace file) every reasoning step and keeps the live
+            // toolkit in sync, so a singleton agent serving many users presents each user's own MCP
+            // tools. Skipped when no registry is wired or when explicitly disabled.
+            if (!disableDynamicMcp && mcpClientRegistry != null && filesystem != null) {
+                java.util.function.Function<io.agentscope.core.agent.RuntimeContext, java.util.UUID>
+                        userIdExtractor =
+                                rc -> {
+                                    String uid = rc != null ? rc.getUserId() : null;
+                                    if (uid == null || uid.isBlank()) {
+                                        return null;
+                                    }
+                                    try {
+                                        return java.util.UUID.fromString(uid);
+                                    } catch (IllegalArgumentException e) {
+                                        return null;
+                                    }
+                                };
+                inner.middleware(
+                        new io.agentscope.harness.agent.middleware.DynamicMcpMiddleware(
+                                filesystem,
+                                mcpClientRegistry,
+                                userIdExtractor,
+                                mcpOrgIdExtractor,
+                                mcpOrgBaseLoader));
             }
 
             // ---- Skills ----

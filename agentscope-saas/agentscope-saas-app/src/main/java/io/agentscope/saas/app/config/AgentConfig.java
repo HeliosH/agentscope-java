@@ -28,6 +28,8 @@ import io.agentscope.harness.agent.filesystem.remote.store.BaseStore;
 import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import io.agentscope.harness.agent.filesystem.spec.SandboxFilesystemSpec;
 import io.agentscope.harness.agent.skill.curator.SkillCuratorConfig;
+import io.agentscope.harness.agent.tools.McpClientRegistry;
+import io.agentscope.saas.app.org.OrgToolsConfigService;
 import io.agentscope.saas.core.middleware.RateLimitMiddleware;
 import io.agentscope.saas.core.middleware.TenantContextMiddleware;
 import io.agentscope.saas.core.middleware.UsageMeteringMiddleware;
@@ -38,6 +40,7 @@ import io.agentscope.saas.sandbox.SandboxBroker;
 import io.agentscope.saas.sandbox.middleware.SandboxQuotaMiddleware;
 import io.agentscope.saas.sandbox.middleware.SandboxTrackingMiddleware;
 import java.util.List;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -66,7 +69,9 @@ public class AgentConfig {
             SaasProperties properties,
             ObjectProvider<SandboxFilesystemSpec> sandboxSpecProvider,
             ObjectProvider<SandboxBroker> sandboxBrokerProvider,
-            ObjectProvider<BaseStore> workspaceStoreProvider) {
+            ObjectProvider<BaseStore> workspaceStoreProvider,
+            McpClientRegistry mcpClientRegistry,
+            OrgToolsConfigService orgToolsConfigService) {
 
         SaasProperties.Agent agentCfg = properties.getAgent();
         SaasProperties.RateLimit rl = properties.getRateLimit();
@@ -153,7 +158,39 @@ public class AgentConfig {
                 permissionContext.getAskRules().size(),
                 permissionContext.getDenyRules().size());
 
+        // Dynamic per-user MCP resolution (Phase C2): the singleton agent re-resolves each caller's
+        // tools.json (org base overlaid with the user's workspace file) every reasoning step and
+        // keeps the live toolkit in sync, so each tenant sees their own MCP tools without a
+        // restart.
+        // The org-id extractor reads the tenant context the request middleware wrote into the
+        // RuntimeContext; the org-base loader reads orgs.settings.mcpServers. No-op in dev/empty
+        // contexts (extractor returns null → middleware leaves the toolkit as-is).
+        builder.dynamicMcp(
+                mcpClientRegistry,
+                rc -> {
+                    TenantContext tc = TenantContext.from(rc);
+                    if (tc == null || tc.orgId() == null || tc.orgId().isBlank()) {
+                        return null;
+                    }
+                    try {
+                        return UUID.fromString(tc.orgId());
+                    } catch (IllegalArgumentException e) {
+                        return null;
+                    }
+                },
+                orgToolsConfigService::loadOrgBase);
+
         return builder.build();
+    }
+
+    /**
+     * Shared live-MCP-client cache for {@link DynamicMcpMiddleware}. One bean for the singleton
+     * agent; clients are keyed by (userId, serverName) inside the registry so concurrent per-user
+     * turns are isolated.
+     */
+    @Bean
+    public McpClientRegistry mcpClientRegistry() {
+        return new McpClientRegistry();
     }
 
     /** Builds the per-agent permission context from the tool_guard config (ALLOW/ASK/DENY rules). */

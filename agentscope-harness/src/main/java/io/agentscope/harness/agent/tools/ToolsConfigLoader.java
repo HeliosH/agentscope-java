@@ -75,14 +75,26 @@ public final class ToolsConfigLoader {
         if (raw == null || raw.isBlank()) {
             return Optional.empty();
         }
+        return parse(raw);
+    }
+
+    /**
+     * Parses a raw {@code tools.json} string (after env-substitution) into a {@link ToolsConfig}.
+     * Returns {@link Optional#empty()} on blank input or parse failure. Exposed so runtime callers
+     * (e.g. a dynamic per-user MCP middleware reading {@code tools.json} via a filesystem) can
+     * reuse the same parse + env-substitution logic as the build-time {@link #load} path.
+     */
+    public static Optional<ToolsConfig> parse(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return Optional.empty();
+        }
         String substituted = substituteEnv(raw);
         try {
             ToolsConfig cfg = MAPPER.readValue(substituted, ToolsConfig.class);
             return Optional.ofNullable(cfg);
         } catch (Exception e) {
             log.warn(
-                    "Failed to parse {}: {}. Falling back to default toolkit.",
-                    WorkspaceConstants.TOOLS_JSON,
+                    "Failed to parse tools.json: {}. Falling back to default toolkit.",
                     e.getMessage());
             return Optional.empty();
         }
