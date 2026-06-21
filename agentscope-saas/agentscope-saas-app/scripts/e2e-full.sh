@@ -96,7 +96,7 @@ AGID=$(printf '%s' "$AGA" | sed -E 's/.*"id":"([^"]+)".*/\1/')
 
 echo "--- 5) Alice chat #1 — real LLM drives echo MCP + sandbox file write"
 # No double-quotes in the prompt (they would break the JSON body); the execute command uses no quotes.
-PROMPT='Do exactly two things then stop: 1) call the echo MCP tool with message hello-e2e; 2) use the execute tool to run this shell command: echo hello-e2e > result.txt ; then reply with a one-line summary.'
+PROMPT='Do exactly two things then stop: 1) call the echo MCP tool with message hello-e2e; 2) use the execute tool to run this shell command: echo hello-e2e > /workspace/result.txt ; then reply with a one-line summary.'
 SSE=$(curl -s -N --max-time 120 -X POST "$BASE/api/agents/$AGID/chat/stream" \
   -H "Authorization: Bearer $TOKA" -H 'Content-Type: application/json' \
   --data-binary @<(printf '{"message":"%s"}' "$PROMPT") 2>/dev/null)
@@ -118,17 +118,19 @@ fi
 
 echo "--- 7) memory/workspace persistence — chat #2 reads result.txt back (within a fresh sandbox)"
 # Chat #1 ended → sandbox stopped + tar snapshot. Chat #2 starts a fresh sandbox, restores the
-# snapshot, so result.txt must be present. The LLM reads it and echoes the content in the SSE.
+# snapshot, so result.txt must be present. Use execute cat (not read_file) because the shell stdout
+# goes directly into the tool-result text the LLM sees, which it's more likely to echo back.
 sleep 2
-PROMPT2='Read the file result.txt in your workspace (use read_file or execute cat) and reply with ONLY its exact content.'
+PROMPT2='Use the execute tool to run this exact shell command: cat /workspace/result.txt . After you see the command output, reply with ONLY the output text — nothing else.'
 SSE2=$(curl -s -N --max-time 120 -X POST "$BASE/api/agents/$AGID/chat/stream" \
   -H "Authorization: Bearer $TOKA" -H 'Content-Type: application/json' \
   --data-binary @<(printf '{"message":"%s"}' "$PROMPT2") 2>/dev/null)
 if echo "$SSE2" | grep -qiE "hello-e2e"; then
   ok "result.txt survived sandbox stop→restart (memory/workspace persisted via tar snapshot)"
+  echo "$SSE2" | grep -qiE "data:|event:" && ok "chat #2 returned SSE" || { echo "    head: $(printf '%s' "$SSE2" | head -c 400)"; bad "chat #2 empty"; }
 else
-  echo "    chat #2 head: $(printf '%s' "$SSE2" | head -c 300)"
-  bad "result.txt not recovered across sandboxes (snapshot restore or LLM read failed)"
+  echo "    chat #2 head: $(printf '%s' "$SSE2" | head -c 400)"
+  bad "result.txt not recovered across sandboxes (snapshot restore or LLM execute failed)"
 fi
 
 echo "--- 8) sandbox resource released (container gone after call)"

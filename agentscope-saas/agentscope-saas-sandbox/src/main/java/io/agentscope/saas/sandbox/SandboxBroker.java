@@ -94,6 +94,10 @@ public class SandboxBroker {
             OffsetDateTime expiresAt) {
 
         SandboxEntity entity = new SandboxEntity();
+        // SandboxEntity id has no @GeneratedValue (saas convention: assign in the service layer, as
+        // ChatPersistenceService does) — without this the persist throws "Identifier must be
+        // manually assigned before calling persist()", dropping the tracking row.
+        entity.setId(UUID.randomUUID());
         entity.setOrgId(orgId);
         entity.setUserId(userId);
         entity.setSessionId(sessionId);

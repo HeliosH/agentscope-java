@@ -70,6 +70,11 @@ public abstract class AbstractBaseSandbox implements Sandbox {
     public void start() throws Exception {
         WorkspaceSpec spec = state.getWorkspaceSpec();
         SandboxSnapshot snapshot = state.getSnapshot();
+        log.info(
+                "[sandbox] start: workspaceRootReady={} snapshot={} isRestorable={}",
+                state.isWorkspaceRootReady(),
+                snapshot == null ? "null" : snapshot.getClass().getSimpleName(),
+                snapshot != null && snapshot.isRestorable());
 
         try {
             if (state.isWorkspaceRootReady()) {
@@ -77,12 +82,11 @@ public abstract class AbstractBaseSandbox implements Sandbox {
                 boolean stillExists = probeWorkspaceRootForPreservedResume();
                 if (stillExists) {
                     // Branch A: workspace preserved — only apply ephemeral entries
-                    log.debug(
-                            "[sandbox] Branch A: workspace preserved, applying ephemeral entries");
+                    log.info("[sandbox] Branch A: workspace preserved, applying ephemeral entries");
                     workspaceSpecApplier.applyWorkspaceSpec(spec, true);
                 } else {
                     // Branch B: workspace was lost — restore from snapshot + ephemeral entries
-                    log.debug("[sandbox] Branch B: workspace lost, restoring from snapshot");
+                    log.info("[sandbox] Branch B: workspace lost, restoring from snapshot");
                     if (snapshot != null && snapshot.isRestorable()) {
                         doSetupWorkspace();
                         try (InputStream archive = snapshot.restore()) {
@@ -100,7 +104,7 @@ public abstract class AbstractBaseSandbox implements Sandbox {
                 // Workspace was not ready at last stop
                 if (snapshot != null && snapshot.isRestorable()) {
                     // Branch C: restore from snapshot + all spec entries
-                    log.debug("[sandbox] Branch C: restoring from snapshot");
+                    log.info("[sandbox] Branch C: restoring from snapshot");
                     doSetupWorkspace();
                     try (InputStream archive = snapshot.restore()) {
                         doHydrateWorkspace(archive);
@@ -108,7 +112,7 @@ public abstract class AbstractBaseSandbox implements Sandbox {
                     workspaceSpecApplier.applyWorkspaceSpec(spec, false);
                 } else {
                     // Branch D: fresh initialization from full workspace spec
-                    log.debug("[sandbox] Branch D: fresh workspace initialization");
+                    log.info("[sandbox] Branch D: fresh workspace initialization");
                     doSetupWorkspace();
                     workspaceSpecApplier.applyWorkspaceSpec(spec, false);
                 }
@@ -131,8 +135,15 @@ public abstract class AbstractBaseSandbox implements Sandbox {
     @Override
     public void stop() throws Exception {
         SandboxSnapshot snapshot = state.getSnapshot();
+        log.info(
+                "[sandbox] stop: snapshot={} persistenceEnabled={}",
+                snapshot == null ? "null" : snapshot.getClass().getSimpleName(),
+                snapshot != null && snapshot.isPersistenceEnabled());
         if (snapshot != null && snapshot.isPersistenceEnabled()) {
             try (InputStream archive = doPersistWorkspace()) {
+                log.info(
+                        "[sandbox] stop: persisting workspace snapshot ({} bytes)",
+                        archive.available());
                 snapshot.persist(archive);
             }
         }

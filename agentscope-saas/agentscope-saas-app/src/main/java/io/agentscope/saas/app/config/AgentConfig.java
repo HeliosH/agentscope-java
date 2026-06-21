@@ -184,7 +184,8 @@ public class AgentConfig {
     }
 
     /**
-     * Shared live-MCP-client cache for {@link DynamicMcpMiddleware}. One bean for the singleton
+     * Shared live-MCP-client cache for
+     * {@code io.agentscope.harness.agent.middleware.DynamicMcpMiddleware}. One bean for the singleton
      * agent; clients are keyed by (userId, serverName) inside the registry so concurrent per-user
      * turns are isolated.
      */

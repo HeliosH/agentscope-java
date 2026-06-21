@@ -195,6 +195,29 @@ public class DockerSandbox extends AbstractBaseSandbox {
         String containerId = dockerState.getContainerId();
         String workspaceRoot = dockerState.getWorkspaceRoot();
 
+        // Diagnostic: snapshot the workspace file listing right before tar so we can see what
+        // execute actually wrote (and where). The ExecuteTool default working directory may
+        // differ from workspaceRoot, causing files to land outside the tar scope.
+        try {
+            List<String> lsCmd = new ArrayList<>();
+            lsCmd.add("docker");
+            lsCmd.add("exec");
+            lsCmd.add(containerId);
+            lsCmd.add("find");
+            lsCmd.add(workspaceRoot);
+            lsCmd.add("-maxdepth");
+            lsCmd.add("2");
+            lsCmd.add("-ls");
+            Process lsProc = new ProcessBuilder(lsCmd).start();
+            String listing = new String(lsProc.getInputStream().readAllBytes());
+            log.info(
+                    "[sandbox] persist: workspaceRoot={} workspace contents:\n{}",
+                    workspaceRoot,
+                    listing.isBlank() ? "(empty)" : listing.strip());
+        } catch (Exception e) {
+            log.warn("[sandbox] persist: could not ls workspace: {}", e.getMessage());
+        }
+
         List<String> tarCmd = new ArrayList<>();
         tarCmd.add("docker");
         tarCmd.add("exec");

@@ -24,6 +24,8 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.util.Objects;
 import javax.sql.DataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * JDBC {@link RemoteSnapshotClient} that stores sandbox workspace tar archives as
@@ -36,6 +38,8 @@ import javax.sql.DataSource;
  */
 public class PgRemoteSnapshotClient implements RemoteSnapshotClient {
 
+    private static final Logger log = LoggerFactory.getLogger(PgRemoteSnapshotClient.class);
+
     private final DataSource dataSource;
     private final String table;
 
@@ -47,6 +51,7 @@ public class PgRemoteSnapshotClient implements RemoteSnapshotClient {
     @Override
     public void upload(String snapshotId, InputStream data) throws Exception {
         byte[] bytes = data.readAllBytes();
+        log.info("[snapshot] upload snapshotId={} bytes={}", snapshotId, bytes.length);
         // Portable upsert: UPDATE first, then INSERT if no matching row existed.
         try (Connection conn = dataSource.getConnection()) {
             String updateSql =
@@ -93,7 +98,9 @@ public class PgRemoteSnapshotClient implements RemoteSnapshotClient {
                 PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, snapshotId);
             try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
+                boolean found = rs.next();
+                log.info("[snapshot] exists snapshotId={} -> {}", snapshotId, found);
+                return found;
             }
         }
     }
