@@ -184,6 +184,12 @@ public class DockerSandbox extends AbstractBaseSandbox {
                 stdout.length() >= OUTPUT_TRUNCATE_BYTES
                         || stderr.length() >= OUTPUT_TRUNCATE_BYTES;
         ExecResult result = new ExecResult(exitCode, stdout, stderr, truncated);
+        log.info(
+                "[sandbox-docker] exec exit={} cmd='{}' stdout='{}' stderr='{}'",
+                exitCode,
+                command,
+                stdout.length() > 200 ? stdout.substring(0, 200) + "..." : stdout,
+                stderr.length() > 200 ? stderr.substring(0, 200) + "..." : stderr);
         if (!result.ok()) {
             throw new SandboxException.ExecException(exitCode, stdout, stderr);
         }
