@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import SkillsWorkspacePanel from '../components/SkillsWorkspacePanel';
 import SkillsMarketplacesPanel from '../components/SkillsMarketplacesPanel';
+import type { MeResponse } from '../auth';
 
 const helpStyle: React.CSSProperties = {
   padding: '8px 24px',
@@ -49,7 +50,7 @@ const closeButtonStyle: React.CSSProperties = {
 };
 
 export default function AgentSkillsPage() {
-  const { agentId } = useOutletContext<{ agentId: string }>();
+  const { agentId, me } = useOutletContext<{ agentId: string; me: MeResponse | null }>();
   const [refreshKey, setRefreshKey] = useState(0);
   const [browseOpen, setBrowseOpen] = useState(false);
 
@@ -89,6 +90,7 @@ export default function AgentSkillsPage() {
             <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
               <SkillsMarketplacesPanel
                 agentId={agentId}
+                role={me?.role ?? 'member'}
                 onInstalled={() => {
                   // Keep the modal open so users can install several in one go; the underlying
                   // skills list refreshes via bumpRefresh.

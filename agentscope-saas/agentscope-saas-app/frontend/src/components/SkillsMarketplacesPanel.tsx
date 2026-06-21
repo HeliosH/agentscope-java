@@ -16,6 +16,8 @@ import MarketplaceEditorDialog from './MarketplaceEditorDialog';
 
 interface Props {
   agentId: string;
+  /** Caller's JWT role: 'admin' may manage org marketplaces; others browse + install only. */
+  role: string;
   onInstalled: () => void;
 }
 
@@ -131,7 +133,8 @@ function describeLocation(mp: MarketplaceSummary): string {
   return '';
 }
 
-export default function SkillsMarketplacesPanel({ agentId, onInstalled }: Props) {
+export default function SkillsMarketplacesPanel({ agentId, role, onInstalled }: Props) {
+  const isAdmin = role === 'admin';
   const [marketplaces, setMarketplaces] = useState<MarketplaceSummary[]>([]);
   const [topError, setTopError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -277,15 +280,17 @@ export default function SkillsMarketplacesPanel({ agentId, onInstalled }: Props)
         <div style={{ flex: 1, fontSize: '0.78rem', color: '#64748b' }}>
           Marketplaces are shared across all agents on this host.
         </div>
-        <button
-          onClick={() => {
-            setEditorMode('create');
-            setEditorInitial(undefined);
-          }}
-          style={addButtonStyle}
-        >
-          + Add Marketplace
-        </button>
+        {isAdmin && (
+          <button
+            onClick={() => {
+              setEditorMode('create');
+              setEditorInitial(undefined);
+            }}
+            style={addButtonStyle}
+          >
+            + Add Marketplace
+          </button>
+        )}
       </div>
       {topError && (
         <div
@@ -315,8 +320,17 @@ export default function SkillsMarketplacesPanel({ agentId, onInstalled }: Props)
           <div style={{ fontWeight: 600, marginBottom: 6, color: '#0f172a' }}>
             No marketplaces configured.
           </div>
-          Click <strong>+ Add Marketplace</strong> to register a git repository or Nacos namespace
-          and start browsing its skills.
+          {isAdmin ? (
+            <>
+              Click <strong>+ Add Marketplace</strong> to register a git repository or Nacos
+              namespace and start browsing its skills.
+            </>
+          ) : (
+            <>
+              An admin for your organization has not registered any marketplaces yet. Once a
+              marketplace is registered, its skills can be installed here.
+            </>
+          )}
         </div>
       )}
       {marketplaces.map(mp => {
@@ -356,27 +370,31 @@ export default function SkillsMarketplacesPanel({ agentId, onInstalled }: Props)
                   {state?.loaded && ` · ${state.skills.length} skills`}
                 </div>
               </div>
-              <button
-                title="Edit"
-                onClick={e => {
-                  e.stopPropagation();
-                  setEditorMode('edit');
-                  setEditorInitial(mp);
-                }}
-                style={iconButtonStyle}
-              >
-                ⚙
-              </button>
-              <button
-                title="Delete"
-                onClick={e => {
-                  e.stopPropagation();
-                  handleDelete(mp.id);
-                }}
-                style={{ ...iconButtonStyle, color: '#dc2626' }}
-              >
-                🗑
-              </button>
+              {isAdmin && (
+                <button
+                  title="Edit"
+                  onClick={e => {
+                    e.stopPropagation();
+                    setEditorMode('edit');
+                    setEditorInitial(mp);
+                  }}
+                  style={iconButtonStyle}
+                >
+                  ⚙
+                </button>
+              )}
+              {isAdmin && (
+                <button
+                  title="Delete"
+                  onClick={e => {
+                    e.stopPropagation();
+                    handleDelete(mp.id);
+                  }}
+                  style={{ ...iconButtonStyle, color: '#dc2626' }}
+                >
+                  🗑
+                </button>
+              )}
               <span style={{ color: '#94a3b8', fontSize: '0.85rem' }}>{open ? '▼' : '▶'}</span>
             </div>
             {open && (

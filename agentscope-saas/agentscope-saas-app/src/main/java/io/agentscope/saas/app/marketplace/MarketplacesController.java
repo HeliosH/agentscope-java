@@ -59,6 +59,13 @@ import reactor.core.scheduler.Schedulers;
  * install lives on {@code AgentSkillsController}, which targets the agent's workspace {@code
  * skills/}. Ported from the desktop {@code MarketplacesController}, replacing the on-disk {@code
  * agentscope.json} file with the per-tenant DB table.
+ *
+ * <p><b>Authorization</b>: write endpoints (create / update / delete / connection-test) are gated
+ * to the {@code admin} JWT role — a marketplace config carries git/nacos connection credentials, so
+ * changing the org's marketplaces is an admin action (mirrors {@code OrgToolsConfigController} for
+ * MCP). Read endpoints (list marketplaces, browse skills) and per-agent install remain available
+ * to every org member: a member still browses marketplaces and installs skills into their own
+ * workspace (install reads the {@link MarketplaceRegistry} bean directly, not these endpoints).
  */
 @RestController
 @RequestMapping("/api/marketplaces")
@@ -71,6 +78,9 @@ public class MarketplacesController {
     private static final Set<String> SECRET_KEYS = Set.of("password", "secretKey");
 
     private static final Set<String> SUPPORTED_TYPES = Set.of("git", "nacos");
+
+    /** JWT role value permitted to manage org marketplaces (write endpoints). */
+    private static final String ADMIN_ROLE = "admin";
 
     private final MarketplaceRepository repository;
     private final MarketplaceRegistry registry;
@@ -109,6 +119,7 @@ public class MarketplacesController {
     @Transactional
     public Mono<MarketplaceSummary> createMarketplace(
             @RequestBody MarketplaceWriteRequest req, @AuthenticationPrincipal Jwt jwt) {
+        requireAdmin(jwt);
         UUID orgId = orgId(jwt);
         return Mono.fromCallable(
                         () -> {
@@ -131,6 +142,7 @@ public class MarketplacesController {
             @PathVariable String id,
             @RequestBody MarketplaceWriteRequest req,
             @AuthenticationPrincipal Jwt jwt) {
+        requireAdmin(jwt);
         UUID orgId = orgId(jwt);
         return Mono.fromCallable(
                         () -> {
@@ -166,6 +178,7 @@ public class MarketplacesController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @Transactional
     public Mono<Void> deleteMarketplace(@PathVariable String id, @AuthenticationPrincipal Jwt jwt) {
+        requireAdmin(jwt);
         UUID orgId = orgId(jwt);
         return Mono.fromRunnable(
                         () -> {
@@ -188,6 +201,7 @@ public class MarketplacesController {
     @PostMapping("/test")
     public Mono<TestConnectionResult> testTransient(
             @RequestBody MarketplaceWriteRequest req, @AuthenticationPrincipal Jwt jwt) {
+        requireAdmin(jwt);
         return Mono.fromCallable(
                         () -> {
                             validateRequest(req, true);
@@ -200,6 +214,7 @@ public class MarketplacesController {
     @PostMapping("/{id}/test")
     public Mono<TestConnectionResult> testExisting(
             @PathVariable String id, @AuthenticationPrincipal Jwt jwt) {
+        requireAdmin(jwt);
         UUID orgId = orgId(jwt);
         return Mono.fromCallable(
                         () -> {
@@ -426,6 +441,21 @@ public class MarketplacesController {
 
     private static UUID orgId(Jwt jwt) {
         return UUID.fromString(jwt.getClaimAsString("org_id"));
+    }
+
+    /**
+     * Rejects non-admin callers from write endpoints with 403 (401 when unauthenticated). Marketplace
+     * config carries connection credentials, so managing the org's marketplaces is an admin action —
+     * mirrors {@code OrgToolsConfigController.requireAdmin}.
+     */
+    private static void requireAdmin(Jwt jwt) {
+        if (jwt == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "unauthenticated");
+        }
+        String role = jwt.getClaimAsString("role");
+        if (!ADMIN_ROLE.equals(role)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "admin role required");
+        }
     }
 
     // -----------------------------------------------------------------

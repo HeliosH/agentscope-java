@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate, useParams, useOutletContext } from 'react-router-dom';
 import { AgentDefinition, getAgent } from '../api/agents';
+import type { MeResponse } from '../auth';
 
 const TABS: { key: string; label: string; icon: string }[] = [
   { key: 'chat', label: 'Chat', icon: '💬' },
@@ -16,6 +17,9 @@ export default function AgentLayout() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  // me is provided by ProtectedRoute's Outlet context; re-surfaced here so every agent sub-page
+  // can read the caller's role (e.g. SkillsMarketplacesPanel admin-gates org marketplace edits).
+  const { me } = useOutletContext<{ me: MeResponse | null }>();
   const [agent, setAgent] = useState<AgentDefinition | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -99,7 +103,7 @@ export default function AgentLayout() {
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', background: '#f8fafc' }}>
-        <Outlet context={{ agentId: id, agent }} />
+        <Outlet context={{ agentId: id, agent, me }} />
       </div>
     </div>
   );
