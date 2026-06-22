@@ -16,6 +16,8 @@
 package io.agentscope.harness.agent.filesystem.spec;
 
 import io.agentscope.harness.agent.IsolationScope;
+import io.agentscope.harness.agent.filesystem.remote.store.BaseStore;
+import io.agentscope.harness.agent.filesystem.remote.store.NamespaceFactory;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
 import io.agentscope.harness.agent.sandbox.SandboxClientOptions;
 import io.agentscope.harness.agent.sandbox.SandboxContext;
@@ -46,6 +48,17 @@ public abstract class SandboxFilesystemSpec {
     private SandboxExecutionGuard executionGuard;
     private boolean workspaceProjectionEnabled = true;
     private List<String> workspaceProjectionRoots = DEFAULT_WORKSPACE_PROJECTION_ROOTS;
+
+    /**
+     * Optional remote projection backend (F3-S2). When set, the sandbox-backed filesystem
+     * dual-writes file uploads here during a call and delegates out-of-call file IO (read/write/
+     * edit/exists/ls/download) to a {@link io.agentscope.harness.agent.filesystem.remote.RemoteFilesystem}
+     * built from this store + namespace factory. This closes the "No active sandbox" gap for
+     * MEMORY.md / skills / etc. between calls. {@code null} (default) disables projection.
+     */
+    private BaseStore remoteProjectionStore;
+
+    private NamespaceFactory remoteProjectionNamespaceFactory;
 
     protected abstract SandboxClient<?> createClient();
 
@@ -92,6 +105,36 @@ public abstract class SandboxFilesystemSpec {
 
     public SandboxExecutionGuard getExecutionGuard() {
         return executionGuard;
+    }
+
+    /**
+     * Configures the remote projection backend (F3-S2). When both store and namespace factory are
+     * non-null, the built sandbox filesystem will dual-write uploads and delegate out-of-call file
+     * IO to a {@link io.agentscope.harness.agent.filesystem.remote.RemoteFilesystem} backed by this
+     * store, so workspace files (MEMORY.md, skills, …) remain accessible between calls.
+     *
+     * @param store the per-file KV store backing the projection (e.g. Redis/Oss BaseStore)
+     * @param namespaceFactory per-tenant namespace factory (same semantics as RemoteFilesystemSpec's)
+     * @return this spec
+     */
+    public SandboxFilesystemSpec remoteProjection(
+            BaseStore store, NamespaceFactory namespaceFactory) {
+        this.remoteProjectionStore = store;
+        this.remoteProjectionNamespaceFactory = namespaceFactory;
+        return this;
+    }
+
+    public BaseStore getRemoteProjectionStore() {
+        return remoteProjectionStore;
+    }
+
+    public NamespaceFactory getRemoteProjectionNamespaceFactory() {
+        return remoteProjectionNamespaceFactory;
+    }
+
+    /** Whether a remote projection backend is configured. */
+    public boolean hasRemoteProjection() {
+        return remoteProjectionStore != null && remoteProjectionNamespaceFactory != null;
     }
 
     public SandboxFilesystemSpec workspaceProjectionEnabled(boolean enabled) {

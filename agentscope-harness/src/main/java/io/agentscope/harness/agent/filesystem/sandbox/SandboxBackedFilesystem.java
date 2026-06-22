@@ -16,9 +16,14 @@
 package io.agentscope.harness.agent.filesystem.sandbox;
 
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.harness.agent.filesystem.model.EditResult;
 import io.agentscope.harness.agent.filesystem.model.ExecuteResponse;
 import io.agentscope.harness.agent.filesystem.model.FileDownloadResponse;
 import io.agentscope.harness.agent.filesystem.model.FileUploadResponse;
+import io.agentscope.harness.agent.filesystem.model.LsResult;
+import io.agentscope.harness.agent.filesystem.model.ReadResult;
+import io.agentscope.harness.agent.filesystem.model.WriteResult;
+import io.agentscope.harness.agent.filesystem.remote.RemoteFilesystem;
 import io.agentscope.harness.agent.sandbox.ExecResult;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxAware;
@@ -46,8 +51,35 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
     private final String fsId;
     private volatile Sandbox sandbox;
 
+    /**
+     * Optional remote projection target. When set, file content IO (read/write/edit/exists/ls/
+     * upload/download) performed <em>outside a call</em> (sandbox == null) delegates to this remote
+     * filesystem backed by a {@link io.agentscope.harness.agent.filesystem.remote.store.BaseStore},
+     * so MEMORY.md/skills/etc. remain readable and writable between calls. Inside a call, writes are
+     * dual-written here (best-effort) so the projection stays current.
+     *
+     * <p>This is the F3-S2 fix for the "No active sandbox" gap. Shell-class operations (execute,
+     * grep, glob, delete, move) still require a live sandbox and throw outside a call — that is the
+     * correct semantics (no sandbox to run them in).
+     */
+    private volatile RemoteFilesystem remoteFallback;
+
     public SandboxBackedFilesystem() {
         this.fsId = "sandbox-" + UUID.randomUUID().toString().substring(0, 8);
+    }
+
+    /**
+     * Wires the remote projection backend. Must be called once at agent build time, before any
+     * call. Passing {@code null} disables projection (the legacy behaviour: all out-of-call IO
+     * throws).
+     */
+    public void configureRemoteFallback(RemoteFilesystem fallback) {
+        this.remoteFallback = fallback;
+    }
+
+    /** Returns whether a remote projection backend is configured. */
+    public boolean hasRemoteFallback() {
+        return remoteFallback != null;
     }
 
     @Override
@@ -113,6 +145,8 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                 ExecResult result = active.exec(runtimeContext, cmd, null);
                 if (result.ok()) {
                     results.add(FileUploadResponse.success(path));
+                    // F3-S2: dual-write the projection so the file is readable between calls.
+                    projectToRemote(runtimeContext, path, content);
                 } else {
                     results.add(FileUploadResponse.fail(path, result.combinedOutput()));
                 }
@@ -135,6 +169,9 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
     @Override
     public List<FileDownloadResponse> downloadFiles(
             RuntimeContext runtimeContext, List<String> paths) {
+        if (sandbox == null && remoteFallback != null) {
+            return remoteFallback.downloadFiles(runtimeContext, paths);
+        }
         Sandbox active = requireSandbox();
         List<FileDownloadResponse> results = new ArrayList<>(paths.size());
 
@@ -169,6 +206,74 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
         }
 
         return results;
+    }
+
+    // ---- F3-S2: out-of-call delegation to the remote projection ----
+    // When sandbox == null (between calls), file content IO delegates to remoteFallback so
+    // MEMORY.md / skills / etc. stay readable and writable. Shell-class operations (execute,
+    // grep, glob, delete, move) are NOT overridden — they inherit super which routes through
+    // execute() and correctly throw outside a call (no sandbox to run them in).
+
+    @Override
+    public ReadResult read(RuntimeContext runtimeContext, String filePath, int offset, int limit) {
+        if (sandbox == null && remoteFallback != null) {
+            return remoteFallback.read(runtimeContext, filePath, offset, limit);
+        }
+        return super.read(runtimeContext, filePath, offset, limit);
+    }
+
+    @Override
+    public WriteResult write(RuntimeContext runtimeContext, String filePath, String content) {
+        if (sandbox == null && remoteFallback != null) {
+            return remoteFallback.write(runtimeContext, filePath, content);
+        }
+        return super.write(runtimeContext, filePath, content);
+    }
+
+    @Override
+    public EditResult edit(
+            RuntimeContext runtimeContext,
+            String filePath,
+            String oldString,
+            String newString,
+            boolean replaceAll) {
+        if (sandbox == null && remoteFallback != null) {
+            return remoteFallback.edit(runtimeContext, filePath, oldString, newString, replaceAll);
+        }
+        return super.edit(runtimeContext, filePath, oldString, newString, replaceAll);
+    }
+
+    @Override
+    public boolean exists(RuntimeContext runtimeContext, String path) {
+        if (sandbox == null && remoteFallback != null) {
+            return remoteFallback.exists(runtimeContext, path);
+        }
+        return super.exists(runtimeContext, path);
+    }
+
+    @Override
+    public LsResult ls(RuntimeContext runtimeContext, String path) {
+        if (sandbox == null && remoteFallback != null) {
+            return remoteFallback.ls(runtimeContext, path);
+        }
+        return super.ls(runtimeContext, path);
+    }
+
+    /**
+     * Best-effort dual-write of a successfully uploaded file to the remote projection. Failures are
+     * logged and swallowed so a remote-store outage never breaks the in-sandbox write (the sandbox
+     * copy is authoritative within a call).
+     */
+    private void projectToRemote(RuntimeContext runtimeContext, String path, byte[] content) {
+        RemoteFilesystem fallback = remoteFallback;
+        if (fallback == null) {
+            return;
+        }
+        try {
+            fallback.uploadFiles(runtimeContext, List.of(Map.entry(path, content)));
+        } catch (Exception e) {
+            log.warn("[sandbox-fs] remote projection failed for path {}: {}", path, e.getMessage());
+        }
     }
 
     private Sandbox requireSandbox() {

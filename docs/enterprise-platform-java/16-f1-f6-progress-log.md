@@ -228,3 +228,47 @@ F7a 权限精配后,F7b 接长期记忆。框架 `LongTermMemory`/`StaticLongTer
 - **AgentInput 不可变**:record `AgentInput(List<Msg> msgs)`,改 messages 须 `new AgentInput(enhancedList)`。
 - **TenantContext 双槽位**:`RuntimeContext.put(TenantContext.ATTR_KEY, tc)`(string extra,存活 harness 重建)+ `put(TenantContext.class, tc)`(typed singleton)。middleware 用 `TenantContext.from(ctx)` 先试 typed 再回退 ATTR_KEY(类 DynamicMcpMiddleware)。
 - **Mockito mock 具体类**:`Mem0Client` 非 final、方法非 final,Mockito 5.x 默认可 mock(无需 mockito-inline)。`timeout(2000)` 验证异步 doFinally 调用。
+
+## F3-S2 沙箱 on 时文件记忆 call 外可读写(2026-06-22,框架级 remote projection,单测全绿,e2e 待 Redis)
+
+F7b Mem0 是 F3-S2 gap 的 workaround(引入外部向量服务绕开沙箱 FS)。F3-S2 是正解:让 `SandboxBackedFilesystem` 叠加 remote 投影,call 外文件 IO 降级到 BaseStore,根治 gap。框架级改动(agentscope-harness),让所有沙箱后端(cube/docker/e2b)受益。
+
+**核心机制**(`SandboxBackedFilesystem` 加可选 `RemoteFilesystem remoteFallback`):
+- **call 内**(sandbox!=null):走沙箱(不变)。`uploadFiles` 成功后**增量双写**投影到 BaseStore(`remoteFallback.uploadFiles`)。投影失败 log warn 不影响沙箱写。
+- **call 外**(sandbox==null):文件内容 IO(read/write/edit/exists/ls/download)委托 `remoteFallback`(复用 RemoteFilesystem 的 BaseStore 实现,不重写)。`execute`/`grep`/`glob`/`delete`/`move` 仍抛(无沙箱不能跑 shell/find/rm,语义正确)。
+- **stop 不整包投影 BaseStore**(避免并发 call 覆盖);只用 call 内增量。snapshot tar 路径(RemoteSnapshotSpec)独立保留(沙箱 evict/崩溃恢复用)。
+- **edit call 内不双写**(v1 限制,call 外读不到刚 edit 的内容直到 stop snapshot);write/upload 双写(窗口≈0)。
+
+**为何委托 RemoteFilesystem 而非重写 store 调用**:RemoteFilesystem 已有完备 BaseStore 文件操作(read→store.get、write→putIfVersion CAS、edit→CAS 重试、exists/ls),全部测试过。复用避免重写 + 双份 bug。
+
+**改动文件**(最小集,3 框架 + 1 SaaS):
+- `SandboxBackedFilesystem.java`:加 `remoteFallback` 字段 + `configureRemoteFallback` + 覆盖 read/write/edit/exists/ls/downloadFiles(call 外降级)+ uploadFiles 双写 + `projectToRemote` 辅助。
+- `SandboxFilesystemSpec.java`:加 `remoteProjection(BaseStore, NamespaceFactory)` 配置 + getter + `hasRemoteProjection`。
+- `HarnessAgent.java`(~1898 装配段):`capturedSandboxFs = new SandboxBackedFilesystem()` 后,`hasRemoteProjection()` 时构造 `RemoteFilesystem(store, nsFactory)` 注入 `configureRemoteFallback`。
+- SaaS `AgentConfig.java`:沙箱 on 分支,`workspaceStoreProvider.getIfAvailable()` 存在时 `sandboxSpec.remoteProjection(store, AgentConfig::tenantNamespace)`。`capturedSandboxFs` 类型不变(`SandboxBackedFilesystem`),`SandboxLifecycleMiddleware`/subagent factory 零改动 —— 不传染调用方。
+
+**一致性模型**:单文件原子(KV store 单 key),并发 call 不读半个文件;集合级非原子(文件集合交叉)—— MEMORY.md/skills 低频写可接受。call 内 read-after-write 一致(读沙箱本地)。并发 stop 覆盖已规避(不整包投影)。
+
+**单测**(harness `SandboxBackedFilesystemTest` 8/8):用真实 `InMemoryStore` + `RemoteFilesystem`(harness 测试只有 JUnit5,无 mockito/assertj —— 不能用 mock,改用真实集成 + FakeSandbox 实现 Sandbox 接口)。
+1. outOfCallReadDelegatesToFallbackWhenConfigured(store seed 后 call 外 read 返回内容)
+2. outOfCallReadThrowsWhenNoFallbackConfigured(legacy 行为)
+3. outOfCallExecuteAlwaysThrowsEvenWithFallback(execute 是 shell-class,不降级)
+4. outOfCallWriteDelegatesToFallback
+5. outOfCallExistsDelegatesToFallback
+6. inCallUploadDualWritesToFallback(沙箱写 + 投影可读)
+7. inCallUploadSucceedsEvenIfProjectionStoreIsBroken(ThrowingStore,沙箱写不受投影失败影响)
+8. hasRemoteFallbackReflectsConfiguration
+
+**测试 gate**:harness `SandboxBackedFilesystemTest` 8/8 + saas-app 31/31(含 SaasAppContextLoadsTest 确认 projection 接线不破坏 context)。
+
+**e2e(待 Redis)**:本机无 Docker,无法起 Redis。cube on + Redis on 验证 call 外 `GET /workspace/memory`、`PUT /skills/workspace/{name}` 不再 500 待用户提供 Redis。框架单测已用 InMemoryStore 充分证明机制(call 外降级 + 双写 + 投影失败不阻断)。
+
+**关键 gotcha(非显然)**:
+- **RemoteFilesystem 路径不一致(既有 bug,非 F3-S2 引入)**:`write` 用原始 filePath 作 store key,`read/exists` 用 `normalizePath`(加前导 `/`)。测试须用 `/`-prefixed 路径(`/MEMORY.md`)否则 write 存 `MEMORY.md`、exists 查 `/MEMORY.md` 不匹配。生产 SaaS 的 AgentWorkspaceController 传的路径若不一致会踩此坑 —— e2e 时验证。
+- **harness 测试无 mockito/assertj**:harness pom 只依赖 core test-jar(JUnit5 传递),无 mockito/assertj。测试用真实 InMemoryStore + FakeSandbox(实现 Sandbox 接口全部抽象方法:start/stop/close/isRunning/getState/persistWorkspace/hydrateWorkspace,getState 返回 `new SandboxState(){}` 匿名子类 —— SandboxState 无 abstract 方法)。
+- **SandboxState 无 abstract 方法**:是 abstract class 但全 concrete getter/setter,`new SandboxState(){}` 可实例化。
+- **HarnessAgent 装配段 distributedStore vs workspaceStore**:sandbox 路径已注入 `distributedStore`(用于 snapshotSpec/executionGuard),但 projection 用的是 `workspaceStoreProvider`(BaseStore bean,Redis on 时存在)。两者不同:distributedStore 是 harness 内部装配,workspaceStore 是 SaaS 注入的 BaseStore。projection 用 workspaceStore。
+
+**与 F7b Mem0 关系**:F3-S2 修好后 Mem0 的"绕 gap"价值消失(文件记忆 call 外可读写 + memory_search 关键词搜索)。评估移除 Mem0 或保留作大量记忆场景的语义召回补充。见 [[f3-s2-remote-projection]]。
+
+**v1 范围限制(诚实)**:execute/grep/glob/delete/move call 外不支持(语义正确);edit call 内不双写(call 外读不到刚 edit 的内容直到 stop snapshot);无语义召回(仍关键词 memory_search)。

@@ -107,6 +107,23 @@ public class AgentConfig {
         // does not attempt to exec in an unconfigured environment.
         SandboxFilesystemSpec sandboxSpec = sandboxSpecProvider.getIfAvailable();
         if (properties.getSandbox().isEnabled() && sandboxSpec != null) {
+            // F3-S2: when a BaseStore (Redis/Oss) is available, wire a remote projection so
+            // workspace files (MEMORY.md, skills, …) stay readable/writable between calls. Without
+            // this, SandboxBackedFilesystem throws "No active sandbox" on out-of-call IO (the
+            // frontend workspace/skill pages 500 between chats). Projection reuses the same
+            // per-tenant namespace as the sandbox-off RemoteFilesystemSpec path.
+            BaseStore projectionStore = workspaceStoreProvider.getIfAvailable();
+            if (projectionStore != null) {
+                sandboxSpec.remoteProjection(projectionStore, AgentConfig::tenantNamespace);
+                log.info(
+                        "Sandbox remote projection enabled (out-of-call file IO delegates to"
+                                + " BaseStore: {})",
+                        projectionStore.getClass().getSimpleName());
+            } else {
+                log.info(
+                        "Sandbox remote projection disabled (no BaseStore bean); out-of-call"
+                                + " workspace IO will throw 'No active sandbox'");
+            }
             builder.filesystem(sandboxSpec);
             SandboxBroker broker = sandboxBrokerProvider.getIfAvailable();
             if (broker != null) {

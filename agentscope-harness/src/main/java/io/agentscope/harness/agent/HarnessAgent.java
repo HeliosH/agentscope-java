@@ -43,6 +43,7 @@ import io.agentscope.core.tool.Toolkit;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.OverlayFilesystem;
 import io.agentscope.harness.agent.filesystem.local.LocalFilesystemWithShell;
+import io.agentscope.harness.agent.filesystem.remote.RemoteFilesystem;
 import io.agentscope.harness.agent.filesystem.remote.store.NamespaceFactory;
 import io.agentscope.harness.agent.filesystem.sandbox.AbstractSandboxFilesystem;
 import io.agentscope.harness.agent.filesystem.sandbox.SandboxBackedFilesystem;
@@ -1896,6 +1897,20 @@ public class HarnessAgent implements Agent, AutoCloseable {
             SandboxBackedFilesystem capturedSandboxFs = null;
             if (sandboxFilesystemSpec != null) {
                 capturedSandboxFs = new SandboxBackedFilesystem();
+                // F3-S2: wire the remote projection so out-of-call file IO (MEMORY.md, skills, …)
+                // delegates to the BaseStore instead of throwing "No active sandbox". The
+                // projection
+                // is optional; when the spec has no remoteProjection configured this is a no-op and
+                // the legacy out-of-call-throws behaviour is preserved.
+                if (sandboxFilesystemSpec.hasRemoteProjection()) {
+                    capturedSandboxFs.configureRemoteFallback(
+                            new RemoteFilesystem(
+                                    sandboxFilesystemSpec.getRemoteProjectionStore(),
+                                    sandboxFilesystemSpec.getRemoteProjectionNamespaceFactory()));
+                    log.info(
+                            "[harness] Sandbox filesystem remote projection enabled"
+                                    + " (out-of-call file IO delegates to BaseStore)");
+                }
                 filesystem = capturedSandboxFs;
 
                 defaultSandboxContext = sandboxFilesystemSpec.toSandboxContext(resolvedWorkspace);
