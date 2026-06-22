@@ -23,6 +23,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Pattern;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
 
 /**
@@ -162,6 +164,45 @@ final class ReflectiveFunctionTool extends ToolBase {
             return Mono.error(new ToolSuspendException());
         }
         return methodInvoker.invokeAsync(toolObject, method, param, customConverter);
+    }
+
+    /**
+     * Parameter-level rule matching for reflective tools.
+     *
+     * <p>A {@code null} {@code ruleContent} matches every invocation (inherits {@link
+     * ToolBase#matchRule} semantics). A non-null {@code ruleContent} is treated as a regex applied
+     * to the tool's {@code command} argument when present — this lets the permission engine express
+     * "ask only when the shell command matches a dangerous pattern" (e.g. {@code "rm -rf|mkfs|dd
+     * if="}) instead of gating the whole tool at tool-name level. When the tool has no {@code
+     * command} argument, a non-null {@code ruleContent} does not match (returns {@code false}),
+     * preserving the default deny-by-pattern behavior for non-shell tools.
+     *
+     * <p>Invalid regexes are logged and treated as non-matching rather than propagated, so a
+     * misconfigured rule never breaks the agent run.
+     */
+    @Override
+    public boolean matchRule(String ruleContent, Map<String, Object> toolInput) {
+        if (ruleContent == null) {
+            return true;
+        }
+        if (toolInput == null || toolInput.isEmpty()) {
+            return false;
+        }
+        Object command = toolInput.get("command");
+        if (!(command instanceof String cmd) || cmd.isEmpty()) {
+            return false;
+        }
+        try {
+            return Pattern.compile(ruleContent).matcher(cmd).find();
+        } catch (Exception e) {
+            LoggerFactory.getLogger(ReflectiveFunctionTool.class)
+                    .warn(
+                            "Invalid permission rule regex '{}' for tool '{}': {}",
+                            ruleContent,
+                            getName(),
+                            e.getMessage());
+            return false;
+        }
     }
 
     Method getMethod() {

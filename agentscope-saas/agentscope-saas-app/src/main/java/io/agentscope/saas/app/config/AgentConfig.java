@@ -40,6 +40,7 @@ import io.agentscope.saas.sandbox.SandboxBroker;
 import io.agentscope.saas.sandbox.middleware.SandboxQuotaMiddleware;
 import io.agentscope.saas.sandbox.middleware.SandboxTrackingMiddleware;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -194,8 +195,13 @@ public class AgentConfig {
         return new McpClientRegistry();
     }
 
-    /** Builds the per-agent permission context from the tool_guard config (ALLOW/ASK/DENY rules). */
-    private static PermissionContextState buildPermissionContext(SaasProperties.Agent agentCfg) {
+    /**
+     * Builds the per-agent permission context from the tool_guard config (ALLOW/ASK/DENY rules).
+     *
+     * <p>Package-private for direct unit testing of the rule-construction logic (including
+     * parameter-level {@code askRules}).
+     */
+    static PermissionContextState buildPermissionContext(SaasProperties.Agent agentCfg) {
         SaasProperties.Permission p = agentCfg.getPermission();
         PermissionMode mode = PermissionMode.valueOf(p.getMode().toUpperCase());
         PermissionContextState.Builder b = PermissionContextState.builder().mode(mode);
@@ -206,6 +212,16 @@ public class AgentConfig {
         for (String tool : p.getAskTools()) {
             b.addAskRule(
                     tool, new PermissionRule(tool, null, PermissionBehavior.ASK, "tool_guard"));
+        }
+        // Parameter-level ASK rules: tool name -> regex applied to the tool's `command` argument.
+        // These layer on top of the tool-name-level rules so a tool can be ALLOW by default yet
+        // still ASK when the command matches a dangerous pattern (e.g. execute with "rm -rf").
+        for (Map.Entry<String, String> entry : p.getAskRules().entrySet()) {
+            String tool = entry.getKey();
+            b.addAskRule(
+                    tool,
+                    new PermissionRule(
+                            tool, entry.getValue(), PermissionBehavior.ASK, "tool_guard"));
         }
         for (String tool : p.getDenyTools()) {
             b.addDenyRule(

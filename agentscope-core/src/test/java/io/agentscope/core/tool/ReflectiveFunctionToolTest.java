@@ -78,6 +78,23 @@ class ReflectiveFunctionToolTest {
         }
     }
 
+    /** A shell-like tool with a {@code command} argument, used to verify parameter-level rules. */
+    static final class ShellTools {
+        @Tool(name = "run_shell", description = "run a shell command")
+        public String runShell(
+                @ToolParam(name = "command", description = "command to run") String command) {
+            return "ran:" + command;
+        }
+    }
+
+    /** A tool with no {@code command} argument, to confirm parameter-level rules skip it. */
+    static final class NoCommandTools {
+        @Tool(name = "no_command", description = "tool without command arg")
+        public String noCommand(@ToolParam(name = "path", description = "path") String path) {
+            return path;
+        }
+    }
+
     @Test
     void registersAsToolBaseSubclassWithAnnotationFlags() {
         Toolkit toolkit = new Toolkit();
@@ -146,5 +163,61 @@ class ReflectiveFunctionToolTest {
         AgentTool tool = toolkit.getTool("external_call");
         ToolBase tb = assertInstanceOf(ToolBase.class, tool);
         assertTrue(tb.isExternalTool());
+    }
+
+    @Test
+    void nullRuleContentMatchesEveryInvocation() {
+        ReflectiveFunctionTool tool = reflectiveShellTool();
+        // null ruleContent is the tool-name-level wildcard — matches regardless of command.
+        assertTrue(tool.matchRule(null, Map.of("command", "rm -rf /")));
+        assertTrue(tool.matchRule(null, Map.of("command", "echo hi")));
+        assertTrue(tool.matchRule(null, Map.of()));
+    }
+
+    @Test
+    void regexRuleMatchesOnlyCommandsThatContainThePattern() {
+        ReflectiveFunctionTool tool = reflectiveShellTool();
+        String danger = "rm -rf|mkfs|dd if=";
+        assertTrue(tool.matchRule(danger, Map.of("command", "rm -rf /tmp/x")));
+        assertTrue(tool.matchRule(danger, Map.of("command", "sudo mkfs.ext4 /dev/sda")));
+        assertFalse(tool.matchRule(danger, Map.of("command", "echo hello")));
+        assertFalse(tool.matchRule(danger, Map.of("command", "ls -la")));
+    }
+
+    @Test
+    void regexRuleDoesNotMatchWhenCommandAbsentOrEmpty() {
+        ReflectiveFunctionTool tool = reflectiveShellTool();
+        String danger = "rm -rf";
+        // No command argument at all.
+        assertFalse(tool.matchRule(danger, Map.of("path", "/tmp")));
+        // Empty command.
+        assertFalse(tool.matchRule(danger, Map.of("command", "")));
+        // Non-string command.
+        assertFalse(tool.matchRule(danger, Map.of("command", 42)));
+    }
+
+    @Test
+    void invalidRegexIsTreatedAsNonMatchingRatherThanPropagated() {
+        ReflectiveFunctionTool tool = reflectiveShellTool();
+        // Unbalanced bracket is an invalid regex — must not throw, must not match.
+        assertFalse(tool.matchRule("[unclosed", Map.of("command", "rm -rf /")));
+    }
+
+    @Test
+    void nonCommandToolIgnoresParameterLevelRegex() {
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerTool(new NoCommandTools());
+        AgentTool tool = toolkit.getTool("no_command");
+        ReflectiveFunctionTool rft = assertInstanceOf(ReflectiveFunctionTool.class, tool);
+        // A tool without a `command` argument never matches a non-null ruleContent.
+        assertFalse(rft.matchRule("rm -rf", Map.of("path", "/tmp/rm -rf")));
+        // null still matches (tool-name level).
+        assertTrue(rft.matchRule(null, Map.of("path", "/tmp")));
+    }
+
+    private static ReflectiveFunctionTool reflectiveShellTool() {
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerTool(new ShellTools());
+        return assertInstanceOf(ReflectiveFunctionTool.class, toolkit.getTool("run_shell"));
     }
 }

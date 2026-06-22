@@ -16,6 +16,7 @@
 package io.agentscope.saas.app.config;
 
 import java.util.List;
+import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
@@ -597,6 +598,18 @@ public class SaasProperties {
                 List.of("writeFile", "editFile", "propose_skill", "skill_manage", "execute");
         private List<String> denyTools = List.of();
 
+        /**
+         * Parameter-level ASK rules: tool name &#8594; regex. When a tool call's {@code command}
+         * argument matches the regex, the call is gated with ASK (HITL confirm card); non-matching
+         * invocations fall through to the tool-name-level allow/ask rules. This enables
+         * "ask only for dangerous commands" policies (e.g. {@code execute: "rm -rf|mkfs|dd if="})
+         * instead of gating the whole tool. Only tools with a {@code command} argument (currently
+         * {@code execute}) honor parameter-level rules; others ignore the regex. Empty by default —
+         * production that wants fine-grained shell gating overrides this; the e2e/dev profiles keep
+         * the tool-name-level allow-all for unattended runs.
+         */
+        private Map<String, String> askRules = Map.of();
+
         public String getMode() {
             return mode;
         }
@@ -627,6 +640,14 @@ public class SaasProperties {
 
         public void setDenyTools(List<String> denyTools) {
             this.denyTools = denyTools;
+        }
+
+        public Map<String, String> getAskRules() {
+            return askRules;
+        }
+
+        public void setAskRules(Map<String, String> askRules) {
+            this.askRules = askRules == null ? Map.of() : askRules;
         }
     }
 }
