@@ -67,6 +67,14 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
             return next.apply(input);
         }
 
+        // Dev/bypass tenants use non-UUID ids (e.g. "dev-org"); the sandboxes tracking table keys
+        // on
+        // UUID org/user ids, so skip tracking entirely for them — same convention as
+        // SaasChatController.isPersistable skipping message persistence for non-UUID tenants.
+        if (!isUuid(tc.orgId()) || !isUuid(tc.userId())) {
+            return next.apply(input);
+        }
+
         UUID orgId = UUID.fromString(tc.orgId());
         UUID userId = UUID.fromString(tc.userId());
         String sessionId = ctx.getSessionId();
@@ -103,5 +111,17 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
                                 }
                             }
                         });
+    }
+
+    private static boolean isUuid(String s) {
+        if (s == null || s.isBlank()) {
+            return false;
+        }
+        try {
+            UUID.fromString(s);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
     }
 }

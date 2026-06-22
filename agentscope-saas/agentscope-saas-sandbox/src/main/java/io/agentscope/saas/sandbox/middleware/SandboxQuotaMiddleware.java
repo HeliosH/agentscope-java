@@ -52,10 +52,26 @@ public class SandboxQuotaMiddleware implements MiddlewareBase {
             Function<AgentInput, Flux<AgentEvent>> next) {
 
         TenantContext tc = TenantContext.from(ctx);
-        if (tc != null && tc.orgId() != null && tc.userId() != null) {
+        if (tc != null
+                && tc.orgId() != null
+                && tc.userId() != null
+                && isUuid(tc.orgId())
+                && isUuid(tc.userId())) {
             broker.checkQuota(
                     UUID.fromString(tc.orgId()), UUID.fromString(tc.userId()), tc.maxSandboxes());
         }
         return next.apply(input);
+    }
+
+    private static boolean isUuid(String s) {
+        if (s == null || s.isBlank()) {
+            return false;
+        }
+        try {
+            UUID.fromString(s);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
     }
 }

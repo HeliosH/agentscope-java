@@ -100,3 +100,35 @@ metadata:
 - **Phase D**:Admin 控制面(0%) + 可观测 OTel/Micrometer(0%) + DegradationManager(0%) + 离线交付(0%)。
 - **模型网关**:代码已就绪(type=gateway),部署配环境变量。
 - **渠道系统**:用户剔除 IM,Web(AG-UI)已落地。
+
+## Cube sandbox 端到端验证(2026-06-22,dev profile 全绿)
+
+用 `--spring.profiles.active=dev` 对真实 CubeSandbox(`http://cubesandbox.dev.comnova.cc:3000`)跑通完整 e2e。dev profile 零外部依赖:H2 + 内存状态 + ScriptedToolModel(把 chat message 当 shell 命令驱动 `execute` 工具,无需真 LLM)+ DevSecurityConfig 免登录。8 个 cube microVM 创建后全部释放(platform `/health` sandboxes=0)。
+
+**验证通过项**:
+
+1. cube 平台 API(`POST /sandboxes`/`DELETE`/`GET /templates`)可达;envd host `https://49983-{sandboxId}.{domain}` DNS+TLS 通(证书校验失败→`insecureSkipTlsVerify=true` 兜底,envdVersion 0.2.0 与 commit 1623782f 修复目标一致)。
+2. 完整 ReAct 循环:ScriptedToolModel 首轮发 `execute` ToolUseBlock → CubeSandbox envd `/process.Process/Start`(Connect+protobuf)执行 shell → `TOOL_CALL_RESULT`=`"Exit code: 0\n\nhello-cube-sandbox\n"` → 次轮终止文本 → `RUN_FINISHED`(7/7 断言)。
+3. 单次调用 FS 验证:`echo X > /home/user/m.txt && cat m.txt && pwd && ls` → 输出 `MARKER-XYZ`、`pwd=/home/user`、`ls` 含 m.txt(cwd=workspaceRoot,write/read 工作正常)。
+4. **跨 cube microVM 工作区持久化(Branch C)**:call 1 `echo cross-cube-survivor > /home/user/survivor.txt` → stop → tar 快照(20480→30720 bytes 随写入增长)上传 PG → call 2 创建**新** microVM → `snapshot exists=true` → `Branch C: restoring from snapshot`(base64+tar shell hydrate)→ `cat survivor.txt` 输出 `cross-cube-survivor`。文件在两个独立 cube 实例间存活。此前 Branch C 仅 docker 沙箱验证过(commit fca90731),现 cube 也确认。
+5. 沙箱释放:CubeSandbox.shutdown → `platform.killSandbox`(DELETE /sandboxes/{id},204);8 创建 0 残留。
+
+**验证中发现并修复的 4 个 bug(dev profile 此前根本跑不通)**:
+
+- **配置模板失效**:`application-dev.yml` 写死 `cube-template-id: tpl-72d9b3147a4c4029b9b10dfe`,该模板在 cube 服务器 "not available locally"(worker 镜像缓存被驱逐,`GET /templates` 仍标 READY 但 `POST /sandboxes` 报 130483)。改为 `${CUBE_TEMPLATE_ID:tpl-sandbox-code}`(env 可覆盖,默认当前可用模板)。
+- **SandboxQuotaMiddleware UUID 解析崩溃**:`onAgent` 在 try 块**外** `UUID.fromString(tc.orgId())`,dev tenant `dev-org` 非 UUID → `IllegalArgumentException` 在中间件链首抛出,整个 chat 流 500。加 `isUuid` guard(非 UUID tenant 跳过配额检查),与 `SaasChatController.isPersistable` 跳过非 UUID 持久化的约定一致。
+- **SandboxTrackingMiddleware 同样问题**:`UUID.fromString(tc.orgId())` 在 try 外,同样 guard 修复。
+- **dev profile 权限 ASK 门**:`execute` 在默认 `askTools` 里(SaasProperties.Permission),dev 无覆盖 → ReAct 循环被 `require_user_confirm` HITL 暂停,命令不执行。dev profile 加 `saas.agent.permission.allow-tools: [execute, write_file, read_file, ...]` + `ask-tools: []`(dev 无人值守,自动放行)。
+
+**关键 gotcha(非显然)**:
+
+- **改 saas-sandbox 后必须 `clean install` 到本地仓库**再打 app 包。`mvn -pl agentscope-saas-app package`(无 `-am`)从 `D:\.m2\repo` 拉**旧** saas-sandbox jar(无修复)→ 运行时仍崩。且 Maven 增量编译会误判源码未变跳过重编译(即便 `clean install` 后 class 仍是旧的)——必须 `mvn clean install` 强制重编译。本地仓库是 `D:\.m2\repo`(非默认 `~/.m2`)。
+- **`javap` 不在 Git Bash PATH**——用 `javap` 验证 class 是否含某方法会静默失败(`command not found`→空输出→误判"不存在")。用 `find + unzip + javap` 时先确认 javap 可用(`$JAVA_HOME/bin/javap`)。
+- **`spring-boot:run` 不重 resolve SNAPSHOT 依赖**——改了 harness/sandbox 后必须 `java -jar` fat jar。fat jar 打包用 `-Dmaven.javadoc.skip=true`(cross-module `{@link}` 会让 javadoc:jar 失败)。
+- **dev profile 默认端口 8080**(`${SERVER_PORT:8080}`);要换端口须显式传 `SERVER_PORT` env 或 `--server.port=`。
+- **envd 间歇 HTTP 502**:后台 `SessionTree.mirrorToFilesystem`→`SandboxBackedFilesystem.uploadFiles` 偶发 `envd Start failed HTTP 502`(沙箱并发/teardown 竞态),非致命,chat 不受影响。
+- **跨调用快照共享**:dev 模式下所有 chat 共享同一 snapshotId(`HarnessAgent` session 解析对 dev-user 稳定),跨调用 Branch C restore 依赖 stop→upload→新 start→hydrate 时序,call 间需留足 stop 时间(实测 3s 够)。
+
+**测试 gate**:`mvn -o -pl agentscope-saas/agentscope-saas-sandbox -am install` + `mvn -pl agentscope-saas/agentscope-saas-app test` = saas-app 23/23 绿(含 SaasAppContextLoadsTest 上下文加载 golden gate)+ saas-sandbox 7/7 绿(含 SandboxQuotaMiddlewareTest,UUID guard 不破坏既有 UUID-tenant 配额测试)。offline 缺 `surefire-junit-platform:3.5.5` provider 时去 `-o` 在线跑。
+
+**遗留(非阻塞)**:F3-S2 热路径实时持久化仍暂缓(框架级);dev 模式 chat 消息不持久化(非 UUID tenant,设计如此);envd 502 噪声待框架侧 sandbox filesystem 投影解决。

@@ -51,7 +51,7 @@ saas:
     idle-ttl-seconds: 120
     cube-api-url: http://cubesandbox.dev.comnova.cc:3000
     cube-api-key: ""
-    cube-template-id: tpl-72d9b3147a4c4029b9b10dfe
+    cube-template-id: ${CUBE_TEMPLATE_ID:tpl-sandbox-code}
     cube-domain: cubesandbox.dev.comnova.cc
     cube-envd-host-pattern: "https://{port}-{sandboxId}.{domain}"
     cube-insecure-skip-tls-verify: true
@@ -65,6 +65,12 @@ saas:
   agent:
     name: assistant
     max-iters: 10
+    # Dev verification runs unattended (scripted model drives `execute` directly). Auto-allow the
+    # shell + file tools so the ReAct loop isn't paused by the permission ASK gate (HITL).
+    permission:
+      mode: DEFAULT
+      allow-tools: [execute, write_file, read_file, edit_file, list_files, glob_files, grep_files]
+      ask-tools: []
   security:
     dev:
       enabled: true
