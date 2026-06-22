@@ -169,3 +169,27 @@ metadata:
 **测试 gate**:`mvn -o -pl saas-app test` = 23/23 绿(含 SaasAppContextLoadsTest,SandboxConfig 空串修复不破坏上下文加载)。
 
 **遗留(非阻塞)**:F3-S2 call 外 workspace/skill 端点仍 500(cube on 时);MemoryFlushManager call 外 flush WARN(非致命);前端 skill 管理页 cube on 时不可用(改用 call 内 execute 创建)。这些都在 F3-S2 框架级修复范围内。
+
+## F7a 参数级权限规则(2026-06-22,askRules,单测 + e2e 全绿)
+
+cube 真 LLM e2e 跑通后,权限是"验证用配置"(dev/gateway allow-all,execute 在 allow),生产不能继承。且权限是纯 tool-name 级(`PermissionRule.ruleContent` 全 null)—— 做不到"echo 直接跑、rm 才 ASK"。F7a 加参数级规则。
+
+**框架侧**(`agentscope-core`):`ReflectiveFunctionTool` 覆盖 `matchRule(ruleContent, toolInput)`(`ToolBase` 默认:null 匹配全部、非 null 拒绝)。覆盖语义:null 匹配全部(不变);非 null 当**正则**,匹配 toolInput 的 `command` 字段(对 execute)。无 command 字段或非 string command → 非 null 不匹配(维持默认)。非法正则 log+返回 false(不传播,不破坏 run)。注意:`ToolBase.getName()` 不是 `name()`(踩过 ECJ "Unresolved compilation problem" —— 测试在 saas-app 跨模块引用包私有 `ReflectiveFunctionTool` 类型会编译失败,saas 测试改用 `ToolBase` public 类型)。
+
+**saas 侧**:`SaasProperties.Permission` 加 `askRules: Map<String,String>`(tool name → 危险正则),空默认。`AgentConfig.buildPermissionContext` 把 askRules 转成 `PermissionRule(tool, regex, ASK, "tool_guard")`(buildPermissionContext 改 package-private 便测)。
+
+**求值顺序关键**(`PermissionEngine.checkPermission`):deny > **ask** > 工具自身 > allow > bypass > default。参数级 ASK 在 allow 前求值 → execute 在 allowTools + askRules 有 `rm -rf` 正则时:`rm -rf xxx` 命中 ask → ASK(优先于 allow);`echo hello` 不命中 ask → 落到 allow → ALLOW。**配置约定**:execute 不能同时在 askTools(null content 匹配全部,会遮蔽 askRules 正则)和 askRules —— 要参数级精配,execute 须移出 askTools、放 allowTools + askRules。
+
+**e2e 验证(gateway profile + 真 LLM glm-5.1 + cube)**:`application-gateway.yml` 加 `ask-rules: {execute: "rm -rf|mkfs|dd if=|:\(\)|> /dev/sd"}`。register→create agent→两轮 chat:
+1. `echo safe-command-ok` → **直接执行**(无 HITL),`TOOL_CALL_RESULT`=`"Exit code: 0\nsafe-command-ok"`,RUN_FINISHED。参数级规则放行安全命令。
+2. `rm -rf /tmp/destroy-target` → **触发 `require_user_confirm` HITL 卡片**(SSE Custom 事件,replyId + toolCalls `state:"pending"`),execute 调用 pending **未执行**(无 ToolResultBlock/Exit code),RUN_FINISHED(paused)。破坏性命令被拦截。
+启动日志确认 `Permission tool_guard mode=DEFAULT allow=7 ask=1 deny=0`(ask=1 即 askRules 的 execute 规则)。
+
+**关键 gotcha(非显然)**:
+- **`mvn -o -pl saas-app package` 增量编译 stale class**:改了 SandboxConfig 后离线增量打包,产出的 class 引用 `E2bFilesystemSpec` 报 "Unresolved compilation problems" → app 启动 500。必须 `clean package`(或去 `-o` 在线)。ECJ 增量编译在依赖变更时不可靠。
+- **跨模块引用包私有类**:`ReflectiveFunctionTool` 是 `final class`(包私有,`io.agentscope.core.tool`),saas-app 测试(在 `io.agentscope.saas.app.config` 包)直接引用该类型 → 编译失败 "not public"。saas 测试改用 public `ToolBase` + `(ToolBase) tool` cast。
+- **YAML 正则转义**:`ask-rules.execute` 值里的 `:(){`(fork bomb)在 YAML 字符串里 `:` `(` `{` 需考虑 —— 用引号包裹 + `:\(\)` 转义括号。实测 `rm -rf|mkfs|dd if=|:\(\)|> /dev/sd` 在 YAML 双引号字符串里工作。
+
+**测试 gate**:core 31/31(ReflectiveFunctionToolTest +6:null/regex/no-command/invalid-regex/non-command-tool;PermissionEngineTest/PermissionRuleTest 回归)+ saas-app 26/26(AgentConfigPermissionTest +3:danger ASK/safe ALLOW、tool-name 级 fallback、default mode;SaasAppContextLoadsTest 回归)。commit c98ff6f1(代码)+ 本次(gateway askRules 配置)。
+
+**生产配置方向**:生产维持 `SaasProperties.Permission` 默认(execute 在 askTools,DEFAULT 模式,交互式 HITL);要参数级精配加 `ask-rules: {execute: "rm -rf|..."}` + execute 移到 allow-tools。dev/gateway 的 allow-all + askRules 是 e2e 验证用,生产应据安全策略重配。无监督后台批处理用 `mode: DONT_ASK`(ASK 降 DENY,非 allow-all)。

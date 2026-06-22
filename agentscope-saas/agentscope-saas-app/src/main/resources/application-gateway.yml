@@ -71,6 +71,11 @@ saas:
       mode: DEFAULT
       allow-tools: [execute, write_file, read_file, edit_file, list_files, glob_files, grep_files]
       ask-tools: []
+      # Parameter-level ASK: even in unattended e2e, surface a HITL confirm card when the shell
+      # command looks destructive. This exercises the F7a askRules path end-to-end. Safe commands
+      # (echo, ls, cat, mkdir, printf) stay auto-allowed; only the regex below triggers ASK.
+      ask-rules:
+        execute: "rm -rf|mkfs|dd if=|:\\(\\)|> /dev/sd"
   security:
     jwt:
       secret: gateway-dev-secret-please-override-in-prod-0123456789abcdef
