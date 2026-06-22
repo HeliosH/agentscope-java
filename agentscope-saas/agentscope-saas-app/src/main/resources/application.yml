@@ -66,13 +66,13 @@ saas:
     memory-limit-bytes: ${SAAS_SANDBOX_MEMORY_BYTES:}
     cpu-count: ${SAAS_SANDBOX_CPU_COUNT:}
     idle-ttl-seconds: ${SAAS_SANDBOX_IDLE_TTL:600}
-    cube-api-url: ${CUBE_API_URL:http://localhost:8080}
-    cube-api-key: ${CUBE_API_KEY:}
-    cube-template-id: ${CUBE_TEMPLATE_ID:}
-    cube-domain: ${CUBE_DOMAIN:}
-    cube-envd-host-pattern: ${CUBE_ENVD_HOST_PATTERN:}
-    cube-insecure-skip-tls-verify: ${CUBE_INSECURE_SKIP_TLS_VERIFY:false}
-    cube-sandbox-timeout-seconds: ${CUBE_SANDBOX_TIMEOUT:300}
+    cube-api-url: ${SAAS_SANDBOX_CUBE_API_URL:${CUBE_API_URL:http://localhost:8080}}
+    cube-api-key: ${SAAS_SANDBOX_CUBE_API_KEY:${CUBE_API_KEY:}}
+    cube-template-id: ${SAAS_SANDBOX_CUBE_TEMPLATE_ID:${CUBE_TEMPLATE_ID:}}
+    cube-domain: ${SAAS_SANDBOX_CUBE_DOMAIN:${CUBE_DOMAIN:}}
+    cube-envd-host-pattern: ${SAAS_SANDBOX_CUBE_ENVD_HOST_PATTERN:${CUBE_ENVD_HOST_PATTERN:}}
+    cube-insecure-skip-tls-verify: ${SAAS_SANDBOX_CUBE_INSECURE_SKIP_TLS_VERIFY:${CUBE_INSECURE_SKIP_TLS_VERIFY:false}}
+    cube-sandbox-timeout-seconds: ${SAAS_SANDBOX_CUBE_TIMEOUT:${CUBE_SANDBOX_TIMEOUT:300}}
     # --- E2B (official hosted sandbox, https://e2b.app). Used when type=e2b. ---
     # API key is required for type=e2b. Get one at https://e2b.app.
     e2b-api-key: ${SAAS_SANDBOX_E2B_API_KEY:}

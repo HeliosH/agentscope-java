@@ -25,12 +25,15 @@ import io.agentscope.harness.agent.sandbox.SandboxException;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.ConnectException;
+import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import javax.net.ssl.SSLException;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -142,10 +145,14 @@ final class CubeEnvdProcessClient {
             String message =
                     "envd request failed host="
                             + host
+                            + " sandboxId="
+                            + state.getSandboxId()
                             + " cmd="
                             + shellCommand
                             + ": "
-                            + e.getMessage();
+                            + e.getMessage()
+                            + ". "
+                            + diagnosticHint(state, host, e);
             log.warn(
                     "[cube-envd] exec failed cmd={} host={} exit={} stdout='{}' stderr='{}'",
                     shellCommand,
@@ -278,6 +285,56 @@ final class CubeEnvdProcessClient {
             host = "https://" + host;
         }
         return host;
+    }
+
+    private String diagnosticHint(CubeSandboxState state, String host, Exception error) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Cube envd diagnostics: pattern=")
+                .append(opt.getEnvdHostPattern())
+                .append(", domain=")
+                .append(
+                        state.getSandboxDomain() != null && !state.getSandboxDomain().isBlank()
+                                ? state.getSandboxDomain()
+                                : opt.getDomain())
+                .append(", envdPort=")
+                .append(ENVD_PORT)
+                .append(", insecureSkipTlsVerify=")
+                .append(opt.isInsecureSkipTlsVerify())
+                .append(". ");
+
+        Throwable cause = rootCause(error);
+        if (cause instanceof SSLException) {
+            sb.append("TLS failed after the sandbox was created; verify that the envd ingress for ")
+                    .append(host)
+                    .append(
+                            " terminates HTTPS to the envd process service. If this Cube deployment"
+                                + " exposes envd over plain HTTP, set"
+                                + " SAAS_SANDBOX_CUBE_ENVD_HOST_PATTERN/CUBE_ENVD_HOST_PATTERN to"
+                                + " an http:// pattern.");
+        } else if (cause instanceof ConnectException) {
+            sb.append(
+                            "The envd endpoint was not reachable; verify dynamic port"
+                                    + " routing/firewall for port ")
+                    .append(ENVD_PORT)
+                    .append(" and the sandbox domain.");
+        } else if (cause instanceof SocketTimeoutException) {
+            sb.append(
+                    "The envd endpoint timed out; verify the sandbox is ready, ingress routes"
+                            + " dynamic envd ports, and SAAS_SANDBOX_CUBE_TIMEOUT is sufficient.");
+        } else {
+            sb.append(
+                    "Check SAAS_SANDBOX_CUBE_ENVD_HOST_PATTERN/CUBE_ENVD_HOST_PATTERN,"
+                        + " SAAS_SANDBOX_CUBE_DOMAIN/CUBE_DOMAIN, and dynamic envd port routing.");
+        }
+        return sb.toString();
+    }
+
+    private static Throwable rootCause(Throwable error) {
+        Throwable t = error;
+        while (t.getCause() != null && t.getCause() != t) {
+            t = t.getCause();
+        }
+        return t;
     }
 
     private static String basicAuthUser(String user) {
