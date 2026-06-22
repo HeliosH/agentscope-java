@@ -29,6 +29,7 @@ public class SaasProperties {
     @NestedConfigurationProperty private final Sandbox sandbox = new Sandbox();
     @NestedConfigurationProperty private final RateLimit rateLimit = new RateLimit();
     @NestedConfigurationProperty private final Agent agent = new Agent();
+    @NestedConfigurationProperty private final Ltm ltm = new Ltm();
 
     public Model getModel() {
         return model;
@@ -48,6 +49,10 @@ public class SaasProperties {
 
     public Agent getAgent() {
         return agent;
+    }
+
+    public Ltm getLtm() {
+        return ltm;
     }
 
     /** Model gateway / provider selection. */
@@ -648,6 +653,80 @@ public class SaasProperties {
 
         public void setAskRules(Map<String, String> askRules) {
             this.askRules = askRules == null ? Map.of() : askRules;
+        }
+    }
+
+    /**
+     * Long-term memory (Mem0) configuration. When enabled, the {@code
+     * SaasLongTermMemoryMiddleware} retrieves and records semantically relevant memories per
+     * tenant (userId + orgId metadata) around each agent call. When disabled (the default), the
+     * agent falls back to MEMORY.md + snapshot persistence — no Mem0 dependency is exercised.
+     */
+    public static class Ltm {
+        /** Master switch. Defaults to off so the platform runs with zero external deps. */
+        private boolean enabled = false;
+
+        /** Mem0 API base URL (e.g. {@code https://api.mem0.ai} or a self-hosted endpoint). */
+        private String mem0BaseUrl;
+
+        /** Mem0 API key (optional for self-hosted deployments without auth). */
+        private String mem0ApiKey;
+
+        /** Mem0 API type: {@code PLATFORM} (default) or {@code SELF_HOSTED}. */
+        private String mem0ApiType = "PLATFORM";
+
+        /** Mem0 request timeout in seconds (default 60). */
+        private int timeoutSeconds = 60;
+
+        /** Max memories to retrieve per call (default 5). */
+        private int topK = 5;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getMem0BaseUrl() {
+            return mem0BaseUrl;
+        }
+
+        public void setMem0BaseUrl(String mem0BaseUrl) {
+            this.mem0BaseUrl = mem0BaseUrl;
+        }
+
+        public String getMem0ApiKey() {
+            return mem0ApiKey;
+        }
+
+        public void setMem0ApiKey(String mem0ApiKey) {
+            this.mem0ApiKey = mem0ApiKey;
+        }
+
+        public String getMem0ApiType() {
+            return mem0ApiType;
+        }
+
+        public void setMem0ApiType(String mem0ApiType) {
+            this.mem0ApiType = mem0ApiType;
+        }
+
+        public int getTimeoutSeconds() {
+            return timeoutSeconds;
+        }
+
+        public void setTimeoutSeconds(int timeoutSeconds) {
+            this.timeoutSeconds = timeoutSeconds;
+        }
+
+        public int getTopK() {
+            return topK;
+        }
+
+        public void setTopK(int topK) {
+            this.topK = topK;
         }
     }
 }

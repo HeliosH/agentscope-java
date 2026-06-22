@@ -85,6 +85,15 @@
             <version>${revision}</version>
         </dependency>
 
+        <!-- Mem0 long-term memory (F7b): semantic cross-session recall via the Mem0 client. The
+             SaaS LTM middleware uses Mem0Client + request/response types directly (not the
+             deprecated LongTermMemory interface), keyed per-tenant by userId + orgId metadata. -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-mem0</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
         <!-- Skill marketplace infrastructure (Phase F5): git + nacos skill sources for the
              org-scoped MarketplacesController. git-repository brings JGit; nacos-skill brings the
              Nacos skill client; nacos-maintainer-client exposes the paged SkillMaintainerService. -->

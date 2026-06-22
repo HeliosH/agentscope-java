@@ -101,6 +101,16 @@ saas:
   agent:
     name: ${SAAS_AGENT_NAME:assistant}
     max-iters: ${SAAS_AGENT_MAX_ITERS:10}
+  ltm:
+    # Long-term memory (Mem0). Disabled by default — the platform runs with zero external deps,
+    # falling back to MEMORY.md + snapshot persistence. Enable with a reachable Mem0 endpoint to
+    # add cross-session semantic recall.
+    enabled: ${SAAS_LTM_ENABLED:false}
+    mem0-base-url: ${SAAS_LTM_MEM0_BASE_URL:}
+    mem0-api-key: ${SAAS_LTM_MEM0_API_KEY:}
+    mem0-api-type: ${SAAS_LTM_MEM0_API_TYPE:PLATFORM}
+    timeout-seconds: ${SAAS_LTM_TIMEOUT:60}
+    top-k: ${SAAS_LTM_TOP_K:5}
   security:
     jwt:
       secret: ${SAAS_JWT_SECRET:change-me-saas-dev-secret-please-override-in-prod-0123456789}

@@ -16,6 +16,7 @@
 package io.agentscope.saas.app.config;
 
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.memory.mem0.Mem0Client;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.permission.PermissionBehavior;
 import io.agentscope.core.permission.PermissionContextState;
@@ -29,6 +30,7 @@ import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import io.agentscope.harness.agent.filesystem.spec.SandboxFilesystemSpec;
 import io.agentscope.harness.agent.skill.curator.SkillCuratorConfig;
 import io.agentscope.harness.agent.tools.McpClientRegistry;
+import io.agentscope.saas.app.memory.SaasLongTermMemoryMiddleware;
 import io.agentscope.saas.app.org.OrgToolsConfigService;
 import io.agentscope.saas.core.middleware.RateLimitMiddleware;
 import io.agentscope.saas.core.middleware.TenantContextMiddleware;
@@ -158,6 +160,30 @@ public class AgentConfig {
                 permissionContext.getAllowRules().size(),
                 permissionContext.getAskRules().size(),
                 permissionContext.getDenyRules().size());
+
+        // Long-term memory (Phase F7b): when enabled, retrieve + record Mem0 memories per tenant
+        // around each call. Disabled by default — the agent falls back to MEMORY.md + snapshot.
+        SaasProperties.Ltm ltmCfg = properties.getLtm();
+        if (ltmCfg.isEnabled()
+                && ltmCfg.getMem0BaseUrl() != null
+                && !ltmCfg.getMem0BaseUrl().isBlank()) {
+            Mem0Client mem0Client =
+                    SaasLongTermMemoryMiddleware.createClient(
+                            ltmCfg.getMem0BaseUrl(),
+                            ltmCfg.getMem0ApiKey(),
+                            ltmCfg.getMem0ApiType(),
+                            ltmCfg.getTimeoutSeconds());
+            builder.middleware(
+                    new SaasLongTermMemoryMiddleware(
+                            mem0Client, agentCfg.getName(), ltmCfg.getTopK()));
+            log.info(
+                    "LTM middleware enabled: mem0BaseUrl={} topK={} agentName={}",
+                    ltmCfg.getMem0BaseUrl(),
+                    ltmCfg.getTopK(),
+                    agentCfg.getName());
+        } else {
+            log.info("LTM middleware disabled (saas.ltm.enabled=false or no mem0-base-url)");
+        }
 
         // Dynamic per-user MCP resolution (Phase C2): the singleton agent re-resolves each caller's
         // tools.json (org base overlaid with the user's workspace file) every reasoning step and

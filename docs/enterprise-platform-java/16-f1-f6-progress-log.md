@@ -193,3 +193,38 @@ cube 真 LLM e2e 跑通后,权限是"验证用配置"(dev/gateway allow-all,exec
 **测试 gate**:core 31/31(ReflectiveFunctionToolTest +6:null/regex/no-command/invalid-regex/non-command-tool;PermissionEngineTest/PermissionRuleTest 回归)+ saas-app 26/26(AgentConfigPermissionTest +3:danger ASK/safe ALLOW、tool-name 级 fallback、default mode;SaasAppContextLoadsTest 回归)。commit c98ff6f1(代码)+ 本次(gateway askRules 配置)。
 
 **生产配置方向**:生产维持 `SaasProperties.Permission` 默认(execute 在 askTools,DEFAULT 模式,交互式 HITL);要参数级精配加 `ask-rules: {execute: "rm -rf|..."}` + execute 移到 allow-tools。dev/gateway 的 allow-all + askRules 是 e2e 验证用,生产应据安全策略重配。无监督后台批处理用 `mode: DONT_ASK`(ASK 降 DENY,非 allow-all)。
+
+## F7b LTM 接线(2026-06-22,自写 MiddlewareBase + Mem0,单测全绿,e2e 待 Mem0)
+
+F7a 权限精配后,F7b 接长期记忆。框架 `LongTermMemory`/`StaticLongTermMemoryHook`/`LongTermMemoryTools` 全部 `@Deprecated forRemoval`(2.0 移除),废弃注释指向 `AgentState.getContext()` + "应用层跨会话持久化"。saas 已有 MEMORY.md(跨沙箱快照存活)+ `memory_search`(会话内),F7b 补**跨 session 语义召回**。
+
+**架构决策(用户选定 Mem0 路径)**:
+- **不引废弃类**:middleware 直接用 `Mem0Client`(public,非废弃)+ `Mem0AddRequest`/`Mem0SearchRequest`/`Mem0Message`/`Mem0SearchResult`/`Mem0ApiType`(全 public),**不走** `Mem0LongTermMemory`(废弃)或 `LongTermMemory` 接口(废弃)。`<long_term_memory>` wrap 格式从废弃 `LongTermMemoryTools.wrap` **内联**(避免引用 forRemoval 类)。
+- **单例 Mem0Client + per-call request**:`Mem0LongTermMemory` 的 userId 是 final 字段不能 per-call 改,且 per-call new 会泄漏 OkHttpClient(每个 client 独立连接池/线程池)。改为 middleware 持单例 `Mem0Client`(共享 OkHttpClient),per-call 从 `TenantContext` 取 userId/orgId 构造 `Mem0AddRequest`/`Mem0SearchRequest`(builder 可 per-call 设 userId/agentId/metadata)。`SaasLongTermMemoryMiddleware.createClient(apiBaseUrl, apiKey, apiType, timeoutSeconds)` 静态工厂建单例 client。
+- **多租户隔离**:userId → Mem0 `user_id`;orgId → Mem0 metadata `org_id`(retrieval filter)。Mem0 只返 metadata 匹配的记忆,Alice/Bob 跨 org 隔离。
+- **放 saas-app 非 saas-core**:避免 saas-core 依赖 mem0 扩展。middleware 在 `io.agentscope.saas.app.memory` 包,AgentConfig(saas-app)条件注入。
+
+**流程**(`SaasLongTermMemoryMiddleware.onAgent`):
+- **PreCall**(next.apply 前):取 last user msg 作 query → `mem0.search`(带 userId + orgId filter)→ 若有结果,append 一条 `<long_term_memory>` user msg 到 input(`new AgentInput(enhanced)`,record 不可变)。retrieve 失败 `onErrorResume` 回退原 input(log+吞,不阻断)。
+- **PostCall**(`doFinally`):`mem0.add`(带 userId + orgId metadata + sessionId 作 runId)异步 `subscribeOn(boundedElastic)`,失败 `onErrorComplete`(log+吞,不阻断)。
+- **无 tenant**(匿名/dev bypass):`TenantContext.from(ctx)` null → 直接 `next.apply(input)`,跳过 LTM。
+
+**配置**:`SaasProperties.Ltm` 嵌套类(`enabled`/`mem0BaseUrl`/`mem0ApiKey`/`mem0ApiType`/`timeoutSeconds`/`topK`),默认 `enabled=false`(零外部依赖)。`application.yml` 接 env(`SAAS_LTM_ENABLED`/`SAAS_LTM_MEM0_BASE_URL`/`SAAS_LTM_MEM0_API_KEY`/`SAAS_LTM_MEM0_API_TYPE`/`SAAS_LTM_TIMEOUT`/`SAAS_LTM_TOP_K`)。`AgentConfig` 条件注入:`enabled=true` + `mem0BaseUrl` 非空才建 middleware + `builder.middleware(...)`,否则 log "LTM disabled"。`agentscope-saas-app/pom.xml` 加 `agentscope-extensions-mem0` 依赖。
+
+**单测**(`SaasLongTermMemoryMiddlewareTest`,Mockito mock Mem0Client,5/5 绿):
+1. `retrievesAndInjectsMemoriesBeforeCall`:search 返记忆 → next 收到 2 条 msg(原 user + memory),memory msg 含 `<long_term_memory>` + 记忆文本。
+2. `recordsConversationAfterCall`:doFinally 触发 `mem0.add`(`timeout(2000)` 验证异步调用)。
+3. `retrieveFailureDegradesToOriginalInputWithoutBreakingRun`:search 抛异常 → next 收原 input(1 条,无 memory),add 仍触发(降级不阻断)。
+4. `noTenantContextSkipsLtm`:无 TenantContext → search/add 从不调用(pass-through)。
+5. `emptySearchResultsDoNotInjectMemoryMessage`:search 返空 → input 不变(1 条)。
+
+**测试 gate**:saas-app 31/31 绿(原 26 + LTM 5;含 SaasAppContextLoadsTest —— 确认 LTM 配置 + mem0 依赖 + 条件注入不破坏 Spring 上下文加载)。
+
+**e2e(待 Mem0)**:用户暂无 Mem0,后续提供端点后验证跨 session 召回(session A record "我旅行喜欢住民宿" → session B retrieve 返回民宿记忆注入 system prompt)+ 多租户隔离(Alice record 后 Bob retrieve 空)+ 降级(Mem0 不可用 chat 正常)。验证配置:`SAAS_LTM_ENABLED=true` + `SAAS_LTM_MEM0_BASE_URL=<用户提供>` + gateway profile + 真 LLM。
+
+**关键 gotcha(非显然)**:
+- **废弃 API 规避**:`LongTermMemory`/`Mem0LongTermMemory`/`StaticLongTermMemoryHook`/`LongTermMemoryTools` 全 `@Deprecated forRemoval`。直接用 `Mem0Client` + request/response 类型(均 public 非废弃)绕开。`wrap` 格式内联。2.0 移除废弃接口时本 middleware 无需迁移(只依赖 Mem0Client,届时扩展会保留/更新 client)。
+- **单例 client vs per-call instance**:`Mem0LongTermMemory.builder().userId(...).build()` 的 userId 是 final,per-call new 实例会 new Mem0Client → new OkHttpClient(泄漏连接池)。单例 Mem0Client + per-call request(builder 可设 userId)是正确解法。
+- **AgentInput 不可变**:record `AgentInput(List<Msg> msgs)`,改 messages 须 `new AgentInput(enhancedList)`。
+- **TenantContext 双槽位**:`RuntimeContext.put(TenantContext.ATTR_KEY, tc)`(string extra,存活 harness 重建)+ `put(TenantContext.class, tc)`(typed singleton)。middleware 用 `TenantContext.from(ctx)` 先试 typed 再回退 ATTR_KEY(类 DynamicMcpMiddleware)。
+- **Mockito mock 具体类**:`Mem0Client` 非 final、方法非 final,Mockito 5.x 默认可 mock(无需 mockito-inline)。`timeout(2000)` 验证异步 doFinally 调用。
