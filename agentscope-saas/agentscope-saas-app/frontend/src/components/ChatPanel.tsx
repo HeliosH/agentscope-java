@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { currentSession, stream } from '../api/chat';
+import { ConfirmToolCall, currentSession, stream, type ChatEvent, type ChatRequest, type ConfirmResultInput } from '../api/chat';
 import { TurnEntry, turns as fetchTurns } from '../api/sessions';
 import ToolCallBlock from './ToolCallBlock';
 
@@ -18,6 +18,7 @@ interface Message {
   role: Role;
   text: string;
   tools: ToolEntry[];
+  confirmTools?: ConfirmToolCall[];
   pending?: boolean;
 }
 
@@ -75,6 +76,28 @@ const S: Record<string, React.CSSProperties> = {
     boxShadow: '0 2px 6px rgba(99,102,241,0.35), inset 0 1px 0 rgba(255,255,255,0.18)',
   },
   sendDisabled: { background: '#e2e8f0', color: '#94a3b8', cursor: 'not-allowed', boxShadow: 'none' },
+  confirmBox: {
+    marginTop: 12, padding: 12, borderRadius: 10,
+    border: '1px solid #fed7aa', background: '#fff7ed', color: '#7c2d12',
+  },
+  confirmTitle: { fontSize: '0.82rem', fontWeight: 700, marginBottom: 8 },
+  confirmTool: {
+    padding: '8px 10px', borderRadius: 8, background: '#ffffff',
+    border: '1px solid #ffedd5', marginBottom: 8,
+  },
+  confirmPre: {
+    margin: '6px 0 0', padding: 8, borderRadius: 6, background: '#f8fafc',
+    color: '#334155', fontSize: '0.76rem', overflowX: 'auto', whiteSpace: 'pre-wrap',
+  },
+  confirmActions: { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 10 },
+  approve: {
+    border: '1px solid #15803d', background: '#16a34a', color: '#ffffff',
+    borderRadius: 7, padding: '6px 12px', cursor: 'pointer', fontSize: '0.82rem', fontWeight: 700,
+  },
+  deny: {
+    border: '1px solid #fdba74', background: '#ffffff', color: '#9a3412',
+    borderRadius: 7, padding: '6px 12px', cursor: 'pointer', fontSize: '0.82rem', fontWeight: 700,
+  },
 };
 
 let counter = 0;
@@ -186,6 +209,68 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
 
   const canSend = useMemo(() => !busy && !restoring && input.trim().length > 0, [busy, restoring, input]);
 
+  function applyChatEvent(evt: ChatEvent, replyId: string) {
+    if (evt.type === 'token') {
+      const chunk = evt.data ?? '';
+      setMessages(prev => prev.map(m => m.id === replyId ? { ...m, text: m.text + chunk } : m));
+    } else if (evt.type === 'tool_call') {
+      const entry: ToolEntry = {
+        id: `${evt.toolName ?? 'tool'}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: evt.toolName ?? 'tool',
+        input: evt.toolInput,
+      };
+      setMessages(prev => prev.map(m => m.id === replyId ? { ...m, tools: [...m.tools, entry] } : m));
+    } else if (evt.type === 'tool_result') {
+      setMessages(prev => prev.map(m => {
+        if (m.id !== replyId) return m;
+        const tools = [...m.tools];
+        for (let i = tools.length - 1; i >= 0; i--) {
+          if (tools[i].name === evt.toolName && !tools[i].result) {
+            tools[i] = { ...tools[i], result: evt.toolResult };
+            return { ...m, tools };
+          }
+        }
+        tools.push({
+          id: `${evt.toolName ?? 'tool'}-${Date.now()}`,
+          name: evt.toolName ?? 'tool',
+          result: evt.toolResult,
+        });
+        return { ...m, tools };
+      }));
+    } else if (evt.type === 'confirm_required') {
+      setMessages(prev => prev.map(m => m.id === replyId
+        ? { ...m, pending: false, confirmTools: evt.confirmTools ?? [] }
+        : m));
+    } else if (evt.type === 'done') {
+      if (evt.sessionKey) {
+        setSessionKey(evt.sessionKey);
+        persistSession(evt.sessionKey);
+        const next = new URLSearchParams(searchParams);
+        if (next.get('session') !== evt.sessionKey) {
+          next.set('session', evt.sessionKey);
+          setSearchParams(next, { replace: true });
+        }
+      }
+      setMessages(prev => prev.map(m => m.id === replyId ? { ...m, pending: false } : m));
+    } else if (evt.type === 'error') {
+      setMessages(prev => prev.map(m => m.id === replyId
+        ? { ...m, pending: false, text: m.text + (m.text ? '\n' : '') + `[error] ${evt.error ?? 'unknown'}` }
+        : m));
+    }
+  }
+
+  async function runChatStream(req: ChatRequest, replyId: string) {
+    for await (const evt of stream(agentId, req)) {
+      applyChatEvent(evt, replyId);
+    }
+  }
+
+  function appendError(replyId: string, message: string) {
+    setMessages(prev => prev.map(m => m.id === replyId
+      ? { ...m, pending: false, text: m.text + (m.text ? '\n' : '') + `[error] ${message}` }
+      : m));
+  }
+
   async function handleSend() {
     if (!canSend) return;
     const text = input.trim();
@@ -196,56 +281,37 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
     setMessages(prev => [...prev, userMsg, replyMsg]);
 
     try {
-      for await (const evt of stream(agentId, { message: text, sessionId: sessionKey ?? undefined })) {
-        if (evt.type === 'token') {
-          const chunk = evt.data ?? '';
-          setMessages(prev => prev.map(m => m.id === replyMsg.id ? { ...m, text: m.text + chunk } : m));
-        } else if (evt.type === 'tool_call') {
-          const entry: ToolEntry = {
-            id: `${evt.toolName ?? 'tool'}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-            name: evt.toolName ?? 'tool',
-            input: evt.toolInput,
-          };
-          setMessages(prev => prev.map(m => m.id === replyMsg.id ? { ...m, tools: [...m.tools, entry] } : m));
-        } else if (evt.type === 'tool_result') {
-          setMessages(prev => prev.map(m => {
-            if (m.id !== replyMsg.id) return m;
-            const tools = [...m.tools];
-            for (let i = tools.length - 1; i >= 0; i--) {
-              if (tools[i].name === evt.toolName && !tools[i].result) {
-                tools[i] = { ...tools[i], result: evt.toolResult };
-                return { ...m, tools };
-              }
-            }
-            tools.push({
-              id: `${evt.toolName ?? 'tool'}-${Date.now()}`,
-              name: evt.toolName ?? 'tool',
-              result: evt.toolResult,
-            });
-            return { ...m, tools };
-          }));
-        } else if (evt.type === 'done') {
-          if (evt.sessionKey) {
-            setSessionKey(evt.sessionKey);
-            persistSession(evt.sessionKey);
-            const next = new URLSearchParams(searchParams);
-            if (next.get('session') !== evt.sessionKey) {
-              next.set('session', evt.sessionKey);
-              setSearchParams(next, { replace: true });
-            }
-          }
-          setMessages(prev => prev.map(m => m.id === replyMsg.id ? { ...m, pending: false } : m));
-        } else if (evt.type === 'error') {
-          setMessages(prev => prev.map(m => m.id === replyMsg.id
-            ? { ...m, pending: false, text: m.text + (m.text ? '\n' : '') + `[error] ${evt.error ?? 'unknown'}` }
-            : m));
-        }
-      }
+      await runChatStream({ message: text, sessionId: sessionKey ?? undefined }, replyMsg.id);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'stream failed';
-      setMessages(prev => prev.map(m => m.id === replyMsg.id
-        ? { ...m, pending: false, text: m.text + (m.text ? '\n' : '') + `[error] ${msg}` }
-        : m));
+      appendError(replyMsg.id, e instanceof Error ? e.message : 'stream failed');
+    } finally {
+      setBusy(false);
+      inputRef.current?.focus();
+    }
+  }
+
+  async function handleConfirm(source: Message, confirmed: boolean) {
+    if (busy || !source.confirmTools?.length) return;
+    const confirmResults: ConfirmResultInput[] = source.confirmTools.map(tool => ({
+      confirmed,
+      toolCallId: tool.id,
+      toolName: tool.name,
+      input: tool.input,
+    }));
+    const replyMsg: Message = { id: nextId(), role: 'assistant', text: '', tools: [], pending: true };
+    setBusy(true);
+    setMessages(prev => [
+      ...prev.map(m => m.id === source.id ? { ...m, confirmTools: undefined } : m),
+      replyMsg,
+    ]);
+    try {
+      await runChatStream({
+        message: '',
+        sessionId: sessionKey ?? undefined,
+        confirmResults,
+      }, replyMsg.id);
+    } catch (e: unknown) {
+      appendError(replyMsg.id, e instanceof Error ? e.message : 'stream failed');
     } finally {
       setBusy(false);
       inputRef.current?.focus();
@@ -339,6 +405,27 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
               </div>
             )}
             {m.text || (m.pending ? <span style={{ color: '#94a3b8' }}>…</span> : null)}
+            {m.confirmTools && m.confirmTools.length > 0 && (
+              <div style={S.confirmBox}>
+                <div style={S.confirmTitle}>Approval required</div>
+                {m.confirmTools.map((tool, idx) => (
+                  <div key={tool.id || `${tool.name}-${idx}`} style={S.confirmTool}>
+                    <div style={{ fontWeight: 700, fontSize: '0.82rem' }}>{tool.name}</div>
+                    {tool.input && (
+                      <pre style={S.confirmPre}>{JSON.stringify(tool.input, null, 2)}</pre>
+                    )}
+                  </div>
+                ))}
+                <div style={S.confirmActions}>
+                  <button type="button" style={S.deny} disabled={busy} onClick={() => void handleConfirm(m, false)}>
+                    Deny
+                  </button>
+                  <button type="button" style={S.approve} disabled={busy} onClick={() => void handleConfirm(m, true)}>
+                    Approve
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         ))}
       </div>

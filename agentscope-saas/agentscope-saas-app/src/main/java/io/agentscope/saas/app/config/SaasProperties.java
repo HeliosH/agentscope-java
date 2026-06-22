@@ -586,15 +586,15 @@ public class SaasProperties {
         private String mode = "DEFAULT";
         private List<String> allowTools =
                 List.of(
-                        "readFile",
-                        "grepFiles",
+                        "read_file",
+                        "grep_files",
                         "glob_files",
-                        "listFiles",
+                        "list_files",
                         "memory_get",
                         "memory_search",
                         "session_search");
         private List<String> askTools =
-                List.of("writeFile", "editFile", "propose_skill", "skill_manage", "execute");
+                List.of("write_file", "edit_file", "propose_skill", "skill_manage", "execute");
         private List<String> denyTools = List.of();
 
         public String getMode() {

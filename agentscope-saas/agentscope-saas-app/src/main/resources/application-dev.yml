@@ -49,11 +49,11 @@ saas:
     isolation-scope: USER
     workspace-root: /home/user
     idle-ttl-seconds: 120
-    cube-api-url: http://cubesandbox.dev.comnova.cc:3000
-    cube-api-key: ""
-    cube-template-id: tpl-72d9b3147a4c4029b9b10dfe
-    cube-domain: cubesandbox.dev.comnova.cc
-    cube-envd-host-pattern: "https://{port}-{sandboxId}.{domain}"
+    cube-api-url: ${SAAS_SANDBOX_CUBE_API_URL:http://cubesandbox.dev.comnova.cc:3000}
+    cube-api-key: ${SAAS_SANDBOX_CUBE_API_KEY:}
+    cube-template-id: ${SAAS_SANDBOX_CUBE_TEMPLATE_ID:tpl-sandbox-code}
+    cube-domain: ${SAAS_SANDBOX_CUBE_DOMAIN:cubesandbox.dev.comnova.cc}
+    cube-envd-host-pattern: "${SAAS_SANDBOX_CUBE_ENVD_HOST_PATTERN:https://{port}-{sandboxId}.{domain}}"
     cube-insecure-skip-tls-verify: true
     cube-sandbox-timeout-seconds: 300
     snapshot:

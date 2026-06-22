@@ -257,7 +257,7 @@ public class SaasChatController {
                         error -> {
                             log.warn("Chat stream error: {}", error.toString());
                             Map<String, Object> payload = new HashMap<>();
-                            payload.put("message", error.getMessage());
+                            payload.put("message", errorMessage(error));
                             AguiEvent errorEvent =
                                     new AguiEvent.Custom(threadId, runId, "error", payload);
                             return Flux.just(toSse(errorEvent));
@@ -322,6 +322,37 @@ public class SaasChatController {
         } catch (IllegalArgumentException e) {
             return false;
         }
+    }
+
+    private static String errorMessage(Throwable error) {
+        Throwable t = unwrapRuntimeWrapper(error);
+        StringBuilder sb = new StringBuilder(messageOf(t));
+        Throwable cause = t.getCause();
+        int depth = 0;
+        while (cause != null && depth < 4) {
+            String msg = messageOf(cause);
+            if (!msg.isBlank() && !sb.toString().contains(msg)) {
+                sb.append("; caused by: ").append(msg);
+            }
+            cause = cause.getCause();
+            depth++;
+        }
+        return sb.toString();
+    }
+
+    private static Throwable unwrapRuntimeWrapper(Throwable error) {
+        if (error instanceof RuntimeException
+                && error.getCause() != null
+                && String.valueOf(error.getMessage())
+                        .contains(error.getCause().getClass().getName())) {
+            return error.getCause();
+        }
+        return error;
+    }
+
+    private static String messageOf(Throwable t) {
+        String msg = t.getMessage();
+        return msg != null && !msg.isBlank() ? msg : t.getClass().getSimpleName();
     }
 
     /** Captured agent + session ids for a resolved run. */

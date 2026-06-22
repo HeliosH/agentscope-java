@@ -139,6 +139,13 @@ final class CubeEnvdProcessClient {
                 exit = drainStartStream(in, stdout, stderr);
             }
         } catch (Exception e) {
+            String message =
+                    "envd request failed host="
+                            + host
+                            + " cmd="
+                            + shellCommand
+                            + ": "
+                            + e.getMessage();
             log.warn(
                     "[cube-envd] exec failed cmd={} host={} exit={} stdout='{}' stderr='{}'",
                     shellCommand,
@@ -147,7 +154,8 @@ final class CubeEnvdProcessClient {
                     new String(stdout.toByteArray(), StandardCharsets.UTF_8).trim(),
                     new String(stderr.toByteArray(), StandardCharsets.UTF_8).trim(),
                     e);
-            throw e;
+            throw new SandboxException.SandboxRuntimeException(
+                    SandboxErrorCode.WORKSPACE_START_ERROR, message, e);
         }
         log.debug(
                 "[cube-envd] exit={} stdout='{}' stderr='{}'",
