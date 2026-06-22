@@ -22,6 +22,7 @@ import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.MiddlewareBase;
 import io.agentscope.saas.core.ratelimit.QuotaExceededException;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.sandbox.SandboxBroker;
 import java.util.UUID;
 import java.util.function.Function;
@@ -53,9 +54,31 @@ public class SandboxQuotaMiddleware implements MiddlewareBase {
 
         TenantContext tc = TenantContext.from(ctx);
         if (tc != null && tc.orgId() != null && tc.userId() != null) {
-            broker.checkQuota(
-                    UUID.fromString(tc.orgId()), UUID.fromString(tc.userId()), tc.maxSandboxes());
+            withTenantOrg(
+                    tc.orgId(),
+                    () -> {
+                        broker.checkQuota(
+                                UUID.fromString(tc.orgId()),
+                                UUID.fromString(tc.userId()),
+                                tc.maxSandboxes());
+                        return null;
+                    });
         }
         return next.apply(input);
+    }
+
+    private static <T> T withTenantOrg(String orgId, TenantOperation<T> operation) {
+        String previous = TenantContextHolder.getOrgId();
+        TenantContextHolder.setOrgId(orgId);
+        try {
+            return operation.run();
+        } finally {
+            TenantContextHolder.setOrgId(previous);
+        }
+    }
+
+    @FunctionalInterface
+    private interface TenantOperation<T> {
+        T run();
     }
 }
