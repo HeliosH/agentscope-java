@@ -64,6 +64,13 @@ saas:
   agent:
     name: assistant
     max-iters: 12
+    # E2E verification runs unattended against a real LLM. Auto-allow the shell + file tools so the
+    # ReAct loop isn't paused by the permission ASK gate (HITL). Production deployments should
+    # drop this block (revert to the ASK defaults in SaasProperties.Permission) for human-in-the-loop.
+    permission:
+      mode: DEFAULT
+      allow-tools: [execute, write_file, read_file, edit_file, list_files, glob_files, grep_files]
+      ask-tools: []
   security:
     jwt:
       secret: gateway-dev-secret-please-override-in-prod-0123456789abcdef

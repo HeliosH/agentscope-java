@@ -132,3 +132,40 @@ metadata:
 **测试 gate**:`mvn -o -pl agentscope-saas/agentscope-saas-sandbox -am install` + `mvn -pl agentscope-saas/agentscope-saas-app test` = saas-app 23/23 绿(含 SaasAppContextLoadsTest 上下文加载 golden gate)+ saas-sandbox 7/7 绿(含 SandboxQuotaMiddlewareTest,UUID guard 不破坏既有 UUID-tenant 配额测试)。offline 缺 `surefire-junit-platform:3.5.5` provider 时去 `-o` 在线跑。
 
 **遗留(非阻塞)**:F3-S2 热路径实时持久化仍暂缓(框架级);dev 模式 chat 消息不持久化(非 UUID tenant,设计如此);envd 502 噪声待框架侧 sandbox filesystem 投影解决。
+
+## Cube sandbox 真 LLM 全链路 e2e 验证(2026-06-22,gateway profile + 前端 + skill 加载,全绿)
+
+在 dev profile(ScriptedToolModel 脚本模型)之上,用 **gateway profile + 真 LLM + 真 JWT + 前端** 验证终端用户核心价值闭环:浏览器/HTTP 发任务 → 真 LLM 在 cube 沙箱里加载 skill 执行 → 结果回传 → 任务记录 + 记忆持久化。模型用火山方舟 `glm-5.1` @ `https://ark.cn-beijing.volces.com/api/coding/v1`(OpenAI 兼容)。
+
+**为何用 gateway profile 非 dev**:① 真 JWT → UUID 形状 tenant → `SaasChatController.isPersistable`=true → chat 消息天然持久化到 H2 `chat_messages`(dev 的 `dev-org` 非 UUID,持久化被跳过,不满足"任务记录持久化");② gateway profile 定位就是 "e2e verification against a real LLM gateway";③ 前端 `http.ts` 注 Bearer token,与真 JWT 登录流程匹配(dev 免登录与前端 JWT 冲突)。
+
+**验证流程(curl 链路,等价浏览器 SSE)**:register(进 demo org,role=member,UUID tenant)→ 真 JWT → POST /api/agents 建 agent(UUID id)→ chat #1(prompt 指 LLM 用 `execute` 写 `skills/greeter/SKILL.md`)→ chat #2 同一 session(prompt "Load the greeter skill and use it to greet me")。
+
+**验证通过项(全绿)**:
+
+1. **真 LLM ReAct 循环**:glm-5.1 完整跑通。chat #1 LLM 调 `execute` → cube 沙箱执行 `mkdir+printf+cat` → `TOOL_CALL_RESULT`=`"Exit code: 0\n\n---\nname: greeter\n..."`(完整 SKILL.md 内容)→ LLM 回 "Success." → `RUN_FINISHED`。
+2. **skill 发现+加载**:chat #2 是**新 cube microVM**(Branch C restore,skill 从 chat #1 snapshot 恢复)。`HarnessSkillMiddleware` 注 `<available_skills>` 提示块 → LLM 调 `load_skill_through_path(skillId="greeter")` → 返回 "Successfully loaded skill: greeter... Files root: /home/user/skills/greeter" + SKILL.md 正文。
+3. **skill 驱动沙箱执行**:LLM 读 skill 后按其指令调 `execute` 跑 `echo Hello-from-greeter-skill` → `Exit code: 0\nHello-from-greeter-skill` → LLM 按 skill 指令回复 `[greeter-skill] Hello-from-greeter-skill`(流式 delta)。
+4. **跨 cube microVM skill 存活**:chat #2 新沙箱,日志 `Branch C: restoring from snapshot` ×2,skill 从 chat #1 的 stop→tar→PG snapshot 恢复。
+5. **chat 消息持久化**:`GET /api/agents/{id}/sessions` 返回两个 session(chat #1 "Use the execute tool..." + chat #2 "Load the greeter skill..."),messageCount=2(user+assistant),`ChatPersistenceService.saveUserMessage`/`saveAssistantMessage` 写 H2 `chat_messages`(gateway UUID tenant → isPersistable=true)。
+6. **记忆 flush**:`MemoryFlushManager` offload 6 messages for session(chat #2 threadId)。
+7. **沙箱释放**:cube 平台 `GET /health` → `sandboxes:0`(3 创建 0 残留,killSandbox 204)。
+
+**验证中发现并修复的 bug**:
+
+- **SandboxConfig workspaceRoot 空串 bug**:`application.yml:64` 的 `workspace-root: ${SAAS_SANDBOX_WORKSPACE_ROOT:}` 默认**空串**(非 null)。`SandboxConfig` cube/docker 分支三元判 `!= null` 不判空串 → 空串传给 `CubeSandbox.doSetupWorkspace` → `mkdir -p ` (空)→ `mkdir: missing operand` → `WorkspaceStartException: Failed to start workspace at: \workspace`。dev profile 凑巧显式设 `/home/user` 绕过,gateway profile 没设就崩。修复:cube + docker 两分支都判 `!= null && !isBlank()`,空串回落默认(cube `/home/user`,docker `/workspace`)。
+- **gateway profile 权限 ASK 门**:gateway profile 继承 `SaasProperties.Permission` 默认值,`execute` 在 `askTools` → ReAct 循环被 `require_user_confirm` HITL 暂停。`application-gateway.yml` 加 `saas.agent.permission.allow-tools: [execute, write_file, ...]` + `ask-tools: []`(e2e 无人值守放行,生产应改回 ASK)。
+
+**关键 gotcha(非显然)**:
+
+- **火山方舟 base-url 必须带 `/v1`**:`https://ark.cn-beijing.volces.com/api/coding/v1`。`/api/coding/chat/completions`(无 v1)空响应,`/api/v3/chat/completions` 404(InvalidEndpointOrModel)。`OpenAIClient.buildApiUrl` 智能去重 baseUrl 的 `/v1` 与 endpointPath 的 `/v1/`,所以 baseUrl 带 `/v1` + 默认 endpointPath `/v1/chat/completions` → 正确拼成 `/api/coding/v1/chat/completions`。探测端点必须先 curl 确认(本次靠 `curl POST /chat/completions` 返回 `pong` 定位正确路径)。
+- **H2 内存库重启即丢 token**:app 重启 = 新 H2 = 空 users 表。旧 token 的 user_id 在新 H2 无对应行 → `agents` 表 `user_id` 外键约束违反 → chat 500 `Referential integrity constraint violation: CONSTRAINT_72 AGENTS FOREIGN KEY(USER_ID) REFERENCES USERS(ID)`。重启后必须重新 register。gateway profile 的 H2 `DB_CLOSE_DELAY=-1` 只保证进程内不关,进程退出即丢。
+- **Git Bash `read -r TOK AGID EMAIL < file` 按 IFS 分割**:token 是整行无空格,但 `read` 读第一行后 AGID 应在第二行 —— 实际 `read -r` 只读**一行**按空格分。多行 ctx 文件要用 `head -1`/`sed -n 2p` 分别提取,别用 `read`。
+- **curl `--data-binary @<(printf ...)` 进程替换在 Git Bash 不可靠**:body 传不进去 → 400 Bad Request。用 Write 工具写 JSON 文件再 `--data-binary @file.json` 稳定。或 `-d '...'` 短 body。
+- **`mvn -pl saas-app package`(无 `-am`)从本地仓库拉旧依赖 jar**:本轮 SandboxConfig 改动在 saas-app 模块自身,直接 `package` 会重编该模块 class —— 但若改的是 saas-sandbox/saas-core 等被依赖模块,必须 `-am` 或先 `install` 到本地仓库,否则 app 打包拉旧 jar(上轮 cube 验证踩过)。
+- **F3-S2 gap 对 skill 管理的影响**:cube 沙箱 on 时,`AgentSkillsController.resolveFilesystem` 返回 `SandboxBackedFilesystem`,call 外 PUT/GET skill 会 "No active sandbox"。故前端 skill 管理页在 cube on 时不可用,skill 改在 **chat call 内用 `execute` 写 SKILL.md 创建**(call 内 SandboxBackedFilesystem 可用)。MemoryFlushManager call 外 flush 也同样 WARN "No active sandbox"(非致命,call 内已 offload)。修 gap 本身是框架级 F3-S2 工作。
+- **前端 build**:`mvn -Pfrontend -pl saas-app -am package`,`frontend-maven-plugin` 下 Node v20.19.2 到 target/,跑 `npm install + npm run build`,产物进 `src/main/resources/static`(vite outDir),`WebConfig.spaRouter` catch-all 让 React Router 工作。本机 Node v24 不冲突(plugin 用自己的 Node)。`clean package` 不删 static(static 在 src/main/resources,非 target)。前端 `ChatPanel`/`ToolCallBlock` 通用渲染所有 AG-UI `TOOL_CALL_*`(含 `load_skill_through_path`、`execute`),无按名过滤。
+
+**测试 gate**:`mvn -o -pl saas-app test` = 23/23 绿(含 SaasAppContextLoadsTest,SandboxConfig 空串修复不破坏上下文加载)。
+
+**遗留(非阻塞)**:F3-S2 call 外 workspace/skill 端点仍 500(cube on 时);MemoryFlushManager call 外 flush WARN(非致命);前端 skill 管理页 cube on 时不可用(改用 call 内 execute 创建)。这些都在 F3-S2 框架级修复范围内。

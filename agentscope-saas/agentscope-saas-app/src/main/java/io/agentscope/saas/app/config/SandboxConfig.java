@@ -74,6 +74,7 @@ public class SandboxConfig {
                                         .apiUrl(sb.getCubeApiUrl())
                                         .workspaceRoot(
                                                 sb.getWorkspaceRoot() != null
+                                                                && !sb.getWorkspaceRoot().isBlank()
                                                         ? sb.getWorkspaceRoot()
                                                         : "/home/user")
                                         .sandboxTimeoutSeconds(sb.getCubeSandboxTimeoutSeconds())
@@ -102,6 +103,7 @@ public class SandboxConfig {
                                         .image(sb.getImage())
                                         .workspaceRoot(
                                                 sb.getWorkspaceRoot() != null
+                                                                && !sb.getWorkspaceRoot().isBlank()
                                                         ? sb.getWorkspaceRoot()
                                                         : "/workspace");
                         if (sb.getMemoryLimitBytes() != null) {
