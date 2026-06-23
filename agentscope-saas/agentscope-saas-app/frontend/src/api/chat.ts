@@ -5,6 +5,12 @@ export interface ConfirmResultInput {
   input?: Record<string, unknown>;
 }
 
+export interface ConfirmToolCall {
+  id: string;
+  name: string;
+  input?: Record<string, unknown>;
+}
+
 export interface ChatRequest {
   message: string;
   sessionId?: string;
@@ -18,11 +24,12 @@ export interface ChatRequest {
  * simpler {token, tool_call, tool_result, done, error} shape that ChatPanel renders.
  */
 export interface ChatEvent {
-  type: 'token' | 'tool_call' | 'tool_result' | 'done' | 'error' | string;
+  type: 'token' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'confirm_required' | string;
   data?: string;
   toolName?: string;
   toolInput?: string;
   toolResult?: string;
+  confirmTools?: ConfirmToolCall[];
   error?: string;
   sessionKey?: string;
 }
@@ -116,9 +123,38 @@ export async function* stream(agentId: string, req: ChatRequest): AsyncGenerator
       } else if (type === 'CUSTOM' && payload.name === 'error') {
         const value = payload.value as { message?: string } | undefined;
         yield { type: 'error', error: value?.message ?? 'unknown error' };
+      } else if (type === 'CUSTOM' && payload.name === 'require_user_confirm') {
+        const value = payload.value as { toolCalls?: unknown[] } | undefined;
+        const confirmTools = (value?.toolCalls ?? []).map(toConfirmToolCall);
+        yield { type: 'confirm_required', confirmTools };
       }
-      // RUN_STARTED, TEXT_MESSAGE_START/END, STATE_*, RAW, REASONING_*, and the
-      // require_user_confirm Custom event are not rendered by paw's ChatPanel.
+      // RUN_STARTED, TEXT_MESSAGE_START/END, STATE_*, RAW, and REASONING_* are ignored.
     }
   }
+}
+
+function toConfirmToolCall(raw: unknown): ConfirmToolCall {
+  const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const id = String(obj.id ?? obj.toolCallId ?? obj.callId ?? '');
+  const name = String(obj.name ?? obj.toolName ?? 'tool');
+  const input = normalizeInput(obj.input ?? obj.args ?? obj.arguments);
+  return { id, name, input };
+}
+
+function normalizeInput(raw: unknown): Record<string, unknown> | undefined {
+  if (raw == null) return undefined;
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : { value: parsed };
+    } catch {
+      return { value: raw };
+    }
+  }
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  return { value: raw };
 }

@@ -161,9 +161,14 @@ public class SandboxConfig {
                 sb.getType(),
                 scope,
                 guard != null ? "redis" : "none",
-                snapshotSpec != null ? "jdbc" : "none");
+                snapshotSpec != null ? snapshotBackend(sb) : "none");
 
         return spec;
+    }
+
+    private static String snapshotBackend(SaasProperties.Sandbox sb) {
+        String backend = sb.getSnapshot().getBackend();
+        return backend == null || backend.isBlank() ? "pg" : backend.trim().toLowerCase();
     }
 
     /**

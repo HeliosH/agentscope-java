@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
-import { fetchMe, getToken, logout, type MeResponse } from '../auth';
+import { fetchMe, logout, type MeResponse } from '../auth';
 
 /**
- * Route guard for the authenticated app shell. On mount, if a token is present it is verified via
- * `/api/auth/me`; if missing or rejected (401, handled in `api/http.ts`) the user is redirected to
- * `/login`. While verifying, a lightweight loading state is shown. Renders `<Outlet/>` so the
- * nested `<AppShell/>` and its child routes mount underneath.
+ * Route guard for the authenticated app shell. On mount it verifies `/api/auth/me`; if rejected
+ * (401, handled in `api/http.ts`) the user is redirected to `/login`. Dev auth bypass profiles can
+ * return a user without a stored token, which keeps local CubeSandbox verification browser-driven.
  */
 export default function ProtectedRoute() {
   const [state, setState] = useState<'checking' | 'ok' | 'denied'>('checking');
@@ -14,11 +13,6 @@ export default function ProtectedRoute() {
 
   useEffect(() => {
     let cancelled = false;
-    const token = getToken();
-    if (!token) {
-      setState('denied');
-      return;
-    }
     fetchMe()
       .then(m => { if (!cancelled) { setMe(m); setState('ok'); } })
       .catch(() => { if (!cancelled) setState('denied'); });

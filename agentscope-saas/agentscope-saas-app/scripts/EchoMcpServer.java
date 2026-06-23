@@ -19,7 +19,6 @@ import java.util.regex.Pattern;
 
 public class EchoMcpServer {
 
-
     private static final Pattern ID_NUM = Pattern.compile("\"id\"\\s*:\\s*(\\d+)");
     private static final Pattern ID_STR = Pattern.compile("\"id\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern METHOD = Pattern.compile("\"method\"\\s*:\\s*\"([^\"]+)\"");
@@ -49,8 +48,13 @@ public class EchoMcpServer {
     private static void handle(String line, PrintStream out) {
         String method = match(METHOD, line);
         if (method == null) return; // not a request/notification we recognize
-        String id = match(ID_NUM, line);
-        if (id == null) id = match(ID_STR, line);
+        String idJson = match(ID_NUM, line);
+        if (idJson == null) {
+            String idString = match(ID_STR, line);
+            if (idString != null) {
+                idJson = jsonString(unescape(idString));
+            }
+        }
 
         switch (method) {
             case "initialize":
@@ -59,7 +63,7 @@ public class EchoMcpServer {
                 if (proto == null) proto = "2025-03-26";
                 respond(
                         out,
-                        id,
+                        idJson,
                         "{\"protocolVersion\":\""
                                 + proto
                                 + "\",\"capabilities\":{\"tools\":{}},"
@@ -71,7 +75,7 @@ public class EchoMcpServer {
             case "tools/list":
                 respond(
                         out,
-                        id,
+                        idJson,
                         "{\"tools\":["
                                 + "{\"name\":\"echo\",\"description\":\"Echo back the provided message.\","
                                 + "\"inputSchema\":{\"type\":\"object\",\"properties\":"
@@ -85,11 +89,11 @@ public class EchoMcpServer {
                                 + "]}");
                 break;
             case "tools/call":
-                respond(out, id, callTool(line));
+                respond(out, idJson, callTool(line));
                 break;
             default:
-                if (id != null) {
-                    respond(out, id, error(-32601, "Method not found: " + method));
+                if (idJson != null) {
+                    respond(out, idJson, error(-32601, "Method not found: " + method));
                 }
         }
     }
@@ -157,12 +161,12 @@ public class EchoMcpServer {
         }
     }
 
-    private static void respondError(PrintStream out, String id, int code, String message) {
-        if (id == null) return;
+    private static void respondError(PrintStream out, String idJson, int code, String message) {
+        if (idJson == null) return;
         synchronized (out) {
             out.print(
                     "{\"jsonrpc\":\"2.0\",\"id\":"
-                            + id
+                            + idJson
                             + ",\"error\":{\"code\":"
                             + code
                             + ",\"message\":"

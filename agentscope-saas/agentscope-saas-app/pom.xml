@@ -52,6 +52,16 @@
             <groupId>io.agentscope</groupId>
             <artifactId>agentscope-saas-storage</artifactId>
         </dependency>
+        <dependency>
+            <groupId>io.minio</groupId>
+            <artifactId>minio</artifactId>
+            <version>8.4.3</version>
+        </dependency>
+        <dependency>
+            <groupId>commons-io</groupId>
+            <artifactId>commons-io</artifactId>
+            <version>2.21.0</version>
+        </dependency>
 
         <!-- Core agent runtime -->
         <dependency>

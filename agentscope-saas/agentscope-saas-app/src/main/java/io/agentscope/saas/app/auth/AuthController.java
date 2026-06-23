@@ -17,6 +17,8 @@ package io.agentscope.saas.app.auth;
 
 import io.agentscope.saas.core.persistence.entity.OrgEntity;
 import io.agentscope.saas.core.persistence.entity.UserEntity;
+import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.core.tenant.TenantResolver;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
@@ -60,14 +62,17 @@ public class AuthController {
     private final AuthBootstrapRepository bootstrapRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
+    private final TenantResolver tenantResolver;
 
     public AuthController(
             AuthBootstrapRepository bootstrapRepository,
             PasswordEncoder passwordEncoder,
-            JwtService jwtService) {
+            JwtService jwtService,
+            TenantResolver tenantResolver) {
         this.bootstrapRepository = bootstrapRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
+        this.tenantResolver = tenantResolver;
     }
 
     @PostMapping("/login")
@@ -171,9 +176,15 @@ public class AuthController {
     @GetMapping("/me")
     public Mono<ResponseEntity<Object>> me(@AuthenticationPrincipal Jwt jwt) {
         if (jwt == null) {
-            return Mono.just(
-                    ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                            .body((Object) Map.of("error", "unauthenticated")));
+            TenantContext tenant = tenantResolver.resolve(Map.of());
+            Object body =
+                    Map.of(
+                            "userId", tenant.userId(),
+                            "orgId", tenant.orgId(),
+                            "email", "dev@local",
+                            "role", tenant.role(),
+                            "tier", tenant.tier());
+            return Mono.just(ResponseEntity.ok(body));
         }
         Object body =
                 Map.of(

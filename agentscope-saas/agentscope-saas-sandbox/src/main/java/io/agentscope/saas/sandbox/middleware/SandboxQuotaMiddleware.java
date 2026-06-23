@@ -22,6 +22,7 @@ import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.MiddlewareBase;
 import io.agentscope.saas.core.ratelimit.QuotaExceededException;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.sandbox.SandboxBroker;
 import java.util.UUID;
 import java.util.function.Function;
@@ -52,13 +53,23 @@ public class SandboxQuotaMiddleware implements MiddlewareBase {
             Function<AgentInput, Flux<AgentEvent>> next) {
 
         TenantContext tc = TenantContext.from(ctx);
+        // Dev/bypass tenants use non-UUID ids (e.g. "dev-org"); skip quota tracking for them
+        // (same convention as SaasChatController.isPersistable). For UUID tenants, wrap the
+        // broker call in withTenantOrg so the RLS GUC is set on the boundedElastic worker thread.
         if (tc != null
                 && tc.orgId() != null
                 && tc.userId() != null
                 && isUuid(tc.orgId())
                 && isUuid(tc.userId())) {
-            broker.checkQuota(
-                    UUID.fromString(tc.orgId()), UUID.fromString(tc.userId()), tc.maxSandboxes());
+            withTenantOrg(
+                    tc.orgId(),
+                    () -> {
+                        broker.checkQuota(
+                                UUID.fromString(tc.orgId()),
+                                UUID.fromString(tc.userId()),
+                                tc.maxSandboxes());
+                        return null;
+                    });
         }
         return next.apply(input);
     }
@@ -73,5 +84,20 @@ public class SandboxQuotaMiddleware implements MiddlewareBase {
         } catch (IllegalArgumentException e) {
             return false;
         }
+    }
+
+    private static <T> T withTenantOrg(String orgId, TenantOperation<T> operation) {
+        String previous = TenantContextHolder.getOrgId();
+        TenantContextHolder.setOrgId(orgId);
+        try {
+            return operation.run();
+        } finally {
+            TenantContextHolder.setOrgId(previous);
+        }
+    }
+
+    @FunctionalInterface
+    private interface TenantOperation<T> {
+        T run();
     }
 }

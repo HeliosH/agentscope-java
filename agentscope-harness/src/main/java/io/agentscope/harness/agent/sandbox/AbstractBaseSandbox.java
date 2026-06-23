@@ -19,6 +19,7 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshot;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.nio.file.Path;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
@@ -123,8 +124,16 @@ public abstract class AbstractBaseSandbox implements Sandbox {
         } catch (Exception e) {
             state.setWorkspaceRootReady(false);
             throw new SandboxException.WorkspaceStartException(
-                    java.nio.file.Path.of(state.getWorkspaceSpec().getRoot()), e);
+                    Path.of(workspaceRootForErrors()), e);
         }
+    }
+
+    private String workspaceRootForErrors() {
+        String root = getWorkspaceRoot();
+        if (root == null || root.isBlank()) {
+            root = state.getWorkspaceSpec().getRoot();
+        }
+        return root;
     }
 
     /**

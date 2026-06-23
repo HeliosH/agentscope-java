@@ -22,6 +22,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.saas.app.chat.ChatPersistenceService;
 import io.agentscope.saas.core.persistence.entity.AgentEntity;
 import io.agentscope.saas.core.persistence.repo.AgentRepository;
+import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.core.tenant.TenantResolver;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
@@ -64,16 +66,19 @@ public class AgentController {
     private final ChatPersistenceService persistenceService;
     private final AgentDraftService draftService;
     private final ObjectMapper objectMapper;
+    private final TenantResolver tenantResolver;
 
     public AgentController(
             AgentRepository agentRepository,
             ChatPersistenceService persistenceService,
             AgentDraftService draftService,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            TenantResolver tenantResolver) {
         this.agentRepository = agentRepository;
         this.persistenceService = persistenceService;
         this.draftService = draftService;
         this.objectMapper = objectMapper;
+        this.tenantResolver = tenantResolver;
     }
 
     /**
@@ -109,8 +114,12 @@ public class AgentController {
 
     @GetMapping
     public Mono<ResponseEntity<List<AgentView>>> list(@AuthenticationPrincipal Jwt jwt) {
-        UUID orgId = orgId(jwt);
-        UUID userId = userId(jwt);
+        TenantContext tenant = tenant(jwt);
+        if (!isUuid(tenant.orgId()) || !isUuid(tenant.userId())) {
+            return Mono.just(ResponseEntity.ok(List.of()));
+        }
+        UUID orgId = UUID.fromString(tenant.orgId());
+        UUID userId = UUID.fromString(tenant.userId());
         return Mono.fromCallable(
                         () ->
                                 agentRepository
@@ -124,7 +133,7 @@ public class AgentController {
 
     @GetMapping("/{id}")
     public Mono<AgentView> get(@PathVariable String id, @AuthenticationPrincipal Jwt jwt) {
-        UUID orgId = orgId(jwt);
+        UUID orgId = orgId(tenant(jwt));
         return Mono.fromCallable(
                         () ->
                                 agentRepository
@@ -145,8 +154,9 @@ public class AgentController {
             return Mono.error(
                     new ResponseStatusException(HttpStatus.BAD_REQUEST, "name is required"));
         }
-        UUID orgId = orgId(jwt);
-        UUID userId = userId(jwt);
+        TenantContext tenant = tenant(jwt);
+        UUID orgId = orgId(tenant);
+        UUID userId = userId(tenant);
         return Mono.fromCallable(
                         () -> {
                             AgentEntity entity = new AgentEntity();
@@ -170,8 +180,9 @@ public class AgentController {
             @PathVariable String id,
             @AuthenticationPrincipal Jwt jwt,
             @RequestBody AgentWriteRequest request) {
-        UUID orgId = orgId(jwt);
-        UUID userId = userId(jwt);
+        TenantContext tenant = tenant(jwt);
+        UUID orgId = orgId(tenant);
+        UUID userId = userId(tenant);
         return Mono.fromCallable(
                         () -> {
                             AgentEntity entity =
@@ -209,8 +220,9 @@ public class AgentController {
     @DeleteMapping("/{id}")
     public Mono<ResponseEntity<Void>> delete(
             @PathVariable String id, @AuthenticationPrincipal Jwt jwt) {
-        UUID orgId = orgId(jwt);
-        UUID userId = userId(jwt);
+        TenantContext tenant = tenant(jwt);
+        UUID orgId = orgId(tenant);
+        UUID userId = userId(tenant);
         return Mono.fromCallable(
                         () -> {
                             AgentEntity entity =
@@ -246,12 +258,35 @@ public class AgentController {
     //  Helpers
     // -----------------------------------------------------------------
 
-    private static UUID orgId(Jwt jwt) {
-        return UUID.fromString(jwt.getClaimAsString("org_id"));
+    private TenantContext tenant(Jwt jwt) {
+        return tenantResolver.resolve(jwt != null ? jwt.getClaims() : Map.of());
     }
 
-    private static UUID userId(Jwt jwt) {
-        return UUID.fromString(jwt.getClaimAsString("user_id"));
+    private static UUID orgId(TenantContext tenant) {
+        return uuidClaim("org_id", tenant.orgId());
+    }
+
+    private static UUID userId(TenantContext tenant) {
+        return uuidClaim("user_id", tenant.userId());
+    }
+
+    private static UUID uuidClaim(String name, String value) {
+        if (!isUuid(value)) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "invalid tenant " + name);
+        }
+        return UUID.fromString(value);
+    }
+
+    private static boolean isUuid(String s) {
+        if (s == null || s.isBlank()) {
+            return false;
+        }
+        try {
+            UUID.fromString(s);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
     }
 
     private static UUID parseUuid(String s) {

@@ -21,6 +21,7 @@ import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.MiddlewareBase;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.sandbox.SandboxBroker;
 import java.time.OffsetDateTime;
 import java.util.UUID;
@@ -84,13 +85,16 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
             // External id is unknown at this layer (the framework owns the backend handle); the
             // sessionId identifies the sandbox slot under USER/SESSION isolation.
             UUID id =
-                    broker.registerActive(
-                            orgId,
-                            userId,
-                            sessionId,
-                            sandboxType,
-                            sessionId,
-                            OffsetDateTime.now().plusSeconds(idleTtlSeconds));
+                    withTenantOrg(
+                            tc.orgId(),
+                            () ->
+                                    broker.registerActive(
+                                            orgId,
+                                            userId,
+                                            sessionId,
+                                            sandboxType,
+                                            sessionId,
+                                            OffsetDateTime.now().plusSeconds(idleTtlSeconds)));
             trackingId.set(id);
         } catch (Exception e) {
             log.warn("Failed to register active sandbox tracking row: {}", e.getMessage());
@@ -102,7 +106,12 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
                             UUID id = trackingId.get();
                             if (id != null) {
                                 try {
-                                    broker.release(id);
+                                    withTenantOrg(
+                                            tc.orgId(),
+                                            () -> {
+                                                broker.release(id);
+                                                return null;
+                                            });
                                 } catch (Exception e) {
                                     log.warn(
                                             "Failed to release sandbox tracking row {}: {}",
@@ -123,5 +132,20 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
         } catch (IllegalArgumentException e) {
             return false;
         }
+    }
+
+    private static <T> T withTenantOrg(String orgId, TenantOperation<T> operation) {
+        String previous = TenantContextHolder.getOrgId();
+        TenantContextHolder.setOrgId(orgId);
+        try {
+            return operation.run();
+        } finally {
+            TenantContextHolder.setOrgId(previous);
+        }
+    }
+
+    @FunctionalInterface
+    private interface TenantOperation<T> {
+        T run();
     }
 }
