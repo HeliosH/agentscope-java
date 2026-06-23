@@ -88,6 +88,7 @@ public class SaasLongTermMemoryMiddleware implements MiddlewareBase {
     private final Mem0Client mem0Client;
     private final String agentName;
     private final int topK;
+    private final MemoryLedger memoryLedger;
 
     /**
      * @param mem0Client shared Mem0 client (owns the underlying HTTP client; reuse one instance)
@@ -95,9 +96,21 @@ public class SaasLongTermMemoryMiddleware implements MiddlewareBase {
      * @param topK max memories to retrieve per call
      */
     public SaasLongTermMemoryMiddleware(Mem0Client mem0Client, String agentName, int topK) {
+        this(mem0Client, agentName, topK, MemoryLedger.noop());
+    }
+
+    /**
+     * @param mem0Client shared Mem0 client (owns the underlying HTTP client; reuse one instance)
+     * @param agentName agent identifier stored with each memory ({@code agent_id})
+     * @param topK max memories to retrieve per call
+     * @param memoryLedger durable source ledger for replaying/auditing memory projection events
+     */
+    public SaasLongTermMemoryMiddleware(
+            Mem0Client mem0Client, String agentName, int topK, MemoryLedger memoryLedger) {
         this.mem0Client = Objects.requireNonNull(mem0Client, "mem0Client");
         this.agentName = agentName;
         this.topK = topK > 0 ? topK : 5;
+        this.memoryLedger = memoryLedger != null ? memoryLedger : MemoryLedger.noop();
     }
 
     @Override
@@ -143,7 +156,10 @@ public class SaasLongTermMemoryMiddleware implements MiddlewareBase {
                 .doFinally(
                         signal ->
                                 recordConversation(
-                                        originalMsgs, tc.userId(), filters, ctx.getSessionId()));
+                                        originalMsgs,
+                                        tc,
+                                        filters,
+                                        ctx == null ? null : ctx.getSessionId()));
     }
 
     /** Searches Mem0 for memories relevant to the query, returning the joined memory text. */
@@ -192,11 +208,12 @@ public class SaasLongTermMemoryMiddleware implements MiddlewareBase {
 
     /** Asynchronously records the conversation messages to Mem0 (fire-and-forget). */
     private void recordConversation(
-            List<Msg> msgs, String userId, Map<String, Object> filters, String sessionId) {
+            List<Msg> msgs, TenantContext tenant, Map<String, Object> filters, String sessionId) {
         List<Mem0Message> mem0Messages = toMem0Messages(msgs);
         if (mem0Messages.isEmpty()) {
             return;
         }
+        String userId = tenant.userId();
         Mem0AddRequest request =
                 Mem0AddRequest.builder()
                         .messages(mem0Messages)
@@ -206,13 +223,59 @@ public class SaasLongTermMemoryMiddleware implements MiddlewareBase {
                         .metadata(filters)
                         .infer(true)
                         .build();
+        MemoryLedger.MemoryEventRef eventRef =
+                recordPendingSafely(tenant, sessionId, mem0Messages, filters);
         mem0Client
                 .add(request)
                 .subscribeOn(Schedulers.boundedElastic())
+                .doOnSuccess(ignored -> markSyncedSafely(eventRef))
                 .doOnError(
-                        e -> log.warn("LTM record failed for user {}: {}", userId, e.getMessage()))
+                        e -> {
+                            markFailedSafely(eventRef, e);
+                            log.warn("LTM record failed for user {}: {}", userId, e.getMessage());
+                        })
                 .onErrorComplete()
                 .subscribe();
+    }
+
+    private MemoryLedger.MemoryEventRef recordPendingSafely(
+            TenantContext tenant,
+            String sessionId,
+            List<Mem0Message> mem0Messages,
+            Map<String, Object> filters) {
+        try {
+            return memoryLedger
+                    .recordPending(tenant, agentName, sessionId, mem0Messages, filters)
+                    .orElse(null);
+        } catch (RuntimeException e) {
+            log.warn("LTM ledger record failed for user {}: {}", tenant.userId(), e.getMessage());
+            return null;
+        }
+    }
+
+    private void markSyncedSafely(MemoryLedger.MemoryEventRef eventRef) {
+        if (eventRef == null) {
+            return;
+        }
+        try {
+            memoryLedger.markSynced(eventRef);
+        } catch (RuntimeException e) {
+            log.warn("LTM ledger sync mark failed for event {}: {}", eventRef.id(), e.getMessage());
+        }
+    }
+
+    private void markFailedSafely(MemoryLedger.MemoryEventRef eventRef, Throwable error) {
+        if (eventRef == null) {
+            return;
+        }
+        try {
+            memoryLedger.markFailed(eventRef, error);
+        } catch (RuntimeException e) {
+            log.warn(
+                    "LTM ledger failure mark failed for event {}: {}",
+                    eventRef.id(),
+                    e.getMessage());
+        }
     }
 
     /** Converts agent messages to Mem0 messages, filtering out empty/compressed content. */

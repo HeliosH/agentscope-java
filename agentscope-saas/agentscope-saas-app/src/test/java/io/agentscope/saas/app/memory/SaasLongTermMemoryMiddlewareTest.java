@@ -37,6 +37,9 @@ import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.saas.core.tenant.TenantContext;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
@@ -121,6 +124,64 @@ class SaasLongTermMemoryMiddlewareTest {
 
         // record runs async in doFinally; give it a moment to fire.
         verify(mem0, timeout(2000).times(1)).add(any());
+    }
+
+    @Test
+    void recordsMemoryEventBeforeMem0ProjectionAndMarksSynced() {
+        when(mem0.search(any())).thenReturn(Mono.just(new Mem0SearchResponse()));
+        when(mem0.add(any())).thenReturn(Mono.just(new Mem0AddResponse()));
+        MemoryLedger ledger = mock(MemoryLedger.class);
+        MemoryLedger.MemoryEventRef ref = new MemoryLedger.MemoryEventRef(UUID.randomUUID(), ORG);
+        when(ledger.recordPending(
+                        any(TenantContext.class),
+                        any(String.class),
+                        any(String.class),
+                        any(List.class),
+                        any(Map.class)))
+                .thenReturn(Optional.of(ref));
+
+        SaasLongTermMemoryMiddleware mw =
+                new SaasLongTermMemoryMiddleware(mem0, "assistant", 5, ledger);
+        CapturingNext next = new CapturingNext();
+
+        StepVerifier.create(mw.onAgent(mock(Agent.class), ctxWithTenant(), input("hello"), next))
+                .verifyComplete();
+
+        verify(ledger, timeout(2000))
+                .recordPending(
+                        any(TenantContext.class),
+                        any(String.class),
+                        any(String.class),
+                        any(List.class),
+                        any(Map.class));
+        verify(ledger, timeout(2000)).markSynced(ref);
+        verify(ledger, never()).markFailed(any(), any());
+    }
+
+    @Test
+    void marksMemoryEventFailedWhenMem0ProjectionFails() {
+        RuntimeException mem0Failure = new RuntimeException("projection down");
+        when(mem0.search(any())).thenReturn(Mono.just(new Mem0SearchResponse()));
+        when(mem0.add(any())).thenReturn(Mono.error(mem0Failure));
+        MemoryLedger ledger = mock(MemoryLedger.class);
+        MemoryLedger.MemoryEventRef ref = new MemoryLedger.MemoryEventRef(UUID.randomUUID(), ORG);
+        when(ledger.recordPending(
+                        any(TenantContext.class),
+                        any(String.class),
+                        any(String.class),
+                        any(List.class),
+                        any(Map.class)))
+                .thenReturn(Optional.of(ref));
+
+        SaasLongTermMemoryMiddleware mw =
+                new SaasLongTermMemoryMiddleware(mem0, "assistant", 5, ledger);
+        CapturingNext next = new CapturingNext();
+
+        StepVerifier.create(mw.onAgent(mock(Agent.class), ctxWithTenant(), input("hello"), next))
+                .verifyComplete();
+
+        verify(ledger, timeout(2000)).markFailed(ref, mem0Failure);
+        verify(ledger, never()).markSynced(any());
     }
 
     @Test

@@ -30,6 +30,7 @@ import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import io.agentscope.harness.agent.filesystem.spec.SandboxFilesystemSpec;
 import io.agentscope.harness.agent.skill.curator.SkillCuratorConfig;
 import io.agentscope.harness.agent.tools.McpClientRegistry;
+import io.agentscope.saas.app.memory.MemoryLedger;
 import io.agentscope.saas.app.memory.SaasLongTermMemoryMiddleware;
 import io.agentscope.saas.app.org.OrgToolsConfigService;
 import io.agentscope.saas.core.middleware.RateLimitMiddleware;
@@ -74,7 +75,8 @@ public class AgentConfig {
             ObjectProvider<SandboxBroker> sandboxBrokerProvider,
             ObjectProvider<BaseStore> workspaceStoreProvider,
             McpClientRegistry mcpClientRegistry,
-            OrgToolsConfigService orgToolsConfigService) {
+            OrgToolsConfigService orgToolsConfigService,
+            ObjectProvider<MemoryLedger> memoryLedgerProvider) {
 
         SaasProperties.Agent agentCfg = properties.getAgent();
         SaasProperties.RateLimit rl = properties.getRateLimit();
@@ -192,7 +194,10 @@ public class AgentConfig {
                             ltmCfg.getTimeoutSeconds());
             builder.middleware(
                     new SaasLongTermMemoryMiddleware(
-                            mem0Client, agentCfg.getName(), ltmCfg.getTopK()));
+                            mem0Client,
+                            agentCfg.getName(),
+                            ltmCfg.getTopK(),
+                            memoryLedgerProvider.getIfAvailable(MemoryLedger::noop)));
             log.info(
                     "LTM middleware enabled: mem0BaseUrl={} topK={} agentName={}",
                     ltmCfg.getMem0BaseUrl(),
