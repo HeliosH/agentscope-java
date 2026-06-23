@@ -109,6 +109,25 @@ class SandboxBackedFilesystemTest {
     }
 
     @Test
+    void outOfCallUploadDelegatesToFallback() {
+        // Out-of-call upload (e.g. PUT /skills/workspace between chats) must not throw; it writes
+        // the projection so the next in-call read sees the file.
+        InMemoryStore store = new InMemoryStore();
+        SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(new RemoteFilesystem(store, NS));
+
+        byte[] content = "skill body".getBytes(StandardCharsets.UTF_8);
+        var results = fs.uploadFiles(RC, List.of(Map.entry("/skills/greeter/SKILL.md", content)));
+
+        assertEquals(1, results.size());
+        assertTrue(results.get(0).isSuccess());
+        ReadResult readBack =
+                new RemoteFilesystem(store, NS).read(RC, "/skills/greeter/SKILL.md", 0, 0);
+        assertTrue(readBack.isSuccess());
+        assertTrue(readBack.fileData().content().contains("skill body"));
+    }
+
+    @Test
     void inCallUploadDualWritesToFallback() {
         InMemoryStore store = new InMemoryStore();
         SandboxBackedFilesystem fs = new SandboxBackedFilesystem();

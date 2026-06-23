@@ -123,6 +123,11 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
     @Override
     public List<FileUploadResponse> uploadFiles(
             RuntimeContext runtimeContext, List<Map.Entry<String, byte[]>> files) {
+        // F3-S2: out-of-call uploads (e.g. workspace/skill endpoints between chats) delegate to
+        // the remote projection instead of throwing "No active sandbox".
+        if (sandbox == null && remoteFallback != null) {
+            return remoteFallback.uploadFiles(runtimeContext, files);
+        }
         Sandbox active = requireSandbox();
         List<FileUploadResponse> results = new ArrayList<>(files.size());
 

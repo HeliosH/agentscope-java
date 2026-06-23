@@ -437,9 +437,18 @@ public class AgentSkillsController {
         return r.fileData().content();
     }
 
-    /** Writes {@code content} to {@code absPath} (workspace-relative or leading-slash) via uploadFiles. */
+    /**
+     * Writes {@code content} to {@code absPath} (workspace-relative or leading-slash) via uploadFiles.
+     *
+     * <p>The path is normalized to a leading-slash form (e.g. {@code skills/x/SKILL.md} →
+     * {@code /skills/x/SKILL.md}) so the store key matches what {@code ls}/{@code read}/{@code exists}
+     * look up. Without this, a write under key {@code skills/x.md} is invisible to {@code ls("/skills")}
+     * because the read path normalizes to {@code /skills/x.md}. The sandbox filesystem tolerates the
+     * mismatch (shell commands don't care about a leading slash), but the Redis/BaseStore projection
+     * (F3-S2) keys on the exact string.
+     */
     private static void writeUtf8(AbstractFilesystem fs, String absPath, String content) {
-        String rel = absPath.startsWith("/") ? absPath.substring(1) : absPath;
+        String rel = absPath.startsWith("/") ? absPath : "/" + absPath;
         List<FileUploadResponse> ur =
                 fs.uploadFiles(
                         FS_RC, List.of(Map.entry(rel, content.getBytes(StandardCharsets.UTF_8))));
