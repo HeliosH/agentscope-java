@@ -346,6 +346,50 @@ class HarnessAgentTest {
         }
     }
 
+    @Test
+    void workspaceForRuntimeContextPreservesCustomNamespaceAttributes() throws Exception {
+        Files.createDirectories(workspace);
+        Files.writeString(workspace.resolve(WorkspaceConstants.AGENTS_MD), "# Test\n");
+        InMemoryStore store = new InMemoryStore();
+
+        try (HarnessAgent agent =
+                HarnessAgent.builder()
+                        .name("agent-a")
+                        .model(stubModel("ok"))
+                        .workspace(workspace)
+                        .filesystem(
+                                new RemoteFilesystemSpec(store)
+                                        .namespaceFactory(
+                                                rc ->
+                                                        List.of(
+                                                                "org",
+                                                                String.valueOf(
+                                                                        (Object) rc.get("org")),
+                                                                "user",
+                                                                rc.getUserId())))
+                        .stateStore(mock(AgentStateStore.class))
+                        .build()) {
+
+            RuntimeContext orgAUser = RuntimeContext.builder().userId("u1").put("org", "a").build();
+            RuntimeContext orgBUser = RuntimeContext.builder().userId("u1").put("org", "b").build();
+
+            agent.workspaceFor(orgAUser)
+                    .getFilesystem()
+                    .write(RuntimeContext.empty(), "/MEMORY.md", "org-a-memory");
+
+            assertTrue(
+                    agent.workspaceFor(orgAUser)
+                            .getFilesystem()
+                            .read(RuntimeContext.empty(), "/MEMORY.md", 0, 100)
+                            .isSuccess());
+            assertFalse(
+                    agent.workspaceFor(orgBUser)
+                            .getFilesystem()
+                            .read(RuntimeContext.empty(), "/MEMORY.md", 0, 100)
+                            .isSuccess());
+        }
+    }
+
     private static Msg userText(String text) {
         return Msg.builder()
                 .role(MsgRole.USER)

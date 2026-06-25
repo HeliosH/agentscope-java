@@ -111,7 +111,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
@@ -150,7 +149,7 @@ public class HarnessAgent implements Agent, AutoCloseable {
 
     private final ReActAgent delegate;
     private final WorkspaceManager workspaceManager;
-    private final BiFunction<String, String, WorkspaceManager> workspaceFactory;
+    private final Function<RuntimeContext, WorkspaceManager> workspaceFactory;
     private final WorkspaceIndex ownedWorkspaceIndex;
     private final SandboxContext defaultSandboxContext;
     private final CompactionMiddleware compactionHook;
@@ -182,7 +181,7 @@ public class HarnessAgent implements Agent, AutoCloseable {
     private HarnessAgent(
             ReActAgent delegate,
             WorkspaceManager workspaceManager,
-            BiFunction<String, String, WorkspaceManager> workspaceFactory,
+            Function<RuntimeContext, WorkspaceManager> workspaceFactory,
             WorkspaceIndex ownedWorkspaceIndex,
             SandboxContext defaultSandboxContext,
             CompactionMiddleware compactionHook,
@@ -224,15 +223,25 @@ public class HarnessAgent implements Agent, AutoCloseable {
 
     /**
      * Returns a {@link WorkspaceManager} view whose filesystem and namespace are bound to the
-     * given {@code (userId, sessionId)} for the duration of the returned view's IO. Unlike
+     * given {@code runtimeContext} for the duration of the returned view's IO. Unlike
      * {@link #getWorkspaceManager()}, this does not mutate any shared state on this agent — so it
      * is safe to call concurrently from per-request controllers without racing with active chats.
      */
-    public WorkspaceManager workspaceFor(String userId, String sessionId) {
+    public WorkspaceManager workspaceFor(RuntimeContext runtimeContext) {
         if (workspaceFactory == null) {
             return workspaceManager;
         }
-        return workspaceFactory.apply(userId, sessionId);
+        return workspaceFactory.apply(
+                runtimeContext != null ? runtimeContext : RuntimeContext.empty());
+    }
+
+    /**
+     * Returns a workspace view bound to the supplied {@code (userId, sessionId)}. Prefer
+     * {@link #workspaceFor(RuntimeContext)} when the namespace depends on additional request
+     * attributes such as tenant/org context.
+     */
+    public WorkspaceManager workspaceFor(String userId, String sessionId) {
+        return workspaceFor(HarnessAgentBuilderSupport.buildBakedRuntimeContext(userId, sessionId));
     }
 
     /** Returns the {@link CompactionMiddleware} instance if compaction was configured, or {@code null}. */
@@ -1946,12 +1955,11 @@ public class HarnessAgent implements Agent, AutoCloseable {
             final AbstractFilesystem sharedFilesystemRef = filesystem;
             final Path capturedWorkspace = resolvedWorkspace;
             final WorkspaceIndex capturedIndex = workspaceIndex;
-            BiFunction<String, String, WorkspaceManager> workspaceFactoryFn =
-                    (uid, sid) -> {
+            Function<RuntimeContext, WorkspaceManager> workspaceFactoryFn =
+                    runtimeContext -> {
                         RuntimeContext bakedRc =
-                                HarnessAgentBuilderSupport.buildBakedRuntimeContext(uid, sid);
-                        NamespaceFactory ctxNs =
-                                rc -> (uid == null || uid.isBlank()) ? List.of() : List.of(uid);
+                                runtimeContext != null ? runtimeContext : RuntimeContext.empty();
+                        NamespaceFactory ctxNs = rc -> nsFactory.getNamespace(bakedRc);
                         AbstractFilesystem ctxFs =
                                 new io.agentscope.harness.agent.filesystem.BakedContextFilesystem(
                                         sharedFilesystemRef, bakedRc);

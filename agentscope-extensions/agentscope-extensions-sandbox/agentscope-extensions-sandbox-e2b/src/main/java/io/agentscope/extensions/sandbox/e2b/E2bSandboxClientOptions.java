@@ -24,7 +24,7 @@ public class E2bSandboxClientOptions extends SandboxClientOptions {
 
     private OkHttpClient httpClient;
     private String apiKey;
-    private String apiBaseUrl = "https://api.e2b.app";
+    private String apiBaseUrl = "https://api.e2b.dev";
     private String domain = "e2b.app";
 
     /** E2B template id (or snapshot id when creating from a snapshot). */

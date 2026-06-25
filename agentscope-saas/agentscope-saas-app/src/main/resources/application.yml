@@ -76,7 +76,7 @@ saas:
     # --- E2B (official hosted sandbox, https://e2b.app). Used when type=e2b. ---
     # API key is required for type=e2b. Get one at https://e2b.app.
     e2b-api-key: ${SAAS_SANDBOX_E2B_API_KEY:}
-    # Override only for a private E2B-compatible deployment; defaults to https://api.e2b.app.
+    # Override only for a private E2B-compatible deployment; defaults to https://api.e2b.dev.
     e2b-api-base-url: ${SAAS_SANDBOX_E2B_API_BASE_URL:}
     e2b-template-id: ${SAAS_SANDBOX_E2B_TEMPLATE_ID:}
     # Sandbox domain (defaults to e2b.app). Override for private deployments.

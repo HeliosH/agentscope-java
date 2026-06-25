@@ -28,6 +28,8 @@ import io.agentscope.harness.agent.filesystem.model.ReadResult;
 import io.agentscope.harness.agent.filesystem.model.WriteResult;
 import io.agentscope.saas.core.persistence.entity.AgentEntity;
 import io.agentscope.saas.core.persistence.repo.AgentRepository;
+import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.core.tenant.TenantResolver;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -62,7 +64,7 @@ import reactor.core.scheduler.Schedulers;
 
 /**
  * Workspace file CRUD for the multi-user assistant (Phase B5′). Every operation resolves the
- * caller's per-user {@link AbstractFilesystem} via {@link HarnessAgent#workspaceFor(String, String)}
+ * caller's per-tenant {@link AbstractFilesystem} via {@link HarnessAgent#workspaceFor(RuntimeContext)}
  * — so when the sandbox is off and Redis is on, files land in the user's isolated
  * {@code RemoteFilesystemSpec} namespace (MEMORY.md, skills/, memory/, …); no Docker/FUSE needed.
  * The agent-id path variable is validated against the caller's org (404 when absent) purely as a
@@ -83,10 +85,13 @@ public class AgentWorkspaceController {
 
     private final HarnessAgent agent;
     private final AgentRepository agentRepository;
+    private final TenantResolver tenantResolver;
 
-    public AgentWorkspaceController(HarnessAgent agent, AgentRepository agentRepository) {
+    public AgentWorkspaceController(
+            HarnessAgent agent, AgentRepository agentRepository, TenantResolver tenantResolver) {
         this.agent = agent;
         this.agentRepository = agentRepository;
+        this.tenantResolver = tenantResolver;
     }
 
     // -----------------------------------------------------------------
@@ -96,10 +101,10 @@ public class AgentWorkspaceController {
     @GetMapping
     public Mono<WorkspaceSummary> summary(
             @PathVariable String agentId, @AuthenticationPrincipal Jwt jwt) {
-        UUID orgId = orgId(jwt);
+        RuntimeContext rc = runtimeContext(jwt);
         return Mono.fromCallable(
                         () -> {
-                            AbstractFilesystem fs = resolveFilesystem(orgId, userId(jwt), agentId);
+                            AbstractFilesystem fs = resolveFilesystem(rc, agentId);
                             boolean agentsMdExists = fs.exists(FS_RC, "/AGENTS.md");
                             boolean memoryMdExists = fs.exists(FS_RC, "/MEMORY.md");
                             int skillCount = countLs(fs, "/skills", true, null);
@@ -125,10 +130,10 @@ public class AgentWorkspaceController {
 
     @GetMapping("/memory")
     public Mono<MemoryView> memory(@PathVariable String agentId, @AuthenticationPrincipal Jwt jwt) {
-        UUID orgId = orgId(jwt);
+        RuntimeContext rc = runtimeContext(jwt);
         return Mono.fromCallable(
                         () -> {
-                            AbstractFilesystem fs = resolveFilesystem(orgId, userId(jwt), agentId);
+                            AbstractFilesystem fs = resolveFilesystem(rc, agentId);
                             String memoryContent = null;
                             if (fs.exists(FS_RC, "MEMORY.md")) {
                                 ReadResult rr = fs.read(FS_RC, "MEMORY.md", 0, 50000);
@@ -166,10 +171,10 @@ public class AgentWorkspaceController {
             @PathVariable String agentId,
             @RequestParam(name = "recursive", defaultValue = "true") boolean recursive,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID orgId = orgId(jwt);
+        RuntimeContext rc = runtimeContext(jwt);
         return Mono.fromCallable(
                         () -> {
-                            AbstractFilesystem fs = resolveFilesystem(orgId, userId(jwt), agentId);
+                            AbstractFilesystem fs = resolveFilesystem(rc, agentId);
                             if (recursive) {
                                 GlobResult gr = fs.glob(FS_RC, "**/*", "/");
                                 if (!gr.isSuccess() || gr.matches() == null) {
@@ -191,10 +196,10 @@ public class AgentWorkspaceController {
             @PathVariable String agentId,
             @RequestParam("path") String path,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID orgId = orgId(jwt);
+        RuntimeContext rc = runtimeContext(jwt);
         return Mono.fromCallable(
                         () -> {
-                            AbstractFilesystem fs = resolveFilesystem(orgId, userId(jwt), agentId);
+                            AbstractFilesystem fs = resolveFilesystem(rc, agentId);
                             String abs = toAbsFsPath(path);
                             if (!fs.exists(FS_RC, abs)) {
                                 throw new ResponseStatusException(
@@ -237,10 +242,10 @@ public class AgentWorkspaceController {
             @PathVariable String agentId,
             @RequestParam("path") String path,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID orgId = orgId(jwt);
+        RuntimeContext rc = runtimeContext(jwt);
         return Mono.fromCallable(
                         () -> {
-                            AbstractFilesystem fs = resolveFilesystem(orgId, userId(jwt), agentId);
+                            AbstractFilesystem fs = resolveFilesystem(rc, agentId);
                             String abs = toAbsFsPath(path);
                             List<FileDownloadResponse> results =
                                     fs.downloadFiles(FS_RC, List.of(abs));
@@ -273,10 +278,10 @@ public class AgentWorkspaceController {
             @RequestParam("path") String path,
             @RequestBody WriteRequest req,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID orgId = orgId(jwt);
+        RuntimeContext rc = runtimeContext(jwt);
         return Mono.fromCallable(
                         () -> {
-                            AbstractFilesystem fs = resolveFilesystem(orgId, userId(jwt), agentId);
+                            AbstractFilesystem fs = resolveFilesystem(rc, agentId);
                             String abs = toAbsFsPath(path);
                             String rel = toRelFsPath(path);
                             if (isExistingDirectory(fs, abs)) {
@@ -308,7 +313,7 @@ public class AgentWorkspaceController {
             @RequestParam("path") String path,
             @RequestParam(name = "type", defaultValue = "file") String type,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID orgId = orgId(jwt);
+        RuntimeContext rc = runtimeContext(jwt);
         return Mono.fromCallable(
                         () -> {
                             if ("dir".equalsIgnoreCase(type)) {
@@ -317,7 +322,7 @@ public class AgentWorkspaceController {
                                         "Empty directory creation is not supported — create a file"
                                                 + " inside the directory instead.");
                             }
-                            AbstractFilesystem fs = resolveFilesystem(orgId, userId(jwt), agentId);
+                            AbstractFilesystem fs = resolveFilesystem(rc, agentId);
                             String abs = toAbsFsPath(path);
                             String rel = toRelFsPath(path);
                             if (fs.exists(FS_RC, abs)
@@ -343,14 +348,14 @@ public class AgentWorkspaceController {
             @PathVariable String agentId,
             @RequestBody MoveRequest req,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID orgId = orgId(jwt);
+        RuntimeContext rc = runtimeContext(jwt);
         return Mono.fromCallable(
                         () -> {
                             if (req == null || req.from() == null || req.to() == null) {
                                 throw new ResponseStatusException(
                                         HttpStatus.BAD_REQUEST, "from and to are required");
                             }
-                            AbstractFilesystem fs = resolveFilesystem(orgId, userId(jwt), agentId);
+                            AbstractFilesystem fs = resolveFilesystem(rc, agentId);
                             String absFrom = toAbsFsPath(req.from());
                             String absTo = toAbsFsPath(req.to());
                             if (!fs.exists(FS_RC, absFrom)) {
@@ -381,10 +386,10 @@ public class AgentWorkspaceController {
             @PathVariable String agentId,
             @RequestParam("path") String path,
             @AuthenticationPrincipal Jwt jwt) {
-        UUID orgId = orgId(jwt);
+        RuntimeContext rc = runtimeContext(jwt);
         return Mono.fromRunnable(
                         () -> {
-                            AbstractFilesystem fs = resolveFilesystem(orgId, userId(jwt), agentId);
+                            AbstractFilesystem fs = resolveFilesystem(rc, agentId);
                             String abs = toAbsFsPath(path);
                             String absDir = abs.endsWith("/") ? abs : abs + "/";
                             if (!fs.exists(FS_RC, abs) && !fs.exists(FS_RC, absDir)) {
@@ -410,7 +415,10 @@ public class AgentWorkspaceController {
      * Validates that {@code agentId} belongs to the caller's org, then returns the caller's per-user
      * filesystem. 404 (not 403) when the agent is absent so existence is not leaked.
      */
-    private AbstractFilesystem resolveFilesystem(UUID orgId, UUID userId, String agentId) {
+    private AbstractFilesystem resolveFilesystem(RuntimeContext rc, String agentId) {
+        TenantContext tenant = TenantContext.from(rc);
+        UUID orgId = orgId(tenant);
+        UUID userId = userId(tenant);
         try {
             UUID id = UUID.fromString(agentId);
             AgentEntity a =
@@ -425,19 +433,32 @@ public class AgentWorkspaceController {
         } catch (IllegalArgumentException e) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent not found: " + agentId);
         }
-        return agent.workspaceFor(userId.toString(), null).getFilesystem();
+        return agent.workspaceFor(rc).getFilesystem();
     }
 
-    private static UUID orgId(Jwt jwt) {
-        return UUID.fromString(jwt.getClaimAsString("org_id"));
+    private RuntimeContext runtimeContext(Jwt jwt) {
+        TenantContext tenant = tenantResolver.resolve(jwt != null ? jwt.getClaims() : Map.of());
+        return RuntimeContext.builder()
+                .userId(tenant.userId())
+                .put(TenantContext.class, tenant)
+                .put(TenantContext.ATTR_KEY, tenant)
+                .build();
     }
 
-    private static UUID userId(Jwt jwt) {
-        return UUID.fromString(jwt.getClaimAsString("user_id"));
+    private static UUID orgId(TenantContext tenant) {
+        return uuidClaim("org_id", tenant != null ? tenant.orgId() : null);
     }
 
-    private static boolean existed(WriteRequest req) {
-        return req != null && req.content() != null;
+    private static UUID userId(TenantContext tenant) {
+        return uuidClaim("user_id", tenant != null ? tenant.userId() : null);
+    }
+
+    private static UUID uuidClaim(String name, String value) {
+        try {
+            return UUID.fromString(value);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "invalid tenant " + name);
+        }
     }
 
     // -----------------------------------------------------------------

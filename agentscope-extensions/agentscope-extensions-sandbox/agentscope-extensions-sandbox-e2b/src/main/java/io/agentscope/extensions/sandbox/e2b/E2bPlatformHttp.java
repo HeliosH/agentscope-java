@@ -29,7 +29,7 @@ import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
 
-/** HTTP client for {@code https://api.e2b.app} sandbox lifecycle. */
+/** HTTP client for the E2B sandbox lifecycle API. */
 final class E2bPlatformHttp {
 
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
@@ -138,7 +138,7 @@ final class E2bPlatformHttp {
 
     private static String trimSlash(String u) {
         if (u == null || u.isBlank()) {
-            return "https://api.e2b.app";
+            return "https://api.e2b.dev";
         }
         return u.endsWith("/") ? u.substring(0, u.length() - 1) : u;
     }

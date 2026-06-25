@@ -35,7 +35,7 @@ public class E2bSmokeProbe {
         }
         E2bSandboxClientOptions opt = new E2bSandboxClientOptions();
         opt.setApiKey(apiKey);
-        // defaults: apiBaseUrl https://api.e2b.app, domain e2b.app, workspaceRoot /home/user
+        // defaults: apiBaseUrl https://api.e2b.dev, domain e2b.app, workspaceRoot /home/user
 
         E2bSandboxClient client = new E2bSandboxClient();
         Sandbox sandbox = client.create(new WorkspaceSpec(), null, opt);
