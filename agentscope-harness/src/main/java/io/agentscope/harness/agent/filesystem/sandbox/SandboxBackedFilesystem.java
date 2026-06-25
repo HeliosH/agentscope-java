@@ -45,9 +45,10 @@ import org.slf4j.LoggerFactory;
 /**
  * A {@link BaseSandboxFilesystem} that delegates execution to a live {@link Sandbox}.
  *
- * <p>Stable proxy created at agent build time; a fresh {@link Sandbox} is injected on each call
- * via the volatile {@code sandbox} field by {@link
- * io.agentscope.harness.agent.middleware.SandboxLifecycleMiddleware}.
+ * <p>Stable proxy created at agent build time. A fresh {@link Sandbox} is attached to the
+ * per-call {@link RuntimeContext} by {@link
+ * io.agentscope.harness.agent.middleware.SandboxLifecycleMiddleware}; the volatile {@code sandbox}
+ * field remains as a legacy fallback for callers that do not pass the scoped context through.
  */
 public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements SandboxAware {
 
@@ -109,7 +110,7 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
     @Override
     public ExecuteResponse execute(
             RuntimeContext runtimeContext, String command, Integer timeoutSeconds) {
-        Sandbox active = requireSandbox();
+        Sandbox active = requireSandbox(runtimeContext);
         try {
             ExecResult result = active.exec(runtimeContext, command, timeoutSeconds);
             return new ExecuteResponse(
@@ -134,10 +135,11 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
             RuntimeContext runtimeContext, List<Map.Entry<String, byte[]>> files) {
         // F3-S2: out-of-call uploads (e.g. workspace/skill endpoints between chats) delegate to
         // the remote projection instead of throwing "No active sandbox".
-        if (sandbox == null && remoteFallback != null) {
+        Sandbox active = activeSandbox(runtimeContext);
+        if (active == null && remoteFallback != null) {
             return remoteFallback.uploadFiles(runtimeContext, files);
         }
-        Sandbox active = requireSandbox();
+        active = requireSandbox(runtimeContext);
         List<FileUploadResponse> results = new ArrayList<>(files.size());
 
         for (Map.Entry<String, byte[]> file : files) {
@@ -183,10 +185,11 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
     @Override
     public List<FileDownloadResponse> downloadFiles(
             RuntimeContext runtimeContext, List<String> paths) {
-        if (sandbox == null && remoteFallback != null) {
+        Sandbox active = activeSandbox(runtimeContext);
+        if (active == null && remoteFallback != null) {
             return remoteFallback.downloadFiles(runtimeContext, paths);
         }
-        Sandbox active = requireSandbox();
+        active = requireSandbox(runtimeContext);
         List<FileDownloadResponse> results = new ArrayList<>(paths.size());
 
         for (String path : paths) {
@@ -230,7 +233,7 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
 
     @Override
     public ReadResult read(RuntimeContext runtimeContext, String filePath, int offset, int limit) {
-        if (sandbox == null && remoteFallback != null) {
+        if (activeSandbox(runtimeContext) == null && remoteFallback != null) {
             return remoteFallback.read(runtimeContext, filePath, offset, limit);
         }
         return super.read(runtimeContext, filePath, offset, limit);
@@ -238,7 +241,7 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
 
     @Override
     public WriteResult write(RuntimeContext runtimeContext, String filePath, String content) {
-        if (sandbox == null && remoteFallback != null) {
+        if (activeSandbox(runtimeContext) == null && remoteFallback != null) {
             return remoteFallback.write(runtimeContext, filePath, content);
         }
         return super.write(runtimeContext, filePath, content);
@@ -251,7 +254,7 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
             String oldString,
             String newString,
             boolean replaceAll) {
-        if (sandbox == null && remoteFallback != null) {
+        if (activeSandbox(runtimeContext) == null && remoteFallback != null) {
             return remoteFallback.edit(runtimeContext, filePath, oldString, newString, replaceAll);
         }
         return super.edit(runtimeContext, filePath, oldString, newString, replaceAll);
@@ -259,7 +262,7 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
 
     @Override
     public boolean exists(RuntimeContext runtimeContext, String path) {
-        if (sandbox == null && remoteFallback != null) {
+        if (activeSandbox(runtimeContext) == null && remoteFallback != null) {
             return remoteFallback.exists(runtimeContext, path);
         }
         return super.exists(runtimeContext, path);
@@ -267,7 +270,7 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
 
     @Override
     public LsResult ls(RuntimeContext runtimeContext, String path) {
-        if (sandbox == null && remoteFallback != null) {
+        if (activeSandbox(runtimeContext) == null && remoteFallback != null) {
             return remoteFallback.ls(runtimeContext, path);
         }
         return super.ls(runtimeContext, path);
@@ -298,7 +301,7 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
      * filesystem-backed data that is not materialized inside the sandbox, such as session mirrors.
      */
     public int projectSandboxWorkspaceToRemote(RuntimeContext runtimeContext) throws Exception {
-        Sandbox active = sandbox;
+        Sandbox active = activeSandbox(runtimeContext);
         RemoteFilesystem fallback = remoteFallback;
         if (active == null || fallback == null) {
             return 0;
@@ -416,8 +419,21 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
         return "/" + String.join("/", segments);
     }
 
-    private Sandbox requireSandbox() {
-        Sandbox s = sandbox;
+    private Sandbox activeSandbox(RuntimeContext runtimeContext) {
+        if (runtimeContext != null) {
+            Sandbox scoped = runtimeContext.get(Sandbox.class);
+            if (scoped != null) {
+                return scoped;
+            }
+            if (remoteFallback != null) {
+                return null;
+            }
+        }
+        return sandbox;
+    }
+
+    private Sandbox requireSandbox(RuntimeContext runtimeContext) {
+        Sandbox s = activeSandbox(runtimeContext);
         if (s == null) {
             throw new SandboxException.SandboxConfigurationException(
                     "No active sandbox — sandbox filesystem used outside of a call context");

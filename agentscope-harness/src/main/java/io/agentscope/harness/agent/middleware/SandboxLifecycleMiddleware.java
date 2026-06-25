@@ -54,7 +54,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
 
     private final SandboxManager sandboxManager;
     private final SandboxBackedFilesystem filesystemProxy;
-    private final AtomicReference<SandboxAcquireResult> currentAcquireResult =
+    private final AtomicReference<SandboxAcquireResult> legacyAcquireResult =
             new AtomicReference<>();
 
     public SandboxLifecycleMiddleware(
@@ -83,13 +83,15 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             Sandbox sandbox = result.getSandbox();
             try {
                 sandbox.start();
+                ctx.put(Sandbox.class, sandbox);
+                ctx.put(SandboxCallState.class, new SandboxCallState(result));
                 filesystemProxy.setSandbox(sandbox);
-                currentAcquireResult.set(result);
+                legacyAcquireResult.set(result);
                 log.debug(
                         "[sandbox-mw] Acquired sandbox {}",
                         sandbox.getState() != null ? sandbox.getState().getSessionId() : "?");
             } catch (Exception e) {
-                filesystemProxy.setSandbox(null);
+                clearScopedSandbox(ctx, sandbox, result);
                 try {
                     sandboxManager.release(result);
                 } catch (Exception releaseErr) {
@@ -114,10 +116,13 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
      * @param ctx the per-call RuntimeContext (captured at acquire time)
      */
     public void releaseForCall(RuntimeContext ctx) {
-        SandboxAcquireResult result = currentAcquireResult.getAndSet(null);
+        SandboxCallState callState = ctx != null ? ctx.get(SandboxCallState.class) : null;
+        SandboxAcquireResult result =
+                callState != null ? callState.result() : legacyAcquireResult.getAndSet(null);
         if (result == null) {
             return;
         }
+        Sandbox sandbox = result.getSandbox();
         SandboxContext sandboxContext = ctx != null ? ctx.get(SandboxContext.class) : null;
         try {
             int projected = filesystemProxy.projectSandboxWorkspaceToRemote(ctx);
@@ -141,6 +146,20 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             log.warn("[sandbox-mw] Failed to release sandbox session: {}", e.getMessage(), e);
         }
         result.getLease().close();
-        filesystemProxy.setSandbox(null);
+        clearScopedSandbox(ctx, sandbox, result);
     }
+
+    private void clearScopedSandbox(
+            RuntimeContext ctx, Sandbox sandbox, SandboxAcquireResult result) {
+        if (ctx != null) {
+            ctx.put(Sandbox.class, (Sandbox) null);
+            ctx.put(SandboxCallState.class, (SandboxCallState) null);
+        }
+        if (sandbox != null && filesystemProxy.getSandbox() == sandbox) {
+            filesystemProxy.setSandbox(null);
+        }
+        legacyAcquireResult.compareAndSet(result, null);
+    }
+
+    private record SandboxCallState(SandboxAcquireResult result) {}
 }

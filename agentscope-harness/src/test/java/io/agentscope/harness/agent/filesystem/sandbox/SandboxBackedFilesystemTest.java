@@ -136,10 +136,10 @@ class SandboxBackedFilesystemTest {
         InMemoryStore store = new InMemoryStore();
         SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
         fs.configureRemoteFallback(new RemoteFilesystem(store, NS));
-        fs.setSandbox(new FakeSandbox());
+        RuntimeContext rc = contextWithSandbox(new FakeSandbox());
 
         byte[] content = "memory".getBytes(StandardCharsets.UTF_8);
-        var results = fs.uploadFiles(RC, List.of(Map.entry("/MEMORY.md", content)));
+        var results = fs.uploadFiles(rc, List.of(Map.entry("/MEMORY.md", content)));
 
         assertEquals(1, results.size());
         assertTrue(results.get(0).isSuccess());
@@ -150,14 +150,28 @@ class SandboxBackedFilesystemTest {
     }
 
     @Test
+    void inCallExecutePrefersRuntimeContextSandboxOverSharedFallback() {
+        SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
+        FakeSandbox scoped = new FakeSandbox("scoped");
+        FakeSandbox shared = new FakeSandbox("shared");
+        RuntimeContext scopedContext = RuntimeContext.empty();
+        scopedContext.put(Sandbox.class, scoped);
+        fs.setSandbox(shared);
+
+        var result = fs.execute(scopedContext, "printf marker", null);
+
+        assertEquals("scoped", result.output());
+    }
+
+    @Test
     void inCallUploadSucceedsEvenIfProjectionStoreIsBroken() {
         // A store that throws on put; the sandbox write must still succeed.
         RemoteFilesystem brokenFallback = new RemoteFilesystem(new ThrowingStore(), NS);
         SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
         fs.configureRemoteFallback(brokenFallback);
-        fs.setSandbox(new FakeSandbox());
+        RuntimeContext rc = contextWithSandbox(new FakeSandbox());
 
-        var results = fs.uploadFiles(RC, List.of(Map.entry("/MEMORY.md", "x".getBytes())));
+        var results = fs.uploadFiles(rc, List.of(Map.entry("/MEMORY.md", "x".getBytes())));
         assertEquals(1, results.size());
         assertTrue(results.get(0).isSuccess());
     }
@@ -167,16 +181,17 @@ class SandboxBackedFilesystemTest {
         InMemoryStore store = new InMemoryStore();
         SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
         fs.configureRemoteFallback(new RemoteFilesystem(store, NS));
-        fs.setSandbox(
-                new FakeSandbox(
-                        tarArchive(
-                                Map.of(
-                                        "./generated/report.txt",
-                                        "created by shell",
-                                        "MEMORY.md",
-                                        "shell memory"))));
+        RuntimeContext rc =
+                contextWithSandbox(
+                        new FakeSandbox(
+                                tarArchive(
+                                        Map.of(
+                                                "./generated/report.txt",
+                                                "created by shell",
+                                                "MEMORY.md",
+                                                "shell memory"))));
 
-        int projected = fs.projectSandboxWorkspaceToRemote(RC);
+        int projected = fs.projectSandboxWorkspaceToRemote(rc);
 
         assertEquals(2, projected);
         fs.setSandbox(null);
@@ -193,11 +208,13 @@ class SandboxBackedFilesystemTest {
         InMemoryStore store = new InMemoryStore();
         SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
         fs.configureRemoteFallback(new RemoteFilesystem(store, NS));
-        fs.setSandbox(
-                new FakeSandbox(
-                        tarArchive(Map.of("../escape.txt", "bad", "safe/file.txt", "good"))));
+        RuntimeContext rc =
+                contextWithSandbox(
+                        new FakeSandbox(
+                                tarArchive(
+                                        Map.of("../escape.txt", "bad", "safe/file.txt", "good"))));
 
-        int projected = fs.projectSandboxWorkspaceToRemote(RC);
+        int projected = fs.projectSandboxWorkspaceToRemote(rc);
 
         assertEquals(1, projected);
         fs.setSandbox(null);
@@ -215,16 +232,32 @@ class SandboxBackedFilesystemTest {
         assertTrue(fs.hasRemoteFallback());
     }
 
+    private static RuntimeContext contextWithSandbox(Sandbox sandbox) {
+        RuntimeContext rc = RuntimeContext.empty();
+        rc.put(Sandbox.class, sandbox);
+        return rc;
+    }
+
     /** A minimal Sandbox that reports success for any exec (so uploadFiles proceeds). */
     private static final class FakeSandbox implements Sandbox {
         private final byte[] workspaceArchive;
+        private final String execOutput;
 
         private FakeSandbox() {
-            this.workspaceArchive = new byte[0];
+            this(new byte[0], "");
+        }
+
+        private FakeSandbox(String execOutput) {
+            this(new byte[0], execOutput);
         }
 
         private FakeSandbox(byte[] workspaceArchive) {
+            this(workspaceArchive, "");
+        }
+
+        private FakeSandbox(byte[] workspaceArchive, String execOutput) {
             this.workspaceArchive = workspaceArchive != null ? workspaceArchive : new byte[0];
+            this.execOutput = execOutput != null ? execOutput : "";
         }
 
         @Override
@@ -248,7 +281,7 @@ class SandboxBackedFilesystemTest {
 
         @Override
         public ExecResult exec(RuntimeContext runtimeContext, String command, Integer timeout) {
-            return new ExecResult(0, "", "", false);
+            return new ExecResult(0, execOutput, "", false);
         }
 
         @Override
