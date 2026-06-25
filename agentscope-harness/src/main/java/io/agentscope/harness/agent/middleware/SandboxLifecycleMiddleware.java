@@ -120,6 +120,17 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
         }
         SandboxContext sandboxContext = ctx != null ? ctx.get(SandboxContext.class) : null;
         try {
+            int projected = filesystemProxy.projectSandboxWorkspaceToRemote(ctx);
+            if (projected > 0) {
+                log.debug("[sandbox-mw] Projected {} workspace files before release", projected);
+            }
+        } catch (Exception e) {
+            log.warn(
+                    "[sandbox-mw] Failed to project sandbox workspace to remote fallback: {}",
+                    e.getMessage(),
+                    e);
+        }
+        try {
             sandboxManager.persistState(result, sandboxContext, ctx);
         } catch (Exception e) {
             log.warn("[sandbox-mw] Failed to persist sandbox state: {}", e.getMessage(), e);

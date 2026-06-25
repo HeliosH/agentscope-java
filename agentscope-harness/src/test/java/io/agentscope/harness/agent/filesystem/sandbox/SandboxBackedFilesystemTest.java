@@ -29,10 +29,14 @@ import io.agentscope.harness.agent.sandbox.ExecResult;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxException;
 import io.agentscope.harness.agent.sandbox.SandboxState;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -159,6 +163,51 @@ class SandboxBackedFilesystemTest {
     }
 
     @Test
+    void releaseProjectionUploadsShellCreatedFilesToFallback() throws Exception {
+        InMemoryStore store = new InMemoryStore();
+        SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(new RemoteFilesystem(store, NS));
+        fs.setSandbox(
+                new FakeSandbox(
+                        tarArchive(
+                                Map.of(
+                                        "./generated/report.txt",
+                                        "created by shell",
+                                        "MEMORY.md",
+                                        "shell memory"))));
+
+        int projected = fs.projectSandboxWorkspaceToRemote(RC);
+
+        assertEquals(2, projected);
+        fs.setSandbox(null);
+        ReadResult report = fs.read(RC, "/generated/report.txt", 0, 0);
+        assertTrue(report.isSuccess());
+        assertTrue(report.fileData().content().contains("created by shell"));
+        ReadResult memory = fs.read(RC, "/MEMORY.md", 0, 0);
+        assertTrue(memory.isSuccess());
+        assertTrue(memory.fileData().content().contains("shell memory"));
+    }
+
+    @Test
+    void releaseProjectionSkipsUnsafeArchiveEntries() throws Exception {
+        InMemoryStore store = new InMemoryStore();
+        SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(new RemoteFilesystem(store, NS));
+        fs.setSandbox(
+                new FakeSandbox(
+                        tarArchive(Map.of("../escape.txt", "bad", "safe/file.txt", "good"))));
+
+        int projected = fs.projectSandboxWorkspaceToRemote(RC);
+
+        assertEquals(1, projected);
+        fs.setSandbox(null);
+        assertFalse(fs.exists(RC, "/escape.txt"));
+        ReadResult safe = fs.read(RC, "/safe/file.txt", 0, 0);
+        assertTrue(safe.isSuccess());
+        assertTrue(safe.fileData().content().contains("good"));
+    }
+
+    @Test
     void hasRemoteFallbackReflectsConfiguration() {
         SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
         assertFalse(fs.hasRemoteFallback());
@@ -168,6 +217,16 @@ class SandboxBackedFilesystemTest {
 
     /** A minimal Sandbox that reports success for any exec (so uploadFiles proceeds). */
     private static final class FakeSandbox implements Sandbox {
+        private final byte[] workspaceArchive;
+
+        private FakeSandbox() {
+            this.workspaceArchive = new byte[0];
+        }
+
+        private FakeSandbox(byte[] workspaceArchive) {
+            this.workspaceArchive = workspaceArchive != null ? workspaceArchive : new byte[0];
+        }
+
         @Override
         public void start() {}
 
@@ -194,7 +253,7 @@ class SandboxBackedFilesystemTest {
 
         @Override
         public InputStream persistWorkspace() {
-            return InputStream.nullInputStream();
+            return new ByteArrayInputStream(workspaceArchive);
         }
 
         @Override
@@ -207,5 +266,22 @@ class SandboxBackedFilesystemTest {
         public void put(List<String> namespace, String key, Map<String, Object> value) {
             throw new RuntimeException("store down");
         }
+    }
+
+    private static byte[] tarArchive(Map<String, String> files) throws Exception {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (TarArchiveOutputStream tar = new TarArchiveOutputStream(baos)) {
+            tar.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
+            for (Map.Entry<String, String> file : files.entrySet()) {
+                byte[] bytes = file.getValue().getBytes(StandardCharsets.UTF_8);
+                TarArchiveEntry entry = new TarArchiveEntry(file.getKey());
+                entry.setSize(bytes.length);
+                tar.putArchiveEntry(entry);
+                tar.write(bytes);
+                tar.closeArchiveEntry();
+            }
+            tar.finish();
+        }
+        return baos.toByteArray();
     }
 }

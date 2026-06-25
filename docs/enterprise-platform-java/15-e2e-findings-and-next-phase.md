@@ -10,7 +10,7 @@
 | F1 namespace org 维度 | ✅ | d48e1e1a |
 | F2 API 形态 agent 作用域 | ✅ | d48e1e1a |
 | F3-S1 MinIO stop 时快照 | ✅ | 4280ab32 |
-| F3-S2 热路径实时持久化 | ⏸️ 暂缓(框架依赖) | — |
+| F3-S2 热路径实时持久化 | ✅ | 当前工作树(2026-06-25) |
 | F4 RLS 纵深隔离 | ✅ | 8102f233→dc094a15(修 3 个传播 bug) |
 | F5 控制器 + content_json + JacksonConfig | ✅ | 00dd3d8a + ebbe8e88 |
 | F6 paw 前端 fork + JWT 多租户 | ✅ | 83afc663 + fcb3d265 |
@@ -24,34 +24,36 @@
 
 ## 一、待修复 Bug（影响功能正确性）
 
-### B1: sandboxes 表 RLS 拒 INSERT → tracking 行丢失
+### B1: sandboxes 表 RLS 拒 INSERT → tracking 行丢失（已修）
 
 - **现象**:`SandboxTrackingMiddleware` 在每次 agent call 开始时注册 tracking 行,日志报 `violates row-level security policy for table "sandboxes"`。
 - **根因**:`SandboxTrackingMiddleware.onInput` 运行在 Reactor boundedElastic 调度器上,`TenantContextHolder` 的 GUC(`app.current_org`) 没传到该线程。与 F4 @Async 传播 bug 同类——都是 Spring 独立调度器不参与 Reactor Context 传播。
 - **代码位置**:
   - `agentscope-saas/agentscope-saas-sandbox/src/main/java/io/agentscope/saas/sandbox/middleware/SandboxTrackingMiddleware.java:70-86`
   - `agentscope-saas/agentscope-saas-sandbox/src/main/java/io/agentscope/saas/sandbox/SandboxBroker.java:88-115`(已修 id,修后暴露 RLS 问题)
-- **修复方向**:注入 `TenantAsyncConfig.TaskDecorator` 模式,或在 middleware 内手动 `SET app.current_org`(参考 F4 的 `TenantContextPropagator` 解法)。
-- **影响**:sandbox tracking 行没存,运维无法通过 DB 查看活跃沙箱数/用量。
+- **当前状态**:`SandboxTrackingMiddleware` 已在注册/释放 tracking 行时包裹 tenant org context，并补了 org UUID 防御；不再作为当前 P0 bug 跟踪。
+- **剩余风险**:仍需要在真实 PG + Cube/Docker e2e 中检查 tracking 行生命周期和过期标记是否符合运维预期。
 
-### B2: workspace 端点 call 外 500（F3-S2 热路径 gap）
+### B2: workspace 端点 call 外 500（F3-S2 热路径 gap，已修）
 
 - **现象**:sandbox-on(docker)模式,call 结束后 `GET /workspace/file/download` / `GET /workspace/memory` / `GET /workspace/file` 全部 500:`SandboxConfigurationException: No active sandbox`。
 - **根因**:`SandboxBackedFilesystem` 在无 active call context 时拒绝所有文件操作。工作区文件在 docker 容器内,call 结束 sandbox stop(容器销毁),文件只能通过 stop 时 tar 快照持久化——但 download/read 端点不走快照恢复路径。
 - **代码位置**:
   - `agentscope-harness/.../filesystem/sandbox/SandboxBackedFilesystem.java`
   - `agentscope-saas/.../workspace/AgentWorkspaceController.java:downloadFile`
-- **修复方向**:框架级——`SandboxBackedFilesystem` 内置 remote 投影,或允许 sandbox spec 叠加 `RemoteFilesystemSpec`(让非 call 时段从 BaseStore 读回快照中的文件)。记忆之前的评估记忆里说"HarnessAgent builder 强制 sandbox/remote/local 三选一,无叠加能力"——这仍成立。
-- **当前绕过**:sandbox-off 模式(Redis BaseStore)下 workspace 端点完全可用(文件实时在 BaseStore);download 端点 200+octet-stream,验证通过。
+- **当前状态**:已在框架侧实现 `SandboxBackedFilesystem` remote fallback；sandbox-on 时 `AgentConfig` 会在存在 BaseStore 时启用 remote projection。call 外 workspace/skill/memory 文件 IO 从 BaseStore 读写，不再依赖 active sandbox。
+- **补充修复**:2026-06-25 已补 release 前 workspace tar → remote projection，同步 shell/execute 在沙箱内生成或修改的普通文件，让任务产物在沙箱释放后仍可被网页端读取。
+- **剩余风险**:当前 release 投影是 upload-only，避免误删 session mirror 等未物化到沙箱的远程文件；shell 删除/移动导致的 remote 旧文件清理还需要带路径作用域的 reconciliation。
 
-### B3: execute 工具写的文件不进 workspace tar
+### B3: execute 工具写的文件不进网页 workspace（已收敛为删除同步问题）
 
 - **现象**:LLM 用 `execute` 工具在沙箱运行 `sh -c "..."` 后,`find /workspace -maxdepth 2 -ls` 只看到 `skills/.curator_state.json`,没有 execute 产生的文件。tar 快照不含结果文件。
 - **根因**(待确认):可能是 ShellExecuteTool 的 `workingDirectory` 未默认 `/workspace`,或 LLM 传的命令里用 shell 重定向 `> result.txt` 写到 cwd 而非 workspaceRoot。DockerSandbox 的 `doExec` 确有 `-w /workspace`,但 execute 的输出不在工作区。
 - **代码位置**:
   - `agentscope-harness/.../tool/ShellExecuteTool.java:46-73`
   - `agentscope-harness/.../sandbox/impl/docker/DockerSandbox.java:136-191(doExec,-w /workspace)`
-- **修复方向**:确认 execute 实际 cwd→修复 ShellExecuteTool 默认 workingDirectory 语义;或 e2e 用 `docker exec` 直写 + `write_file` API 绕过 execute 不确定性(当前 e2e 已用此法验证通过跨沙箱持久化)。
+- **当前状态**:release 前 workspace tar 会投影普通文件到 BaseStore；只要文件最终进入 sandbox workspace tar，网页端在 call 外即可读取。
+- **剩余风险**:需要补一个真实 Cube/Docker e2e，覆盖“LLM 调 execute 生成文件→沙箱释放→网页下载文件”。如果实际 execute cwd 仍偏离 `/workspace`，再修 ShellExecuteTool 默认 workingDirectory。
 
 ---
 
@@ -102,8 +104,8 @@
 ### 已完成并提交
 F1–F6 + C2 MCP + marketplace admin-gate + 文件下载端点 + 极简 MCP server + e2e 验证脚本
 
-### 暂缓(框架依赖)
-- **F3-S2**:热路径实时持久化(需框架侧 SandboxBackedFilesystem 内置 remote 投影)
+### 已完成
+- **F3-S2**:sandbox remote projection 已在框架侧落地；call 外 IO 和 release 前 workspace tar 投影均有单测覆盖。
 
 ### 延后(低风险,非阻塞)
 - **F7**:PermissionEngine tool_guard 精配 + LTM 可选接线
