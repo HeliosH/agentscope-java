@@ -534,16 +534,23 @@ public class WorkspaceManager implements AutoCloseable {
         Map<String, Optional<Instant>> relPaths = new LinkedHashMap<>();
 
         if (filesystem != null) {
-            GlobResult glob = filesystem.glob(rc, "*.json", tasksRelDir);
-            if (glob.isSuccess() && glob.matches() != null) {
-                for (FileInfo fi : glob.matches()) {
-                    if (fi.path() == null || fi.path().isBlank()) {
-                        continue;
+            try {
+                GlobResult glob = filesystem.glob(rc, "*.json", tasksRelDir);
+                if (glob.isSuccess() && glob.matches() != null) {
+                    for (FileInfo fi : glob.matches()) {
+                        if (fi.path() == null || fi.path().isBlank()) {
+                            continue;
+                        }
+                        String rel = normalizeRelativePath(fi.path().trim());
+                        Instant mtime = parseInstantQuiet(fi.modifiedAt());
+                        relPaths.put(rel, Optional.ofNullable(mtime));
                     }
-                    String rel = normalizeRelativePath(fi.path().trim());
-                    Instant mtime = parseInstantQuiet(fi.modifiedAt());
-                    relPaths.put(rel, Optional.ofNullable(mtime));
                 }
+            } catch (Exception e) {
+                log.debug(
+                        "Task record filesystem glob unavailable for agent {}: {}",
+                        agentId,
+                        e.getMessage());
             }
         }
 

@@ -21,7 +21,16 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.CompositeFilesystem;
+import io.agentscope.harness.agent.filesystem.model.EditResult;
+import io.agentscope.harness.agent.filesystem.model.FileDownloadResponse;
+import io.agentscope.harness.agent.filesystem.model.FileUploadResponse;
+import io.agentscope.harness.agent.filesystem.model.GlobResult;
+import io.agentscope.harness.agent.filesystem.model.GrepResult;
+import io.agentscope.harness.agent.filesystem.model.LsResult;
+import io.agentscope.harness.agent.filesystem.model.ReadResult;
+import io.agentscope.harness.agent.filesystem.model.WriteResult;
 import io.agentscope.harness.agent.filesystem.remote.store.InMemoryStore;
 import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
@@ -785,6 +794,24 @@ class WorkspaceTaskRepositoryTest {
     }
 
     @Test
+    @DisplayName("listAllTaskRecords falls back to local task records when filesystem glob fails")
+    void listAllTaskRecords_fallsBackToLocalWhenFilesystemGlobFails() throws Exception {
+        TaskRecord local = new TaskRecord("task-local", "a", "test-agent", "sess-local", null);
+        local.setStatus(TaskStatus.RUNNING);
+        workspaceManager.writeTaskRecord(RuntimeContext.empty(), "test-agent", "sess-local", local);
+
+        WorkspaceManager sandboxModeManager =
+                new WorkspaceManager(tempDir, new GlobUnavailableFilesystem(), null);
+
+        Collection<TaskRecord> result =
+                sandboxModeManager.listAllTaskRecords(
+                        RuntimeContext.empty(), "test-agent", Duration.ofDays(1));
+
+        assertEquals(1, result.size(), "Local task records should still be scanned");
+        assertTrue(result.stream().anyMatch(r -> "task-local".equals(r.getTaskId())));
+    }
+
+    @Test
     @DisplayName("listAllTaskRecords skips files older than recentWindow")
     void listAllTaskRecords_skipsOldFiles() throws Exception {
         // task-new: in a recently-modified file (write it after the old one)
@@ -844,5 +871,77 @@ class WorkspaceTaskRepositoryTest {
         assertTrue(
                 readResult.fileData().content().contains("test"),
                 "Task record content should be readable");
+    }
+
+    private static final class GlobUnavailableFilesystem implements AbstractFilesystem {
+
+        @Override
+        public LsResult ls(RuntimeContext runtimeContext, String path) {
+            return LsResult.fail("not implemented");
+        }
+
+        @Override
+        public ReadResult read(
+                RuntimeContext runtimeContext, String filePath, int offset, int limit) {
+            return ReadResult.fail("not found");
+        }
+
+        @Override
+        public WriteResult write(RuntimeContext runtimeContext, String filePath, String content) {
+            return WriteResult.fail("not implemented");
+        }
+
+        @Override
+        public EditResult edit(
+                RuntimeContext runtimeContext,
+                String filePath,
+                String oldString,
+                String newString,
+                boolean replaceAll) {
+            return EditResult.fail("not implemented");
+        }
+
+        @Override
+        public GrepResult grep(
+                RuntimeContext runtimeContext, String pattern, String path, String glob) {
+            return GrepResult.fail("not implemented");
+        }
+
+        @Override
+        public GlobResult glob(RuntimeContext runtimeContext, String pattern, String path) {
+            throw new IllegalStateException(
+                    "No active sandbox - sandbox filesystem used outside of a call context");
+        }
+
+        @Override
+        public List<FileUploadResponse> uploadFiles(
+                RuntimeContext runtimeContext, List<Map.Entry<String, byte[]>> files) {
+            return files.stream()
+                    .map(entry -> FileUploadResponse.fail(entry.getKey(), "not implemented"))
+                    .toList();
+        }
+
+        @Override
+        public List<FileDownloadResponse> downloadFiles(
+                RuntimeContext runtimeContext, List<String> paths) {
+            return paths.stream()
+                    .map(path -> FileDownloadResponse.fail(path, "not implemented"))
+                    .toList();
+        }
+
+        @Override
+        public WriteResult delete(RuntimeContext runtimeContext, String path) {
+            return WriteResult.fail("not implemented");
+        }
+
+        @Override
+        public WriteResult move(RuntimeContext runtimeContext, String fromPath, String toPath) {
+            return WriteResult.fail("not implemented");
+        }
+
+        @Override
+        public boolean exists(RuntimeContext runtimeContext, String path) {
+            return false;
+        }
     }
 }
