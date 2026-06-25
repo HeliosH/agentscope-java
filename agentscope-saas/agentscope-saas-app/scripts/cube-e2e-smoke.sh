@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# CubeSandbox smoke gate for the enterprise assistant loop:
-#   login/register -> create agent -> HITL confirm -> Cube envd executes -> SSE returns output.
+# Sandbox smoke gate for the enterprise assistant loop:
+#   login/register -> create agent -> HITL confirm -> sandbox executes -> SSE returns output
+#   -> release-time workspace projection -> browser/workspace download returns the generated file.
 #
 # Start the app separately, for example:
 #   SERVER_PORT=18080 SAAS_MODEL_TYPE=scripted SAAS_SANDBOX_ENABLED=true \
@@ -9,19 +10,25 @@
 #   SAAS_SANDBOX_CUBE_DOMAIN=cubesandbox.dev.comnova.cc \
 #   SAAS_SANDBOX_CUBE_INSECURE_SKIP_TLS_VERIFY=true \
 #   mvn -pl agentscope-saas/agentscope-saas-app spring-boot:run
+#
+# Or switch only the backend configuration:
+#   SAAS_SANDBOX_TYPE=e2b SAAS_SANDBOX_E2B_API_KEY=... \
+#   SAAS_SANDBOX_E2B_TEMPLATE_ID=base
 set -uo pipefail
 
 BASE="${BASE:-http://localhost:18080}"
-EMAIL="${CUBE_SMOKE_EMAIL:-cube-smoke@e2e.test}"
-PASSWORD="${CUBE_SMOKE_PASSWORD:-pw-cube-smoke}"
-MARKER="${CUBE_SMOKE_MARKER:-cube-smoke-ok}"
-COMMAND="${CUBE_SMOKE_COMMAND:-printf '%s\n' $MARKER}"
-TIMEOUT="${CUBE_SMOKE_TIMEOUT:-120}"
+EMAIL="${SANDBOX_SMOKE_EMAIL:-${CUBE_SMOKE_EMAIL:-sandbox-smoke@e2e.test}}"
+PASSWORD="${SANDBOX_SMOKE_PASSWORD:-${CUBE_SMOKE_PASSWORD:-pw-sandbox-smoke}}"
+MARKER="${SANDBOX_SMOKE_MARKER:-${CUBE_SMOKE_MARKER:-sandbox-smoke-ok}}"
+FILE_PATH="${SANDBOX_SMOKE_FILE:-${CUBE_SMOKE_FILE:-generated/report.txt}}"
+COMMAND="${SANDBOX_SMOKE_COMMAND:-${CUBE_SMOKE_COMMAND:-mkdir -p generated && printf '%s\n' $MARKER > $FILE_PATH && cat $FILE_PATH}}"
+TIMEOUT="${SANDBOX_SMOKE_TIMEOUT:-${CUBE_SMOKE_TIMEOUT:-120}}"
 TMPDIR="${TMPDIR:-/tmp}"
 RUN_ID="$(date +%s)-$$"
 SSE1="$TMPDIR/cube-smoke-1-$RUN_ID.sse"
 SSE2="$TMPDIR/cube-smoke-2-$RUN_ID.sse"
 CONFIRM_JSON="$TMPDIR/cube-smoke-confirm-$RUN_ID.json"
+DOWNLOAD_FILE="$TMPDIR/cube-smoke-download-$RUN_ID.txt"
 
 PASS=0
 FAIL=0
@@ -46,13 +53,14 @@ cleanup() {
   if [ -n "$TOK" ] && [ -n "$AGID" ]; then
     curl -s -o /dev/null -X DELETE "$BASE/api/agents/$AGID" -H "Authorization: Bearer $TOK" || true
   fi
-  rm -f "$SSE1" "$SSE2" "$CONFIRM_JSON"
+  rm -f "$SSE1" "$SSE2" "$CONFIRM_JSON" "$DOWNLOAD_FILE"
 }
 trap cleanup EXIT
 
-echo "=== CubeSandbox enterprise smoke ==="
+echo "=== Sandbox enterprise smoke ==="
 echo "  base=$BASE"
 echo "  command=$COMMAND"
+echo "  generated_file=$FILE_PATH"
 
 HTTP_HEALTH="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/actuator/health")"
 if [ "$HTTP_HEALTH" = "200" ]; then
@@ -197,9 +205,9 @@ PY
 fi
 
 if grep -q "$MARKER" "$SSE2"; then
-  ok "Cube envd execution output returned to SSE"
+  ok "sandbox execution output returned to SSE"
 else
-  bad "Cube envd output missing"
+  bad "sandbox execution output missing"
   python3 - "$SSE2" <<'PY'
 import json
 import sys
@@ -215,6 +223,18 @@ for line in open(sys.argv[1], encoding="utf-8"):
     elif ev.get("type") in {"TOOL_CALL_RESULT", "TEXT_MESSAGE_CONTENT"}:
         print("    output:", ev.get("content") or ev.get("delta") or "")
 PY
+fi
+
+HTTP_DOWNLOAD="$(curl -s -o "$DOWNLOAD_FILE" -w '%{http_code}' \
+  "$BASE/api/agents/$AGID/workspace/file/download?path=$FILE_PATH" \
+  -H "Authorization: Bearer $TOK")"
+if [ "$HTTP_DOWNLOAD" = "200" ] && grep -q "$MARKER" "$DOWNLOAD_FILE"; then
+  ok "workspace download returns release-projected sandbox file"
+else
+  bad "workspace download failed for release-projected file (HTTP $HTTP_DOWNLOAD)"
+  if [ -s "$DOWNLOAD_FILE" ]; then
+    sed -n '1,20p' "$DOWNLOAD_FILE"
+  fi
 fi
 
 echo ""

@@ -164,10 +164,14 @@ public class SandboxManager {
             return;
         }
 
-        try {
-            sandbox.stop();
-        } catch (Exception e) {
-            log.warn("[sandbox] Sandbox stop failed: {}", e.getMessage(), e);
+        if (sandbox.isRunning()) {
+            try {
+                sandbox.stop();
+            } catch (Exception e) {
+                log.warn("[sandbox] Sandbox stop failed: {}", e.getMessage(), e);
+            }
+        } else {
+            log.debug("[sandbox] Sandbox was not running, skipping stop/snapshot");
         }
 
         try {

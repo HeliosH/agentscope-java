@@ -250,6 +250,16 @@ class SandboxManagerIsolationTest {
         verify(resumedState).setSnapshot(rebuilt);
     }
 
+    @Test
+    void release_selfManagedButNotRunning_skipsStopAndStillShutdowns() throws Exception {
+        when(freshSandbox.isRunning()).thenReturn(false);
+
+        manager.release(SandboxAcquireResult.selfManaged(freshSandbox));
+
+        verify(freshSandbox, never()).stop();
+        verify(freshSandbox).shutdown();
+    }
+
     // ---- persistState ----
 
     @Test
