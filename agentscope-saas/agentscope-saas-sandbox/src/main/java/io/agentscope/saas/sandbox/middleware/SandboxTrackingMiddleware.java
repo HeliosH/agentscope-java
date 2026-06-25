@@ -20,6 +20,7 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.MiddlewareBase;
+import io.agentscope.saas.core.ratelimit.QuotaExceededException;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.sandbox.SandboxBroker;
@@ -29,7 +30,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Tracks active sandbox usage in the database so that quota enforcement
@@ -80,6 +83,8 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
         UUID userId = UUID.fromString(tc.userId());
         String sessionId = ctx.getSessionId();
         AtomicReference<UUID> trackingId = new AtomicReference<>();
+        AtomicReference<Disposable> heartbeat = new AtomicReference<>();
+        long ttlSeconds = Math.max(1L, idleTtlSeconds);
 
         try {
             // External id is unknown at this layer (the framework owns the backend handle); the
@@ -94,32 +99,83 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
                                             sessionId,
                                             sandboxType,
                                             sessionId,
-                                            OffsetDateTime.now().plusSeconds(idleTtlSeconds)));
+                                            OffsetDateTime.now().plusSeconds(ttlSeconds),
+                                            tc.maxSandboxes()));
             trackingId.set(id);
+        } catch (QuotaExceededException e) {
+            throw e;
         } catch (Exception e) {
             log.warn("Failed to register active sandbox tracking row: {}", e.getMessage());
         }
 
-        return next.apply(input)
+        Flux<AgentEvent> downstream;
+        try {
+            downstream = next.apply(input);
+        } catch (RuntimeException e) {
+            releaseTrackingRow(trackingId.get(), tc.orgId());
+            throw e;
+        }
+
+        return downstream
+                .doOnSubscribe(
+                        subscription ->
+                                startHeartbeat(heartbeat, trackingId.get(), tc.orgId(), ttlSeconds))
                 .doFinally(
                         signal -> {
-                            UUID id = trackingId.get();
-                            if (id != null) {
-                                try {
-                                    withTenantOrg(
-                                            tc.orgId(),
-                                            () -> {
-                                                broker.release(id);
-                                                return null;
-                                            });
-                                } catch (Exception e) {
-                                    log.warn(
-                                            "Failed to release sandbox tracking row {}: {}",
-                                            id,
-                                            e.getMessage());
-                                }
+                            Disposable d = heartbeat.getAndSet(null);
+                            if (d != null) {
+                                d.dispose();
                             }
+                            releaseTrackingRow(trackingId.get(), tc.orgId());
                         });
+    }
+
+    private void releaseTrackingRow(UUID id, String orgId) {
+        if (id == null) {
+            return;
+        }
+        try {
+            withTenantOrg(
+                    orgId,
+                    () -> {
+                        broker.release(id);
+                        return null;
+                    });
+        } catch (Exception e) {
+            log.warn("Failed to release sandbox tracking row {}: {}", id, e.getMessage());
+        }
+    }
+
+    private void startHeartbeat(
+            AtomicReference<Disposable> heartbeat, UUID id, String orgId, long ttlSeconds) {
+        if (id == null) {
+            return;
+        }
+        long periodSeconds = Math.max(1L, ttlSeconds / 2L);
+        Disposable disposable =
+                Schedulers.parallel()
+                        .schedulePeriodically(
+                                () -> refreshLease(id, orgId, ttlSeconds),
+                                periodSeconds,
+                                periodSeconds,
+                                java.util.concurrent.TimeUnit.SECONDS);
+        Disposable previous = heartbeat.getAndSet(disposable);
+        if (previous != null) {
+            previous.dispose();
+        }
+    }
+
+    private void refreshLease(UUID id, String orgId, long ttlSeconds) {
+        try {
+            withTenantOrg(
+                    orgId,
+                    () -> {
+                        broker.refreshLease(id, OffsetDateTime.now().plusSeconds(ttlSeconds));
+                        return null;
+                    });
+        } catch (Exception e) {
+            log.warn("Failed to refresh sandbox tracking lease {}: {}", id, e.getMessage());
+        }
     }
 
     private static boolean isUuid(String s) {

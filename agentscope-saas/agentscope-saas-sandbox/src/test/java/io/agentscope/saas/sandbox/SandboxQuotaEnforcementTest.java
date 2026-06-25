@@ -18,10 +18,19 @@ package io.agentscope.saas.sandbox;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import io.agentscope.saas.core.persistence.entity.SandboxEntity;
+import io.agentscope.saas.core.persistence.entity.UserEntity;
 import io.agentscope.saas.core.persistence.repo.SandboxRepository;
+import io.agentscope.saas.core.persistence.repo.UserRepository;
 import io.agentscope.saas.core.ratelimit.QuotaExceededException;
+import java.time.OffsetDateTime;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -34,6 +43,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 class SandboxQuotaEnforcementTest {
 
     @Mock private SandboxRepository sandboxRepository;
+    @Mock private UserRepository userRepository;
 
     private SandboxBroker broker;
 
@@ -42,7 +52,7 @@ class SandboxQuotaEnforcementTest {
 
     @BeforeEach
     void setUp() {
-        broker = new SandboxBroker(sandboxRepository);
+        broker = new SandboxBroker(sandboxRepository, userRepository);
     }
 
     @Test
@@ -85,5 +95,80 @@ class SandboxQuotaEnforcementTest {
 
         // Even with 0 active, maxSandboxes=0 means no sandboxes allowed
         assertThrows(QuotaExceededException.class, () -> broker.checkQuota(ORG_ID, USER_ID, 0));
+    }
+
+    @Test
+    void registerActiveLocksTenantUserAndRechecksQuota() {
+        UserEntity user = new UserEntity();
+        user.setId(USER_ID);
+        user.setOrgId(ORG_ID);
+        when(userRepository.lockTenantUser(ORG_ID, USER_ID)).thenReturn(Optional.of(user));
+        when(sandboxRepository.countByOrgIdAndUserIdAndStatus(ORG_ID, USER_ID, "active"))
+                .thenReturn(0);
+        when(sandboxRepository.save(any(SandboxEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        UUID id =
+                broker.registerActive(
+                        ORG_ID,
+                        USER_ID,
+                        "sess-1",
+                        "e2b",
+                        "external-1",
+                        OffsetDateTime.now().plusSeconds(60),
+                        1);
+
+        verify(userRepository).lockTenantUser(ORG_ID, USER_ID);
+        verify(sandboxRepository).countByOrgIdAndUserIdAndStatus(ORG_ID, USER_ID, "active");
+        verify(sandboxRepository).save(any(SandboxEntity.class));
+        assertDoesNotThrow(() -> UUID.fromString(id.toString()));
+    }
+
+    @Test
+    void registerActiveRejectsInsideTransactionWhenQuotaNowExceeded() {
+        UserEntity user = new UserEntity();
+        user.setId(USER_ID);
+        user.setOrgId(ORG_ID);
+        when(userRepository.lockTenantUser(ORG_ID, USER_ID)).thenReturn(Optional.of(user));
+        when(sandboxRepository.countByOrgIdAndUserIdAndStatus(ORG_ID, USER_ID, "active"))
+                .thenReturn(1);
+
+        assertThrows(
+                QuotaExceededException.class,
+                () ->
+                        broker.registerActive(
+                                ORG_ID,
+                                USER_ID,
+                                "sess-1",
+                                "e2b",
+                                "external-1",
+                                OffsetDateTime.now().plusSeconds(60),
+                                1));
+
+        verify(sandboxRepository, never()).save(any(SandboxEntity.class));
+    }
+
+    @Test
+    void refreshLeaseExtendsOnlyActiveRows() {
+        UUID sandboxId = UUID.randomUUID();
+        SandboxEntity active = new SandboxEntity();
+        active.setId(sandboxId);
+        active.setStatus("active");
+        OffsetDateTime expiresAt = OffsetDateTime.now().plusSeconds(60);
+        when(sandboxRepository.findById(sandboxId)).thenReturn(Optional.of(active));
+
+        broker.refreshLease(sandboxId, expiresAt);
+
+        assertEquals(expiresAt, active.getExpiresAt());
+        verify(sandboxRepository).save(active);
+
+        SandboxEntity released = new SandboxEntity();
+        released.setId(sandboxId);
+        released.setStatus("released");
+        when(sandboxRepository.findById(sandboxId)).thenReturn(Optional.of(released));
+
+        broker.refreshLease(sandboxId, OffsetDateTime.now().plusSeconds(120));
+
+        verify(sandboxRepository, never()).save(eq(released));
     }
 }

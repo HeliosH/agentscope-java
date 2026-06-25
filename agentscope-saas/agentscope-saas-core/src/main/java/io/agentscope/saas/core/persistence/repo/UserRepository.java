@@ -16,9 +16,13 @@
 package io.agentscope.saas.core.persistence.repo;
 
 import io.agentscope.saas.core.persistence.entity.UserEntity;
+import jakarta.persistence.LockModeType;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 /** Repository for {@link UserEntity}. */
 public interface UserRepository extends JpaRepository<UserEntity, UUID> {
@@ -26,4 +30,13 @@ public interface UserRepository extends JpaRepository<UserEntity, UUID> {
     Optional<UserEntity> findByEmail(String email);
 
     Optional<UserEntity> findByIdpSubject(String idpSubject);
+
+    /**
+     * Locks the tenant/user row as the quota serialization point for operations that create
+     * tenant-scoped runtime resources. Locking a stable parent row avoids the "no active sandbox
+     * rows yet" race that a pessimistic lock on the sandbox rows alone cannot prevent.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT u FROM UserEntity u WHERE u.orgId = :orgId AND u.id = :userId")
+    Optional<UserEntity> lockTenantUser(@Param("orgId") UUID orgId, @Param("userId") UUID userId);
 }

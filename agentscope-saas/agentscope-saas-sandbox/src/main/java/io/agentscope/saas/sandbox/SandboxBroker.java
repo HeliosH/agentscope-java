@@ -17,6 +17,7 @@ package io.agentscope.saas.sandbox;
 
 import io.agentscope.saas.core.persistence.entity.SandboxEntity;
 import io.agentscope.saas.core.persistence.repo.SandboxRepository;
+import io.agentscope.saas.core.persistence.repo.UserRepository;
 import io.agentscope.saas.core.ratelimit.QuotaExceededException;
 import java.time.OffsetDateTime;
 import java.util.UUID;
@@ -44,9 +45,11 @@ public class SandboxBroker {
     private static final Logger log = LoggerFactory.getLogger(SandboxBroker.class);
 
     private final SandboxRepository sandboxRepository;
+    private final UserRepository userRepository;
 
-    public SandboxBroker(SandboxRepository sandboxRepository) {
+    public SandboxBroker(SandboxRepository sandboxRepository, UserRepository userRepository) {
         this.sandboxRepository = sandboxRepository;
+        this.userRepository = userRepository;
     }
 
     /**
@@ -82,6 +85,7 @@ public class SandboxBroker {
      * @param sandboxType backend type (docker, cube, etc.)
      * @param externalId  container ID / sandbox ID from the backend
      * @param expiresAt   when the sandbox becomes eligible for eviction
+     * @param maxSandboxes maximum concurrent sandboxes allowed by the tier policy
      * @return the database ID of the newly created tracking record
      */
     @Transactional
@@ -91,7 +95,19 @@ public class SandboxBroker {
             String sessionId,
             String sandboxType,
             String externalId,
-            OffsetDateTime expiresAt) {
+            OffsetDateTime expiresAt,
+            int maxSandboxes) {
+
+        userRepository
+                .lockTenantUser(orgId, userId)
+                .orElseThrow(
+                        () ->
+                                new IllegalStateException(
+                                        "Cannot register sandbox for unknown tenant user "
+                                                + userId
+                                                + " in org "
+                                                + orgId));
+        checkQuota(orgId, userId, maxSandboxes);
 
         SandboxEntity entity = new SandboxEntity();
         // SandboxEntity id has no @GeneratedValue (saas convention: assign in the service layer, as
@@ -119,6 +135,24 @@ public class SandboxBroker {
     }
 
     /**
+     * Backwards-compatible registration entry point for callers that have already enforced quota.
+     * New SaaS call paths should prefer {@link #registerActive(UUID, UUID, String, String, String,
+     * OffsetDateTime, int)} so quota check and active-row creation are serialized in one
+     * transaction.
+     */
+    @Transactional
+    public UUID registerActive(
+            UUID orgId,
+            UUID userId,
+            String sessionId,
+            String sandboxType,
+            String externalId,
+            OffsetDateTime expiresAt) {
+        return registerActive(
+                orgId, userId, sessionId, sandboxType, externalId, expiresAt, Integer.MAX_VALUE);
+    }
+
+    /**
      * Marks a sandbox as released (no longer active).
      *
      * @param sandboxId the database ID of the sandbox tracking record
@@ -136,6 +170,26 @@ public class SandboxBroker {
                                     "Released sandbox id={} externalId={}",
                                     sandboxId,
                                     entity.getExternalId());
+                        });
+    }
+
+    /**
+     * Extends the idle lease for a currently active sandbox tracking row. Long-running agent calls
+     * periodically refresh this timestamp so the idle eviction job does not mistake an in-flight
+     * sandbox for an abandoned one.
+     */
+    @Transactional
+    public void refreshLease(UUID sandboxId, OffsetDateTime expiresAt) {
+        sandboxRepository
+                .findById(sandboxId)
+                .ifPresent(
+                        entity -> {
+                            if (!"active".equals(entity.getStatus())) {
+                                return;
+                            }
+                            entity.setLastUsedAt(OffsetDateTime.now());
+                            entity.setExpiresAt(expiresAt);
+                            sandboxRepository.save(entity);
                         });
     }
 
