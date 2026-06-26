@@ -18,6 +18,7 @@ package io.agentscope.saas;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Entry point for the enterprise SaaS AI assistant platform (Phase 1 foundation).
@@ -37,6 +38,7 @@ import org.springframework.scheduling.annotation.EnableAsync;
  */
 @SpringBootApplication
 @EnableAsync
+@EnableScheduling
 public class SaasApp {
 
     public static void main(String[] args) {

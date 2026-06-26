@@ -9,11 +9,9 @@
 #   - SAAS_SANDBOX_WORKSPACE_ROOT set (e.g. /workspace) — docker sandbox mkdir fails on empty root
 #   - Alice registered (demo org), password pw-alice
 #
-# Sandbox-on note: workspace files live inside the docker container; SandboxBackedFilesystem only
-# works during an active agent call. So file results are verified *within* a call (a 2nd turn reads
-# the file back through the LLM), not via the workspace download endpoint between calls (that 500s
-# "No active sandbox" — the F3-S2 hot-path persistence gap). The download endpoint itself is
-# exercised in a sandbox-off smoke; here it's an info-only check.
+# Sandbox-on note: workspace files are written inside the sandbox and projected to the remote
+# workspace store on release. The browser/workspace download endpoint must work between calls; this
+# script treats that as a hard assertion.
 #
 # Required env (read by the caller when booting the app, NOT by this script):
 #   SAAS_MODEL_TYPE=gateway
@@ -118,17 +116,13 @@ echo "$SSE" | grep -qiE "data:|event:" && ok "chat #1 returned SSE" || { echo " 
 echo "$SSE" | grep -qiE "hello-cross-sandbox|hello.?" && ok "chat #1 SSE contains task output (LLM executed)" || bad "chat #1 SSE missing output"
 sleep 2
 
-echo "--- 6) download endpoint (info-only in sandbox-on: call-external access 500s — F3-S2 gap)"
+echo "--- 6) download endpoint returns the release-projected sandbox file"
 DL_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/agents/$AGID/workspace/file/download?path=e2e-marker.txt" \
   -H "Authorization: Bearer $TOKA")
-if [ "$DL_CODE" = "500" ]; then
-  echo "  ℹ️  download endpoint returned 500 between calls (No active sandbox — F3-S2 hot-path gap; endpoint code is correct, verified within-call in step 7)"
-elif [ "$DL_CODE" = "200" ]; then
+if [ "$DL_CODE" = "200" ]; then
   ok "download endpoint returned 200 (file accessible between calls)"
-elif [ "$DL_CODE" = "404" ]; then
-  echo "  ℹ️  download endpoint returned 404 (file not found — LLM may not have written it)"
 else
-  echo "  ℹ️  download endpoint returned $DL_CODE"
+  bad "download endpoint should return 200 after release projection (got HTTP $DL_CODE)"
 fi
 
 echo "--- 7) memory/workspace persistence — verify e2e-marker.txt survives across sandboxes"

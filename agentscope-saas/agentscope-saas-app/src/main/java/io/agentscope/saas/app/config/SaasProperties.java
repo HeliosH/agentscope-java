@@ -681,6 +681,21 @@ public class SaasProperties {
         /** Max memories to retrieve per call (default 5). */
         private int topK = 5;
 
+        /** Enables the background replay of pending/failed ledger rows into Mem0. */
+        private boolean replayEnabled = true;
+
+        /** Fixed delay between replay scans in seconds. */
+        private long replayFixedDelaySeconds = 60L;
+
+        /** Maximum number of ledger rows to replay in one scan. */
+        private int replayBatchSize = 50;
+
+        /** Maximum projection attempts before a row is left failed for operator review. */
+        private int replayMaxAttempts = 10;
+
+        /** Reclaims rows left in syncing state after a worker crash. */
+        private long replayStaleSeconds = 300L;
+
         public boolean isEnabled() {
             return enabled;
         }
@@ -727,6 +742,46 @@ public class SaasProperties {
 
         public void setTopK(int topK) {
             this.topK = topK;
+        }
+
+        public boolean isReplayEnabled() {
+            return replayEnabled;
+        }
+
+        public void setReplayEnabled(boolean replayEnabled) {
+            this.replayEnabled = replayEnabled;
+        }
+
+        public long getReplayFixedDelaySeconds() {
+            return replayFixedDelaySeconds;
+        }
+
+        public void setReplayFixedDelaySeconds(long replayFixedDelaySeconds) {
+            this.replayFixedDelaySeconds = replayFixedDelaySeconds;
+        }
+
+        public int getReplayBatchSize() {
+            return replayBatchSize;
+        }
+
+        public void setReplayBatchSize(int replayBatchSize) {
+            this.replayBatchSize = replayBatchSize;
+        }
+
+        public int getReplayMaxAttempts() {
+            return replayMaxAttempts;
+        }
+
+        public void setReplayMaxAttempts(int replayMaxAttempts) {
+            this.replayMaxAttempts = replayMaxAttempts;
+        }
+
+        public long getReplayStaleSeconds() {
+            return replayStaleSeconds;
+        }
+
+        public void setReplayStaleSeconds(long replayStaleSeconds) {
+            this.replayStaleSeconds = replayStaleSeconds;
         }
     }
 }

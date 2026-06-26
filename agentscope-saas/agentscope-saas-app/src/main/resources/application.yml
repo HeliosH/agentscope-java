@@ -111,6 +111,11 @@ saas:
     mem0-api-type: ${SAAS_LTM_MEM0_API_TYPE:PLATFORM}
     timeout-seconds: ${SAAS_LTM_TIMEOUT:60}
     top-k: ${SAAS_LTM_TOP_K:5}
+    replay-enabled: ${SAAS_LTM_REPLAY_ENABLED:true}
+    replay-fixed-delay-seconds: ${SAAS_LTM_REPLAY_FIXED_DELAY:60}
+    replay-batch-size: ${SAAS_LTM_REPLAY_BATCH_SIZE:50}
+    replay-max-attempts: ${SAAS_LTM_REPLAY_MAX_ATTEMPTS:10}
+    replay-stale-seconds: ${SAAS_LTM_REPLAY_STALE_SECONDS:300}
   security:
     jwt:
       secret: ${SAAS_JWT_SECRET:change-me-saas-dev-secret-please-override-in-prod-0123456789}
