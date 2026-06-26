@@ -28,6 +28,8 @@ import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.filesystem.remote.store.BaseStore;
 import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import io.agentscope.harness.agent.filesystem.spec.SandboxFilesystemSpec;
+import io.agentscope.harness.agent.memory.MemoryConfig;
+import io.agentscope.harness.agent.memory.MemoryConsolidator;
 import io.agentscope.harness.agent.skill.curator.SkillCuratorConfig;
 import io.agentscope.harness.agent.tools.McpClientRegistry;
 import io.agentscope.saas.app.memory.MemoryLedger;
@@ -76,7 +78,8 @@ public class AgentConfig {
             ObjectProvider<BaseStore> workspaceStoreProvider,
             McpClientRegistry mcpClientRegistry,
             OrgToolsConfigService orgToolsConfigService,
-            ObjectProvider<MemoryLedger> memoryLedgerProvider) {
+            ObjectProvider<MemoryLedger> memoryLedgerProvider,
+            ObjectProvider<MemoryConsolidator.ConsolidationSink> consolidationSinkProvider) {
 
         SaasProperties.Agent agentCfg = properties.getAgent();
         SaasProperties.RateLimit rl = properties.getRateLimit();
@@ -101,6 +104,12 @@ public class AgentConfig {
                                 new RateLimitMiddleware(
                                         rateLimiter, rl.getMaxRequests(), rl.getWindowSeconds()))
                         .middleware(new UsageMeteringMiddleware(usageService));
+
+        MemoryConsolidator.ConsolidationSink consolidationSink =
+                consolidationSinkProvider.getIfAvailable();
+        if (consolidationSink != null) {
+            builder.memory(MemoryConfig.builder().consolidationSink(consolidationSink).build());
+        }
 
         // When sandbox is enabled, wire the SandboxFilesystemSpec which drives the framework's
         // internal sandbox lifecycle (SandboxManager, SessionSandboxStateStore,

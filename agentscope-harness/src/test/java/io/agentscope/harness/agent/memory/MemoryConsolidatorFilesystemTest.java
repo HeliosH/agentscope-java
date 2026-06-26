@@ -20,6 +20,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.TextBlock;
+import io.agentscope.core.model.ChatResponse;
+import io.agentscope.core.model.GenerateOptions;
+import io.agentscope.core.model.Model;
+import io.agentscope.core.model.ToolSchema;
 import io.agentscope.harness.agent.filesystem.remote.RemoteFilesystem;
 import io.agentscope.harness.agent.filesystem.remote.store.InMemoryStore;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
@@ -28,8 +34,10 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import reactor.core.publisher.Flux;
 
 /**
  * Verifies that {@link MemoryConsolidator} reads daily ledgers and writes watermark / MEMORY.md
@@ -148,5 +156,69 @@ class MemoryConsolidatorFilesystemTest {
         assertTrue(
                 Files.exists(localState),
                 "state file should be written to local disk when no filesystem is configured");
+    }
+
+    @Test
+    void consolidate_emitsSinkEventAfterSuccessfulWrite(@TempDir Path tmp) throws Exception {
+        InMemoryStore store = new InMemoryStore();
+        List<String> ns = List.of("test-ns");
+        RemoteFilesystem fs = new RemoteFilesystem(store, ns);
+        seedStoreFile(
+                store,
+                ns,
+                "memory/2026-06-26.md",
+                "- User prefers concise enterprise runtime plans.",
+                Instant.parse("2026-06-26T08:00:00Z"));
+        seedStoreFile(
+                store, ns, "MEMORY.md", "# Old memory\n", Instant.parse("2026-06-26T07:00:00Z"));
+
+        AtomicReference<MemoryConsolidator.ConsolidationEvent> captured = new AtomicReference<>();
+        Model model =
+                new FixedTextModel("# New memory\n\n- Keep enterprise runtime plans concise.");
+
+        try (WorkspaceManager wsm = new WorkspaceManager(tmp, fs)) {
+            MemoryConsolidator consolidator =
+                    new MemoryConsolidator(
+                            wsm,
+                            model,
+                            MemoryConsolidator.DEFAULT_CONSOLIDATION_PROMPT,
+                            4000,
+                            captured::set);
+
+            consolidator.consolidate(RuntimeContext.builder().sessionId("s1").build()).block();
+
+            MemoryConsolidator.ConsolidationEvent event = captured.get();
+            assertEquals("# Old memory\n", event.previousMemory());
+            assertTrue(event.dailyEntries().contains("2026-06-26.md"));
+            assertEquals(
+                    "# New memory\n\n- Keep enterprise runtime plans concise.",
+                    event.consolidatedMemory());
+            assertEquals(Instant.EPOCH, event.previousWatermark());
+            assertEquals("s1", event.runtimeContext().getSessionId());
+            assertEquals(
+                    "# New memory\n\n- Keep enterprise runtime plans concise.",
+                    wsm.readMemoryMd(RuntimeContext.empty()));
+            assertTrue(
+                    wsm.readManagedWorkspaceFileUtf8(
+                                    RuntimeContext.empty(), MemoryConsolidator.STATE_REL_PATH)
+                            .contains("T"));
+        }
+    }
+
+    private record FixedTextModel(String text) implements Model {
+
+        @Override
+        public Flux<ChatResponse> stream(
+                List<Msg> messages, List<ToolSchema> tools, GenerateOptions options) {
+            return Flux.just(
+                    ChatResponse.builder()
+                            .content(List.of(TextBlock.builder().text(text).build()))
+                            .build());
+        }
+
+        @Override
+        public String getModelName() {
+            return "fixed";
+        }
     }
 }

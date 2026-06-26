@@ -436,12 +436,7 @@ public class RemoteFilesystem implements AbstractFilesystem {
                 if (!matchesPathPrefix(key, normalizedPath)) {
                     continue;
                 }
-                String relativePath;
-                if ("/".equals(normalizedPath)) {
-                    relativePath = key.startsWith("/") ? key.substring(1) : key;
-                } else {
-                    relativePath = key.substring(normalizedPath.length() + 1);
-                }
+                String relativePath = relativeToPrefix(key, normalizedPath);
                 if (matcher.matches(Path.of(relativePath))
                         || directMatcher.matches(Path.of(relativePath))) {
                     results.add(FileInfo.ofFile(key, 0, ""));
@@ -460,12 +455,7 @@ public class RemoteFilesystem implements AbstractFilesystem {
                 continue;
             }
 
-            String relativePath;
-            if ("/".equals(normalizedPath)) {
-                relativePath = key.startsWith("/") ? key.substring(1) : key;
-            } else {
-                relativePath = key.substring(normalizedPath.length() + 1);
-            }
+            String relativePath = relativeToPrefix(key, normalizedPath);
 
             if (matcher.matches(java.nio.file.Path.of(relativePath))
                     || directMatcher.matches(java.nio.file.Path.of(relativePath))) {
@@ -699,9 +689,19 @@ public class RemoteFilesystem implements AbstractFilesystem {
     }
 
     private static boolean matchesPathPrefix(String key, String normalizedPath) {
+        String normalizedKey = normalizePath(key);
         if ("/".equals(normalizedPath)) {
-            return key.startsWith("/");
+            return true;
         }
-        return key.equals(normalizedPath) || key.startsWith(normalizedPath + "/");
+        return normalizedKey.equals(normalizedPath)
+                || normalizedKey.startsWith(normalizedPath + "/");
+    }
+
+    private static String relativeToPrefix(String key, String normalizedPath) {
+        String normalizedKey = normalizePath(key);
+        if ("/".equals(normalizedPath)) {
+            return normalizedKey.startsWith("/") ? normalizedKey.substring(1) : normalizedKey;
+        }
+        return normalizedKey.substring(normalizedPath.length() + 1);
     }
 }

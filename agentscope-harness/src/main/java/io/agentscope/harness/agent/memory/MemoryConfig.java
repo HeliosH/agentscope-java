@@ -147,6 +147,7 @@ public final class MemoryConfig {
     private final int dailyFileRetentionDays;
     private final int sessionRetentionDays;
     private final FlushTrigger flushTrigger;
+    private final MemoryConsolidator.ConsolidationSink consolidationSink;
 
     private MemoryConfig(Builder b) {
         this.model = b.model;
@@ -157,6 +158,7 @@ public final class MemoryConfig {
         this.dailyFileRetentionDays = b.dailyFileRetentionDays;
         this.sessionRetentionDays = b.sessionRetentionDays;
         this.flushTrigger = b.flushTrigger;
+        this.consolidationSink = b.consolidationSink;
     }
 
     /**
@@ -206,6 +208,14 @@ public final class MemoryConfig {
         return flushTrigger;
     }
 
+    /**
+     * Optional callback invoked after {@code MEMORY.md} consolidation succeeds. {@code null} means
+     * no durable audit/projection sink is installed.
+     */
+    public MemoryConsolidator.ConsolidationSink consolidationSink() {
+        return consolidationSink;
+    }
+
     /** Returns a config equivalent to the harness's historical defaults. */
     public static MemoryConfig defaults() {
         return new Builder().build();
@@ -225,6 +235,7 @@ public final class MemoryConfig {
         private int dailyFileRetentionDays = DEFAULT_DAILY_FILE_RETENTION_DAYS;
         private int sessionRetentionDays = DEFAULT_SESSION_RETENTION_DAYS;
         private FlushTrigger flushTrigger = FlushTrigger.always();
+        private MemoryConsolidator.ConsolidationSink consolidationSink = null;
 
         /**
          * Sets a dedicated model for memory operations (flush + consolidation),
@@ -328,6 +339,15 @@ public final class MemoryConfig {
                 throw new IllegalArgumentException("flushTrigger must not be null");
             }
             this.flushTrigger = flushTrigger;
+            return this;
+        }
+
+        /**
+         * Installs an optional sink for successful {@code MEMORY.md} consolidation events.
+         * {@code null} disables the hook.
+         */
+        public Builder consolidationSink(MemoryConsolidator.ConsolidationSink consolidationSink) {
+            this.consolidationSink = consolidationSink;
             return this;
         }
 

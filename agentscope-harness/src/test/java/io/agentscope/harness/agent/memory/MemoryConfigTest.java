@@ -39,6 +39,7 @@ class MemoryConfigTest {
         assertEquals(MemoryConfig.DEFAULT_DAILY_FILE_RETENTION_DAYS, cfg.dailyFileRetentionDays());
         assertEquals(MemoryConfig.DEFAULT_SESSION_RETENTION_DAYS, cfg.sessionRetentionDays());
         assertEquals(MemoryConfig.FlushMode.ALWAYS, cfg.flushTrigger().mode());
+        assertNull(cfg.consolidationSink());
     }
 
     @Test
@@ -90,6 +91,15 @@ class MemoryConfigTest {
         assertEquals(60, cfg.sessionRetentionDays());
         assertEquals(MemoryConfig.FlushMode.THROTTLED, cfg.flushTrigger().mode());
         assertEquals(Duration.ofMinutes(10), cfg.flushTrigger().minGap());
+    }
+
+    @Test
+    void builder_carriesConsolidationSink() {
+        MemoryConsolidator.ConsolidationSink sink = event -> {};
+
+        MemoryConfig cfg = MemoryConfig.builder().consolidationSink(sink).build();
+
+        assertSame(sink, cfg.consolidationSink());
     }
 
     @Test

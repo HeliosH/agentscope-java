@@ -2018,7 +2018,8 @@ public class HarnessAgent implements Agent, AutoCloseable {
                                 wsManager,
                                 memoryModel,
                                 effectiveConsolidationPrompt,
-                                memoryConfig.consolidationMaxTokens());
+                                memoryConfig.consolidationMaxTokens(),
+                                memoryConfig.consolidationSink());
                 inner.middleware(
                         new MemoryMaintenanceMiddleware(
                                 wsManager,

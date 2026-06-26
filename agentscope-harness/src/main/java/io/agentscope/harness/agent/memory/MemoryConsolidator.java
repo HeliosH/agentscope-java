@@ -93,10 +93,28 @@ public class MemoryConsolidator {
             Output the COMPLETE new MEMORY.md content (not just a diff). Use markdown.\
             """;
 
+    /** Event emitted after a successful {@code MEMORY.md} consolidation. */
+    public record ConsolidationEvent(
+            RuntimeContext runtimeContext,
+            String previousMemory,
+            String consolidatedMemory,
+            String dailyEntries,
+            Instant previousWatermark,
+            Instant consolidatedAt) {}
+
+    /** Optional sink for durable audit/projection of successful consolidation results. */
+    @FunctionalInterface
+    public interface ConsolidationSink {
+        void onConsolidated(ConsolidationEvent event);
+    }
+
+    private static final ConsolidationSink NOOP_SINK = event -> {};
+
     private final WorkspaceManager workspaceManager;
     private final Model model;
     private final String consolidationPrompt;
     private final int maxMemoryTokens;
+    private final ConsolidationSink consolidationSink;
 
     public MemoryConsolidator(WorkspaceManager workspaceManager, Model model) {
         this(workspaceManager, model, DEFAULT_CONSOLIDATION_PROMPT, 4000);
@@ -116,11 +134,28 @@ public class MemoryConsolidator {
             Model model,
             String consolidationPrompt,
             int maxMemoryTokens) {
+        this(workspaceManager, model, consolidationPrompt, maxMemoryTokens, null);
+    }
+
+    /**
+     * @param consolidationPrompt prompt template for the consolidation LLM call. Must contain
+     *     exactly two {@code %d} placeholders (max-tokens, max-chars). {@code null} falls back
+     *     to {@link #DEFAULT_CONSOLIDATION_PROMPT}.
+     * @param consolidationSink optional sink invoked after {@code MEMORY.md} and the watermark are
+     *     written successfully. Sink failures are logged and do not fail the maintenance task.
+     */
+    public MemoryConsolidator(
+            WorkspaceManager workspaceManager,
+            Model model,
+            String consolidationPrompt,
+            int maxMemoryTokens,
+            ConsolidationSink consolidationSink) {
         this.workspaceManager = workspaceManager;
         this.model = model;
         this.consolidationPrompt =
                 consolidationPrompt != null ? consolidationPrompt : DEFAULT_CONSOLIDATION_PROMPT;
         this.maxMemoryTokens = maxMemoryTokens;
+        this.consolidationSink = consolidationSink != null ? consolidationSink : NOOP_SINK;
     }
 
     /**
@@ -188,6 +223,13 @@ public class MemoryConsolidator {
                             }
                             writeConsolidatedMemory(rc, consolidated);
                             writeWatermark(rc, runStart);
+                            emitConsolidationEvent(
+                                    rc,
+                                    currentMemory,
+                                    consolidated,
+                                    dailyEntries,
+                                    watermark,
+                                    runStart);
                             log.info(
                                     "MEMORY.md consolidated ({} chars), watermark advanced to {}",
                                     consolidated.length(),
@@ -306,6 +348,27 @@ public class MemoryConsolidator {
                     "Failed to write consolidation watermark at {}: {}",
                     STATE_REL_PATH,
                     e.getMessage());
+        }
+    }
+
+    private void emitConsolidationEvent(
+            RuntimeContext rc,
+            String previousMemory,
+            String consolidatedMemory,
+            String dailyEntries,
+            Instant previousWatermark,
+            Instant consolidatedAt) {
+        try {
+            consolidationSink.onConsolidated(
+                    new ConsolidationEvent(
+                            rc,
+                            previousMemory,
+                            consolidatedMemory,
+                            dailyEntries,
+                            previousWatermark,
+                            consolidatedAt));
+        } catch (Exception e) {
+            log.warn("Memory consolidation sink failed: {}", e.getMessage());
         }
     }
 }
