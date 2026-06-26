@@ -225,6 +225,70 @@ class SandboxBackedFilesystemTest {
     }
 
     @Test
+    void releaseProjectionDeletesOnlyStaleManifestEntries() throws Exception {
+        InMemoryStore store = new InMemoryStore();
+        RemoteFilesystem remote = new RemoteFilesystem(store, NS);
+        SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+
+        RuntimeContext first =
+                contextWithSandbox(
+                        new FakeSandbox(
+                                tarArchive(
+                                        Map.of(
+                                                "generated/old.txt",
+                                                "old",
+                                                "generated/keep.txt",
+                                                "keep"))));
+        assertEquals(2, fs.projectSandboxWorkspaceToRemote(first));
+        assertTrue(remote.exists(RC, "/generated/old.txt"));
+        assertTrue(remote.exists(RC, "/generated/keep.txt"));
+
+        remote.write(RC, "/sessions/session-1.jsonl", "session mirror");
+        RuntimeContext second =
+                contextWithSandbox(
+                        new FakeSandbox(
+                                tarArchive(
+                                        Map.of(
+                                                "generated/keep.txt",
+                                                "keep v2",
+                                                "generated/new.txt",
+                                                "new"))));
+
+        assertEquals(2, fs.projectSandboxWorkspaceToRemote(second));
+
+        assertFalse(remote.exists(RC, "/generated/old.txt"));
+        assertTrue(remote.exists(RC, "/generated/keep.txt"));
+        assertTrue(remote.exists(RC, "/generated/new.txt"));
+        assertTrue(remote.exists(RC, "/sessions/session-1.jsonl"));
+    }
+
+    @Test
+    void releaseProjectionDeletesStaleDirectoryWhenCurrentArchiveHasNoFilesThere()
+            throws Exception {
+        InMemoryStore store = new InMemoryStore();
+        RemoteFilesystem remote = new RemoteFilesystem(store, NS);
+        SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+
+        RuntimeContext first =
+                contextWithSandbox(
+                        new FakeSandbox(
+                                tarArchive(Map.of("generated/old.txt", "old", "MEMORY.md", "m1"))));
+        assertEquals(2, fs.projectSandboxWorkspaceToRemote(first));
+        assertTrue(remote.exists(RC, "/generated/old.txt"));
+
+        RuntimeContext second =
+                contextWithSandbox(new FakeSandbox(tarArchive(Map.of("MEMORY.md", "m2"))));
+        assertEquals(1, fs.projectSandboxWorkspaceToRemote(second));
+
+        assertFalse(remote.exists(RC, "/generated/old.txt"));
+        ReadResult memory = remote.read(RC, "/MEMORY.md", 0, 0);
+        assertTrue(memory.isSuccess());
+        assertTrue(memory.fileData().content().contains("m2"));
+    }
+
+    @Test
     void hasRemoteFallbackReflectsConfiguration() {
         SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
         assertFalse(fs.hasRemoteFallback());

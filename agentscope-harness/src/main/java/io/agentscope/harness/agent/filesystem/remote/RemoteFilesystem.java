@@ -554,7 +554,7 @@ public class RemoteFilesystem implements AbstractFilesystem {
         // Also check if any child exists (directory-like)
         List<StoreItem> items = searchAllItems(runtimeContext);
         for (StoreItem item : items) {
-            if (item.key().startsWith(normalized + "/")) {
+            if (matchesPathPrefix(item.key(), normalized)) {
                 return true;
             }
         }
@@ -569,7 +569,7 @@ public class RemoteFilesystem implements AbstractFilesystem {
         List<StoreItem> items = searchAllItems(runtimeContext);
         String normalizedPath = normalizePath(path);
         for (StoreItem item : items) {
-            if (item.key().equals(normalizedPath) || item.key().startsWith(normalizedPath + "/")) {
+            if (matchesPathPrefix(item.key(), normalizedPath)) {
                 store.delete(ns, item.key());
                 if (index != null) {
                     index.remove(item.key());
@@ -591,8 +591,8 @@ public class RemoteFilesystem implements AbstractFilesystem {
         boolean found = false;
         for (StoreItem item : items) {
             String key = item.key();
-            if (key.equals(normFrom) || key.startsWith(normFrom + "/")) {
-                String newKey = normTo + key.substring(normFrom.length());
+            if (matchesPathPrefix(key, normFrom)) {
+                String newKey = normTo + suffixFromPrefix(key, normFrom);
                 store.put(ns, newKey, item.value());
                 store.delete(ns, key);
                 if (index != null) {
@@ -703,5 +703,10 @@ public class RemoteFilesystem implements AbstractFilesystem {
             return normalizedKey.startsWith("/") ? normalizedKey.substring(1) : normalizedKey;
         }
         return normalizedKey.substring(normalizedPath.length() + 1);
+    }
+
+    private static String suffixFromPrefix(String key, String normalizedPath) {
+        String normalizedKey = normalizePath(key);
+        return normalizedKey.substring(normalizedPath.length());
     }
 }

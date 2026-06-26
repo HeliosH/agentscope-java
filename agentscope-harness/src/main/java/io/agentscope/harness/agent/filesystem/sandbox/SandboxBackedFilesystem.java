@@ -34,9 +34,12 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.slf4j.Logger;
@@ -57,6 +60,8 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
     private static final int REMOTE_PROJECTION_MAX_FILES = 5_000;
     private static final long REMOTE_PROJECTION_MAX_FILE_BYTES = 4L * 1024L * 1024L;
     private static final long REMOTE_PROJECTION_MAX_TOTAL_BYTES = 64L * 1024L * 1024L;
+    private static final String REMOTE_PROJECTION_MANIFEST =
+            "/.agentscope/sandbox_projection_manifest";
 
     private final String fsId;
     private volatile Sandbox sandbox;
@@ -296,9 +301,10 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
     /**
      * Projects regular files from the live sandbox workspace archive into the remote fallback.
      *
-     * <p>This captures files created or changed via shell commands inside the sandbox. The method
-     * is intentionally upload-only: deleting every missing remote key would risk removing
-     * filesystem-backed data that is not materialized inside the sandbox, such as session mirrors.
+     * <p>This captures files created or changed via shell commands inside the sandbox. After a
+     * complete archive scan it reconciles only files that were present in the previous sandbox
+     * projection manifest but are absent from the current archive. This keeps delete/move semantics
+     * correct without scanning or deleting unrelated filesystem-backed data such as session mirrors.
      */
     public int projectSandboxWorkspaceToRemote(RuntimeContext runtimeContext) throws Exception {
         Sandbox active = activeSandbox(runtimeContext);
@@ -310,8 +316,10 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
         try (InputStream archive = active.persistWorkspace();
                 TarArchiveInputStream tar = new TarArchiveInputStream(archive)) {
             List<Map.Entry<String, byte[]>> batch = new ArrayList<>(REMOTE_PROJECTION_BATCH_SIZE);
+            Set<String> currentProjection = new LinkedHashSet<>();
             int projected = 0;
             long totalBytes = 0;
+            boolean completeScan = true;
             TarArchiveEntry entry;
             while ((entry = tar.getNextTarEntry()) != null) {
                 if (!entry.isFile()) {
@@ -324,6 +332,10 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                             entry.getName());
                     continue;
                 }
+                if (REMOTE_PROJECTION_MANIFEST.equals(path)) {
+                    continue;
+                }
+                currentProjection.add(path);
                 long size = entry.getSize();
                 if (size > REMOTE_PROJECTION_MAX_FILE_BYTES) {
                     log.warn(
@@ -336,12 +348,14 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                     log.warn(
                             "[sandbox-fs] Workspace remote projection hit file limit {}",
                             REMOTE_PROJECTION_MAX_FILES);
+                    completeScan = false;
                     break;
                 }
                 if (size > 0 && totalBytes + size > REMOTE_PROJECTION_MAX_TOTAL_BYTES) {
                     log.warn(
                             "[sandbox-fs] Workspace remote projection hit byte limit {}",
                             REMOTE_PROJECTION_MAX_TOTAL_BYTES);
+                    completeScan = false;
                     break;
                 }
 
@@ -350,6 +364,7 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                     log.warn(
                             "[sandbox-fs] Workspace remote projection hit byte limit {}",
                             REMOTE_PROJECTION_MAX_TOTAL_BYTES);
+                    completeScan = false;
                     break;
                 }
                 batch.add(Map.entry(path, content));
@@ -364,14 +379,76 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
             if (!batch.isEmpty()) {
                 fallback.uploadFiles(runtimeContext, batch);
             }
+            int deleted = 0;
+            if (completeScan) {
+                deleted = reconcileRemoteProjection(runtimeContext, fallback, currentProjection);
+                writeProjectionManifest(runtimeContext, fallback, currentProjection);
+            }
             if (projected > 0) {
                 log.debug(
-                        "[sandbox-fs] Projected {} workspace files to remote fallback ({} bytes)",
+                        "[sandbox-fs] Projected {} workspace files to remote fallback ({} bytes,"
+                                + " deleted {} stale projection files)",
                         projected,
-                        totalBytes);
+                        totalBytes,
+                        deleted);
             }
             return projected;
         }
+    }
+
+    private int reconcileRemoteProjection(
+            RuntimeContext runtimeContext,
+            RemoteFilesystem fallback,
+            Set<String> currentProjection) {
+        Set<String> previousProjection = readProjectionManifest(runtimeContext, fallback);
+        int deleted = 0;
+        for (String previousPath : previousProjection) {
+            if (currentProjection.contains(previousPath)) {
+                continue;
+            }
+            try {
+                fallback.delete(runtimeContext, previousPath);
+                deleted++;
+            } catch (Exception e) {
+                log.warn(
+                        "[sandbox-fs] Failed to delete stale remote projection {}: {}",
+                        previousPath,
+                        e.getMessage());
+            }
+        }
+        return deleted;
+    }
+
+    private Set<String> readProjectionManifest(
+            RuntimeContext runtimeContext, RemoteFilesystem fallback) {
+        ReadResult result = fallback.read(runtimeContext, REMOTE_PROJECTION_MANIFEST, 0, 0);
+        if (!result.isSuccess()
+                || result.fileData() == null
+                || result.fileData().content() == null) {
+            return Set.of();
+        }
+        Set<String> out = new LinkedHashSet<>();
+        for (String line : result.fileData().content().split("\n")) {
+            String path = normalizeManifestPath(line);
+            if (path != null) {
+                out.add(path);
+            }
+        }
+        return out;
+    }
+
+    private void writeProjectionManifest(
+            RuntimeContext runtimeContext,
+            RemoteFilesystem fallback,
+            Set<String> currentProjection) {
+        String manifest =
+                currentProjection.stream().sorted().collect(Collectors.joining("\n", "", "\n"));
+        fallback.uploadFiles(
+                runtimeContext,
+                List.of(
+                        Map.entry(
+                                REMOTE_PROJECTION_MANIFEST,
+                                manifest.getBytes(StandardCharsets.UTF_8))));
     }
 
     private byte[] readEntryBytes(TarArchiveInputStream tar, String path) throws Exception {
@@ -417,6 +494,23 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
             return null;
         }
         return "/" + String.join("/", segments);
+    }
+
+    private String normalizeManifestPath(String line) {
+        if (line == null || line.isBlank() || line.indexOf('\0') >= 0) {
+            return null;
+        }
+        String normalized = line.trim().replace('\\', '/');
+        while (normalized.startsWith("./")) {
+            normalized = normalized.substring(2);
+        }
+        if (!normalized.startsWith("/")) {
+            normalized = "/" + normalized;
+        }
+        if (REMOTE_PROJECTION_MANIFEST.equals(normalized)) {
+            return null;
+        }
+        return toRemoteProjectionPath(normalized.substring(1));
     }
 
     private Sandbox activeSandbox(RuntimeContext runtimeContext) {
