@@ -18,7 +18,10 @@ package io.agentscope.saas.core.persistence.repo;
 import io.agentscope.saas.core.persistence.entity.MemoryEventEntity;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 /** Repository for the durable memory event ledger. */
 public interface MemoryEventRepository extends JpaRepository<MemoryEventEntity, UUID> {
@@ -26,4 +29,20 @@ public interface MemoryEventRepository extends JpaRepository<MemoryEventEntity, 
     List<MemoryEventEntity> findTop100BySyncStatusOrderByCreatedAtAsc(String syncStatus);
 
     List<MemoryEventEntity> findByOrgIdAndUserIdOrderByCreatedAtDesc(UUID orgId, UUID userId);
+
+    @Query(
+            """
+            SELECT e FROM MemoryEventEntity e
+             WHERE e.orgId = :orgId
+               AND (:userId IS NULL OR e.userId = :userId)
+               AND (:sessionId IS NULL OR e.sessionId = :sessionId)
+               AND (:syncStatus IS NULL OR e.syncStatus = :syncStatus)
+             ORDER BY e.createdAt DESC
+            """)
+    List<MemoryEventEntity> findAdminEvents(
+            @Param("orgId") UUID orgId,
+            @Param("userId") UUID userId,
+            @Param("sessionId") String sessionId,
+            @Param("syncStatus") String syncStatus,
+            Pageable pageable);
 }
