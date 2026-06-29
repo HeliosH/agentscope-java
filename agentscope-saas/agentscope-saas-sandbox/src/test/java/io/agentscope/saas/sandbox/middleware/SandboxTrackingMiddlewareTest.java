@@ -15,6 +15,7 @@
  */
 package io.agentscope.saas.sandbox.middleware;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -31,6 +32,8 @@ import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.saas.core.ratelimit.QuotaExceededException;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.sandbox.SandboxBroker;
+import io.agentscope.saas.sandbox.SandboxMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.OffsetDateTime;
 import java.util.Collections;
 import java.util.UUID;
@@ -62,6 +65,8 @@ class SandboxTrackingMiddlewareTest {
 
     @Test
     void propagatesQuotaExceededFromTransactionalRegistration() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        middleware = new SandboxTrackingMiddleware(broker, "e2b", 60, new SandboxMetrics(registry));
         RuntimeContext ctx = tenantContext();
         AgentInput input = new AgentInput(Collections.emptyList());
         doThrow(new QuotaExceededException("Sandbox quota exceeded"))
@@ -79,6 +84,13 @@ class SandboxTrackingMiddlewareTest {
                 QuotaExceededException.class, () -> middleware.onAgent(agent, ctx, input, next));
 
         verify(next, never()).apply(input);
+        assertThat(
+                        registry.get("saas.sandbox.lifecycle.events")
+                                .tag("type", "e2b")
+                                .tag("event", "quota_rejected")
+                                .counter()
+                                .count())
+                .isEqualTo(1.0d);
     }
 
     @Test
@@ -101,6 +113,36 @@ class SandboxTrackingMiddlewareTest {
                 IllegalStateException.class, () -> middleware.onAgent(agent, ctx, input, next));
 
         verify(broker).release(sandboxId);
+    }
+
+    @Test
+    void recordsRunDurationWhenDownstreamCompletes() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        middleware = new SandboxTrackingMiddleware(broker, "e2b", 60, new SandboxMetrics(registry));
+        RuntimeContext ctx = tenantContext();
+        AgentInput input = new AgentInput(Collections.emptyList());
+        UUID sandboxId = UUID.randomUUID();
+        when(broker.registerActive(
+                        any(UUID.class),
+                        any(UUID.class),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        any(OffsetDateTime.class),
+                        anyInt()))
+                .thenReturn(sandboxId);
+        when(next.apply(input)).thenReturn(Flux.empty());
+
+        middleware.onAgent(agent, ctx, input, next).blockLast();
+
+        verify(broker).release(sandboxId);
+        assertThat(
+                        registry.get("saas.sandbox.run.duration")
+                                .tag("type", "e2b")
+                                .tag("signal", "on_complete")
+                                .timer()
+                                .count())
+                .isEqualTo(1);
     }
 
     private static RuntimeContext tenantContext() {

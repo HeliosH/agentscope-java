@@ -23,6 +23,7 @@ import java.time.OffsetDateTime;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,10 +47,20 @@ public class SandboxBroker {
 
     private final SandboxRepository sandboxRepository;
     private final UserRepository userRepository;
+    private final SandboxMetrics metrics;
 
     public SandboxBroker(SandboxRepository sandboxRepository, UserRepository userRepository) {
+        this(sandboxRepository, userRepository, SandboxMetrics.noop());
+    }
+
+    @Autowired
+    public SandboxBroker(
+            SandboxRepository sandboxRepository,
+            UserRepository userRepository,
+            SandboxMetrics metrics) {
         this.sandboxRepository = sandboxRepository;
         this.userRepository = userRepository;
+        this.metrics = metrics != null ? metrics : SandboxMetrics.noop();
     }
 
     /**
@@ -123,6 +134,7 @@ public class SandboxBroker {
         entity.setLastUsedAt(OffsetDateTime.now());
         entity.setExpiresAt(expiresAt);
         sandboxRepository.save(entity);
+        metrics.registerActive(sandboxType);
 
         log.debug(
                 "Registered active sandbox id={} type={} externalId={} for user={} org={}",
@@ -166,6 +178,7 @@ public class SandboxBroker {
                             entity.setStatus("released");
                             entity.setLastUsedAt(OffsetDateTime.now());
                             sandboxRepository.save(entity);
+                            metrics.release(entity.getSandboxType());
                             log.debug(
                                     "Released sandbox id={} externalId={}",
                                     sandboxId,
@@ -205,6 +218,7 @@ public class SandboxBroker {
         for (SandboxEntity entity : expired) {
             entity.setStatus("evicted");
             entity.setLastUsedAt(OffsetDateTime.now());
+            metrics.evict(entity.getSandboxType());
             log.info(
                     "Evicted expired sandbox id={} externalId={} user={} org={}",
                     entity.getId(),

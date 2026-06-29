@@ -24,6 +24,7 @@ import io.agentscope.saas.core.ratelimit.QuotaExceededException;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.sandbox.SandboxBroker;
+import io.agentscope.saas.sandbox.SandboxMetrics;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
@@ -51,12 +52,19 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
     private final SandboxBroker broker;
     private final String sandboxType;
     private final long idleTtlSeconds;
+    private final SandboxMetrics metrics;
 
     public SandboxTrackingMiddleware(
             SandboxBroker broker, String sandboxType, long idleTtlSeconds) {
+        this(broker, sandboxType, idleTtlSeconds, SandboxMetrics.noop());
+    }
+
+    public SandboxTrackingMiddleware(
+            SandboxBroker broker, String sandboxType, long idleTtlSeconds, SandboxMetrics metrics) {
         this.broker = broker;
         this.sandboxType = sandboxType;
         this.idleTtlSeconds = idleTtlSeconds;
+        this.metrics = metrics != null ? metrics : SandboxMetrics.noop();
     }
 
     @Override
@@ -85,6 +93,7 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
         AtomicReference<UUID> trackingId = new AtomicReference<>();
         AtomicReference<Disposable> heartbeat = new AtomicReference<>();
         long ttlSeconds = Math.max(1L, idleTtlSeconds);
+        long startedAtNanos = System.nanoTime();
 
         try {
             // External id is unknown at this layer (the framework owns the backend handle); the
@@ -103,8 +112,10 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
                                             tc.maxSandboxes()));
             trackingId.set(id);
         } catch (QuotaExceededException e) {
+            metrics.quotaRejected(sandboxType);
             throw e;
         } catch (Exception e) {
+            metrics.trackingRegistrationFailed(sandboxType);
             log.warn("Failed to register active sandbox tracking row: {}", e.getMessage());
         }
 
@@ -122,6 +133,8 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
                                 startHeartbeat(heartbeat, trackingId.get(), tc.orgId(), ttlSeconds))
                 .doFinally(
                         signal -> {
+                            metrics.recordRun(
+                                    sandboxType, signal.name(), System.nanoTime() - startedAtNanos);
                             Disposable d = heartbeat.getAndSet(null);
                             if (d != null) {
                                 d.dispose();
@@ -142,6 +155,7 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
                         return null;
                     });
         } catch (Exception e) {
+            metrics.trackingReleaseFailed(sandboxType);
             log.warn("Failed to release sandbox tracking row {}: {}", id, e.getMessage());
         }
     }
@@ -174,6 +188,7 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
                         return null;
                     });
         } catch (Exception e) {
+            metrics.trackingLeaseRefreshFailed(sandboxType);
             log.warn("Failed to refresh sandbox tracking lease {}: {}", id, e.getMessage());
         }
     }

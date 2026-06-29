@@ -42,6 +42,7 @@ import io.agentscope.saas.core.ratelimit.RateLimiter;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.usage.UsageService;
 import io.agentscope.saas.sandbox.SandboxBroker;
+import io.agentscope.saas.sandbox.SandboxMetrics;
 import io.agentscope.saas.sandbox.middleware.SandboxQuotaMiddleware;
 import io.agentscope.saas.sandbox.middleware.SandboxTrackingMiddleware;
 import java.util.List;
@@ -75,6 +76,7 @@ public class AgentConfig {
             SaasProperties properties,
             ObjectProvider<SandboxFilesystemSpec> sandboxSpecProvider,
             ObjectProvider<SandboxBroker> sandboxBrokerProvider,
+            ObjectProvider<SandboxMetrics> sandboxMetricsProvider,
             ObjectProvider<BaseStore> workspaceStoreProvider,
             McpClientRegistry mcpClientRegistry,
             OrgToolsConfigService orgToolsConfigService,
@@ -143,7 +145,8 @@ public class AgentConfig {
                         new SandboxTrackingMiddleware(
                                 broker,
                                 properties.getSandbox().getType(),
-                                properties.getSandbox().getIdleTtlSeconds()));
+                                properties.getSandbox().getIdleTtlSeconds(),
+                                sandboxMetricsProvider.getIfAvailable(SandboxMetrics::noop)));
             }
             // Skill self-evolution (Phase B): with a workspace filesystem present, let the agent
             // propose/promote skills from its own runs and run the background curator that

@@ -92,14 +92,18 @@ public class TenantTraceMiddleware implements MiddlewareBase {
 
 ### 4.2 关键指标（Micrometer）
 ```
-saas.sandbox.pool.size           Gauge   type,status
-saas.sandbox.create.duration     Timer   type,org_id
-saas.sandbox.resume.duration     Timer   type,org_id
-saas.sandbox.request.queue_depth Gauge   org_id
-saas.agent.call.duration         Timer   org_id,model
-saas.llm.token.usage             Counter org_id,model,type
-saas.channel.messages            Counter channel_type,direction
+saas.sandbox.lifecycle.events    Counter type,event
+saas.sandbox.run.duration        Timer   type,signal
+saas.sandbox.pool.size           Gauge   type,status        (planned)
+saas.sandbox.create.duration     Timer   type               (planned)
+saas.sandbox.resume.duration     Timer   type               (planned)
+saas.sandbox.request.queue_depth Gauge   type               (planned)
+saas.agent.call.duration         Timer   model              (planned)
+saas.llm.token.usage             Counter model,type         (planned)
+saas.channel.messages            Counter channel_type,direction (planned)
 ```
+
+已实现的 sandbox 指标刻意不带 `org_id`/`user_id`，避免高基数标签拖垮指标后端；租户级排查继续通过 `sandboxes` 表、`memory_events` 表和审计日志完成。
 
 ### 4.3 Grafana 面板
 Sandbox Pool Overview / Request Latency(p50/p95/p99) / Token Usage by Org / Channel Activity / Error Rate / Sandbox Health。
