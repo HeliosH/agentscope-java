@@ -108,7 +108,11 @@ saas.channel.messages            Counter channel_type,direction (planned)
 ### 4.3 Grafana 面板
 Sandbox Pool Overview / Request Latency(p50/p95/p99) / Token Usage by Org / Channel Activity / Error Rate / Sandbox Health。
 
-### 4.4 健康检查
+### 4.4 运维查询
+
+`GET /api/admin/sandboxes` 已提供 org-admin 级 sandbox inventory，支持 `userId`、`status`、`sandboxType`、`expiredOnly`、`limit` 过滤。该接口只从 JWT 读取 org scope，不能通过参数跨租户查询，适合巡检 active/expired tracking row 和资源泄漏。
+
+### 4.5 健康检查
 ```java
 @Scheduled(fixedRate = 30_000)
 public Mono<Void> checkAll() {  // 每沙箱 exec("echo ok")，3 次失败 → rebuild
@@ -116,7 +120,7 @@ public Mono<Void> checkAll() {  // 每沙箱 exec("echo ok")，3 次失败 → r
 }
 ```
 
-### 4.5 SLA 目标
+### 4.6 SLA 目标
 | 指标 | 目标 |
 |------|------|
 | API p50（非 agent） | < 200ms |

@@ -19,6 +19,7 @@ import io.agentscope.saas.core.persistence.entity.SandboxEntity;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -35,4 +36,24 @@ public interface SandboxRepository extends JpaRepository<SandboxEntity, UUID> {
     /** Finds active sandboxes whose idle TTL has expired. */
     @Query("SELECT s FROM SandboxEntity s WHERE s.status = 'active' AND s.expiresAt < :now")
     List<SandboxEntity> findExpiredSandboxes(@Param("now") OffsetDateTime now);
+
+    /** Org-admin sandbox inventory with optional low-cardinality operational filters. */
+    @Query(
+            """
+            SELECT s FROM SandboxEntity s
+            WHERE s.orgId = :orgId
+              AND (:userId IS NULL OR s.userId = :userId)
+              AND (:status IS NULL OR s.status = :status)
+              AND (:sandboxType IS NULL OR s.sandboxType = :sandboxType)
+              AND (:expiredOnly = false OR (s.status = 'active' AND s.expiresAt < :now))
+            ORDER BY s.lastUsedAt DESC, s.createdAt DESC
+            """)
+    List<SandboxEntity> findAdminSandboxes(
+            @Param("orgId") UUID orgId,
+            @Param("userId") UUID userId,
+            @Param("status") String status,
+            @Param("sandboxType") String sandboxType,
+            @Param("expiredOnly") boolean expiredOnly,
+            @Param("now") OffsetDateTime now,
+            Pageable pageable);
 }
