@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
 /** Unit tests for {@link SandboxMetrics}. */
 class SandboxMetricsTest {
@@ -78,6 +79,26 @@ class SandboxMetricsTest {
                                 .timer()
                                 .count())
                 .isEqualTo(1);
+    }
+
+    @Test
+    void springConstructsMetricsWithMeterRegistry() {
+        try (AnnotationConfigApplicationContext ctx = new AnnotationConfigApplicationContext()) {
+            ctx.registerBean(SimpleMeterRegistry.class);
+            ctx.register(SandboxMetrics.class);
+            ctx.refresh();
+
+            ctx.getBean(SandboxMetrics.class).registerActive("e2b");
+
+            assertThat(
+                            ctx.getBean(SimpleMeterRegistry.class)
+                                    .get("saas.sandbox.lifecycle.events")
+                                    .tag("type", "e2b")
+                                    .tag("event", "registered")
+                                    .counter()
+                                    .count())
+                    .isEqualTo(1.0d);
+        }
     }
 
     @Test

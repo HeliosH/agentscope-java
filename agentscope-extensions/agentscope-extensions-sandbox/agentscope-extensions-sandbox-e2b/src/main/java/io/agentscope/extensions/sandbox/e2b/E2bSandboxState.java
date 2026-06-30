@@ -25,7 +25,7 @@ public class E2bSandboxState extends SandboxState {
     private String sandboxDomain;
     private String envdAccessToken;
     private String envdVersion = "0.1.5";
-    private String workspaceRoot = "/home/user";
+    private String workspaceRoot = E2bSandboxClientOptions.DEFAULT_WORKSPACE_ROOT;
     private boolean sandboxOwned = true;
     private E2bPersistenceMode persistenceMode = E2bPersistenceMode.TAR;
 

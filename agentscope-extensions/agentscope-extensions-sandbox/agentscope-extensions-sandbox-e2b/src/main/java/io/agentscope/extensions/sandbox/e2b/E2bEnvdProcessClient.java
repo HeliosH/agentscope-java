@@ -97,7 +97,8 @@ final class E2bEnvdProcessClient {
                         || cap.stderr.size() >= OUTPUT_TRUNCATE_BYTES;
         ExecResult r = new ExecResult(cap.exitCode, outStr, errStr, truncated);
         if (!r.ok()) {
-            throw new SandboxException.ExecException(cap.exitCode, outStr, errStr);
+            throw new SandboxException.ExecException(
+                    cap.exitCode, outStr, diagnosticStderr(cap, errStr));
         }
         return r;
     }
@@ -108,7 +109,9 @@ final class E2bEnvdProcessClient {
         ShellCapture cap = runShellCapture(state, cwd, shellCommand, timeoutSeconds);
         if (cap.exitCode != 0) {
             throw new SandboxException.ExecException(
-                    cap.exitCode, "(binary stdout)", truncateUtf8(cap.stderr.toByteArray()));
+                    cap.exitCode,
+                    "(binary stdout)",
+                    diagnosticStderr(cap, truncateUtf8(cap.stderr.toByteArray())));
         }
         return cap.stdout.toByteArray();
     }
@@ -300,5 +303,12 @@ final class E2bEnvdProcessClient {
     private static String truncateUtf8(byte[] b) {
         int n = Math.min(b.length, OUTPUT_TRUNCATE_BYTES);
         return new String(b, 0, n, StandardCharsets.UTF_8);
+    }
+
+    private static String diagnosticStderr(ShellCapture cap, String stderr) {
+        if (cap.exitCode != -1 || (stderr != null && !stderr.isBlank())) {
+            return stderr;
+        }
+        return "envd process stream ended without an exit status";
     }
 }

@@ -22,6 +22,8 @@ import okhttp3.OkHttpClient;
 /** Options for {@link E2bSandboxClient}. */
 public class E2bSandboxClientOptions extends SandboxClientOptions {
 
+    public static final String DEFAULT_WORKSPACE_ROOT = "/home/user/workspace";
+
     private OkHttpClient httpClient;
     private String apiKey;
     private String apiBaseUrl = "https://api.e2b.dev";
@@ -31,7 +33,7 @@ public class E2bSandboxClientOptions extends SandboxClientOptions {
     private String templateId = "base";
 
     /** Absolute path of the workspace root inside the sandbox. */
-    private String workspaceRoot = "/home/user";
+    private String workspaceRoot = DEFAULT_WORKSPACE_ROOT;
 
     private int sandboxTimeoutSeconds = 300;
     private String runUser = "user";

@@ -143,6 +143,8 @@ REGISTERED_BEFORE="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b
 RELEASED_BEFORE="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b event:released)"
 TRACKING_RELEASE_FAILED_BEFORE="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b event:tracking_release_failed)"
 BACKEND_RELEASE_FAILED_BEFORE="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b event:backend_release_failed)"
+SANDBOX_STOP_FAILED_BEFORE="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b event:sandbox_stop_failed)"
+SANDBOX_SHUTDOWN_FAILED_BEFORE="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b event:sandbox_shutdown_failed)"
 PERSIST_FAILED_BEFORE="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b event:state_persist_failed)"
 PROJECTION_FAILED_BEFORE="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b event:workspace_projection_failed)"
 
@@ -169,6 +171,8 @@ REGISTERED_AFTER="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b 
 RELEASED_AFTER="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b event:released)"
 TRACKING_RELEASE_FAILED_AFTER="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b event:tracking_release_failed)"
 BACKEND_RELEASE_FAILED_AFTER="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b event:backend_release_failed)"
+SANDBOX_STOP_FAILED_AFTER="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b event:sandbox_stop_failed)"
+SANDBOX_SHUTDOWN_FAILED_AFTER="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b event:sandbox_shutdown_failed)"
 PERSIST_FAILED_AFTER="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b event:state_persist_failed)"
 PROJECTION_FAILED_AFTER="$(metric_count_or_zero saas.sandbox.lifecycle.events type:e2b event:workspace_projection_failed)"
 
@@ -186,6 +190,16 @@ if [ $((BACKEND_RELEASE_FAILED_AFTER - BACKEND_RELEASE_FAILED_BEFORE)) -eq 0 ]; 
   ok "no backend release failures"
 else
   bad "backend release failures increased"
+fi
+if [ $((SANDBOX_STOP_FAILED_AFTER - SANDBOX_STOP_FAILED_BEFORE)) -eq 0 ]; then
+  ok "no sandbox stop failures"
+else
+  bad "sandbox stop failures increased"
+fi
+if [ $((SANDBOX_SHUTDOWN_FAILED_AFTER - SANDBOX_SHUTDOWN_FAILED_BEFORE)) -eq 0 ]; then
+  ok "no sandbox shutdown failures"
+else
+  bad "sandbox shutdown failures increased"
 fi
 if [ $((PERSIST_FAILED_AFTER - PERSIST_FAILED_BEFORE)) -eq 0 ]; then
   ok "no state persist failures"

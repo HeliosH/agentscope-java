@@ -145,8 +145,8 @@ public class SaasProperties {
         /** Docker image for sandbox containers (type=docker only). */
         private String image = "ubuntu:22.04";
 
-        /** Workspace root path inside the sandbox. Defaults differ by type (/workspace for docker,
-         * /home/user for cube). */
+        /** Workspace root path inside the sandbox. Defaults differ by type: /workspace for docker,
+         * /home/user for cube, /home/user/workspace for e2b. */
         private String workspaceRoot;
 
         /** Isolation scope: {@code USER} (default, one sandbox per user), {@code SESSION},

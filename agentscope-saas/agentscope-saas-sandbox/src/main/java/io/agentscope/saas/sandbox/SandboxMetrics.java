@@ -19,6 +19,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /** Low-cardinality metrics for SaaS sandbox runtime resource management. */
@@ -29,6 +30,7 @@ public class SandboxMetrics {
 
     private final MeterRegistry registry;
 
+    @Autowired
     public SandboxMetrics(MeterRegistry registry) {
         this.registry = registry;
     }

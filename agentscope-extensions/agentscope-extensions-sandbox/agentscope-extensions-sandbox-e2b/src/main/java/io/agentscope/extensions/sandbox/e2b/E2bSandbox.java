@@ -41,6 +41,7 @@ public class E2bSandbox extends AbstractBaseSandbox {
 
     private static final Logger log = LoggerFactory.getLogger(E2bSandbox.class);
 
+    private static final String CONTROL_CWD = "/";
     private static final int TAR_TIMEOUT_SECONDS = 300;
     private static final int B64_CHUNK = 4000;
 
@@ -145,7 +146,7 @@ public class E2bSandbox extends AbstractBaseSandbox {
     protected void doSetupWorkspace() throws Exception {
         envd().runShell(
                         e2bState,
-                        getWorkspaceRoot(),
+                        CONTROL_CWD,
                         "mkdir -p " + shellSingleQuote(e2bState.getWorkspaceRoot()),
                         30);
     }
@@ -155,7 +156,7 @@ public class E2bSandbox extends AbstractBaseSandbox {
         try {
             envd().runShell(
                             e2bState,
-                            getWorkspaceRoot(),
+                            CONTROL_CWD,
                             "rm -rf " + shellSingleQuote(e2bState.getWorkspaceRoot()),
                             30);
         } catch (Exception e) {
