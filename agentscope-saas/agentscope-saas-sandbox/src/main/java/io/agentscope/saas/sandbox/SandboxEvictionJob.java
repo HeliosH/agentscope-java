@@ -17,6 +17,7 @@ package io.agentscope.saas.sandbox;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -35,21 +36,42 @@ public class SandboxEvictionJob {
     private static final Logger log = LoggerFactory.getLogger(SandboxEvictionJob.class);
 
     private final SandboxBroker broker;
+    private final SandboxInventoryMetrics inventoryMetrics;
 
     public SandboxEvictionJob(SandboxBroker broker) {
+        this(broker, null);
+    }
+
+    @Autowired
+    public SandboxEvictionJob(SandboxBroker broker, SandboxInventoryMetrics inventoryMetrics) {
         this.broker = broker;
+        this.inventoryMetrics = inventoryMetrics;
     }
 
     /** Run every 60 seconds to evict expired sandboxes. */
     @Scheduled(fixedDelay = 60_000)
     public void evictExpired() {
         try {
+            refreshInventoryMetrics();
             int evicted = broker.evictExpired();
             if (evicted > 0) {
                 log.info("Evicted {} expired sandbox(es)", evicted);
             }
         } catch (Exception e) {
             log.warn("Sandbox eviction job failed: {}", e.getMessage());
+        } finally {
+            refreshInventoryMetrics();
+        }
+    }
+
+    private void refreshInventoryMetrics() {
+        if (inventoryMetrics == null) {
+            return;
+        }
+        try {
+            inventoryMetrics.refresh();
+        } catch (Exception e) {
+            log.warn("Sandbox inventory metrics refresh failed: {}", e.getMessage());
         }
     }
 }

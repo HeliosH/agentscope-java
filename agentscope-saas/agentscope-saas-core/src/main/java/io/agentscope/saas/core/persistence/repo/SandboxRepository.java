@@ -27,6 +27,20 @@ import org.springframework.data.repository.query.Param;
 /** Repository for {@link SandboxEntity}, with org/user-scoped quota queries. */
 public interface SandboxRepository extends JpaRepository<SandboxEntity, UUID> {
 
+    interface SandboxPoolCount {
+        String getSandboxType();
+
+        String getStatus();
+
+        long getCount();
+    }
+
+    interface SandboxTypeCount {
+        String getSandboxType();
+
+        long getCount();
+    }
+
     /** Counts active sandboxes for a given org/user (used for quota enforcement). */
     int countByOrgIdAndUserIdAndStatus(UUID orgId, UUID userId, String status);
 
@@ -36,6 +50,25 @@ public interface SandboxRepository extends JpaRepository<SandboxEntity, UUID> {
     /** Finds active sandboxes whose idle TTL has expired. */
     @Query("SELECT s FROM SandboxEntity s WHERE s.status = 'active' AND s.expiresAt < :now")
     List<SandboxEntity> findExpiredSandboxes(@Param("now") OffsetDateTime now);
+
+    /** Counts sandbox tracking rows by backend type and lifecycle status for pool gauges. */
+    @Query(
+            """
+            SELECT s.sandboxType AS sandboxType, s.status AS status, COUNT(s) AS count
+            FROM SandboxEntity s
+            GROUP BY s.sandboxType, s.status
+            """)
+    List<SandboxPoolCount> countBySandboxTypeAndStatus();
+
+    /** Counts active sandbox tracking rows that are already past their lease expiry. */
+    @Query(
+            """
+            SELECT s.sandboxType AS sandboxType, COUNT(s) AS count
+            FROM SandboxEntity s
+            WHERE s.status = 'active' AND s.expiresAt < :now
+            GROUP BY s.sandboxType
+            """)
+    List<SandboxTypeCount> countExpiredActiveBySandboxType(@Param("now") OffsetDateTime now);
 
     /** Org-admin sandbox inventory with optional low-cardinality operational filters. */
     @Query(
