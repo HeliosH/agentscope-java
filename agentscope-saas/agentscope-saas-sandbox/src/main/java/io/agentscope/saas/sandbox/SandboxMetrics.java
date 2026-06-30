@@ -69,6 +69,34 @@ public class SandboxMetrics {
         incrementLifecycle(sandboxType, "tracking_lease_refresh_failed");
     }
 
+    public void acquireStartFailed(String sandboxType) {
+        incrementLifecycle(sandboxType, "acquire_start_failed");
+    }
+
+    public void workspaceProjectionSucceeded(String sandboxType) {
+        incrementLifecycle(sandboxType, "workspace_projection_succeeded");
+    }
+
+    public void workspaceProjectionFailed(String sandboxType) {
+        incrementLifecycle(sandboxType, "workspace_projection_failed");
+    }
+
+    public void statePersistFailed(String sandboxType) {
+        incrementLifecycle(sandboxType, "state_persist_failed");
+    }
+
+    public void sandboxStopFailed(String sandboxType) {
+        incrementLifecycle(sandboxType, "sandbox_stop_failed");
+    }
+
+    public void sandboxShutdownFailed(String sandboxType) {
+        incrementLifecycle(sandboxType, "sandbox_shutdown_failed");
+    }
+
+    public void backendReleaseFailed(String sandboxType) {
+        incrementLifecycle(sandboxType, "backend_release_failed");
+    }
+
     public void recordRun(String sandboxType, String signalType, long durationNanos) {
         if (registry == null || durationNanos < 0) {
             return;

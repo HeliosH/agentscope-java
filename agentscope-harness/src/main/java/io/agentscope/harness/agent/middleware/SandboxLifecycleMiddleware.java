@@ -21,8 +21,10 @@ import io.agentscope.harness.agent.filesystem.sandbox.SandboxBackedFilesystem;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxAcquireResult;
 import io.agentscope.harness.agent.sandbox.SandboxContext;
+import io.agentscope.harness.agent.sandbox.SandboxLifecycleObserver;
 import io.agentscope.harness.agent.sandbox.SandboxManager;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,13 +56,22 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
 
     private final SandboxManager sandboxManager;
     private final SandboxBackedFilesystem filesystemProxy;
+    private final SandboxLifecycleObserver observer;
     private final AtomicReference<SandboxAcquireResult> legacyAcquireResult =
             new AtomicReference<>();
 
     public SandboxLifecycleMiddleware(
             SandboxManager sandboxManager, SandboxBackedFilesystem filesystemProxy) {
+        this(sandboxManager, filesystemProxy, SandboxLifecycleObserver.noop());
+    }
+
+    public SandboxLifecycleMiddleware(
+            SandboxManager sandboxManager,
+            SandboxBackedFilesystem filesystemProxy,
+            SandboxLifecycleObserver observer) {
         this.sandboxManager = sandboxManager;
         this.filesystemProxy = filesystemProxy;
+        this.observer = observer != null ? observer : SandboxLifecycleObserver.noop();
     }
 
     /**
@@ -104,6 +115,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
                 throw e;
             }
         } catch (Exception e) {
+            notifyObserver(obs -> obs.onAcquireStartFailure(ctx, e));
             log.error("[sandbox-mw] Failed to acquire/start sandbox", e);
             throw new RuntimeException(e);
         }
@@ -126,10 +138,12 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
         SandboxContext sandboxContext = ctx != null ? ctx.get(SandboxContext.class) : null;
         try {
             int projected = filesystemProxy.projectSandboxWorkspaceToRemote(ctx);
+            notifyObserver(obs -> obs.onWorkspaceProjectionSucceeded(ctx, projected));
             if (projected > 0) {
                 log.debug("[sandbox-mw] Projected {} workspace files before release", projected);
             }
         } catch (Exception e) {
+            notifyObserver(obs -> obs.onWorkspaceProjectionFailed(ctx, e));
             log.warn(
                     "[sandbox-mw] Failed to project sandbox workspace to remote fallback: {}",
                     e.getMessage(),
@@ -138,11 +152,13 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
         try {
             sandboxManager.persistState(result, sandboxContext, ctx);
         } catch (Exception e) {
+            notifyObserver(obs -> obs.onStatePersistFailed(ctx, e));
             log.warn("[sandbox-mw] Failed to persist sandbox state: {}", e.getMessage(), e);
         }
         try {
             sandboxManager.release(result);
         } catch (Exception e) {
+            notifyObserver(obs -> obs.onBackendReleaseFailed(ctx, e));
             log.warn("[sandbox-mw] Failed to release sandbox session: {}", e.getMessage(), e);
         }
         result.getLease().close();
@@ -159,6 +175,14 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             filesystemProxy.setSandbox(null);
         }
         legacyAcquireResult.compareAndSet(result, null);
+    }
+
+    private void notifyObserver(Consumer<SandboxLifecycleObserver> notification) {
+        try {
+            notification.accept(observer);
+        } catch (Exception e) {
+            log.warn("[sandbox-mw] Sandbox lifecycle observer failed: {}", e.getMessage(), e);
+        }
     }
 
     private record SandboxCallState(SandboxAcquireResult result) {}

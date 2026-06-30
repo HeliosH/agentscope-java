@@ -18,6 +18,7 @@ package io.agentscope.harness.agent.sandbox;
 import io.agentscope.core.agent.RuntimeContext;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,6 +46,7 @@ public class SandboxManager {
     private final SessionSandboxStateStore stateStore;
     private final String agentId;
     private final SandboxExecutionGuard executionGuard;
+    private final SandboxLifecycleObserver observer;
 
     public SandboxManager(
             SandboxClient<?> client, SessionSandboxStateStore stateStore, String agentId) {
@@ -56,11 +58,21 @@ public class SandboxManager {
             SessionSandboxStateStore stateStore,
             String agentId,
             SandboxExecutionGuard executionGuard) {
+        this(client, stateStore, agentId, executionGuard, SandboxLifecycleObserver.noop());
+    }
+
+    public SandboxManager(
+            SandboxClient<?> client,
+            SessionSandboxStateStore stateStore,
+            String agentId,
+            SandboxExecutionGuard executionGuard,
+            SandboxLifecycleObserver observer) {
         this.client = Objects.requireNonNull(client, "client must not be null");
         this.stateStore = Objects.requireNonNull(stateStore, "stateStore must not be null");
         this.agentId = Objects.requireNonNull(agentId, "agentId must not be null");
         this.executionGuard =
                 executionGuard != null ? executionGuard : SandboxExecutionGuard.noop();
+        this.observer = observer != null ? observer : SandboxLifecycleObserver.noop();
     }
 
     public SandboxAcquireResult acquire(
@@ -148,6 +160,10 @@ public class SandboxManager {
     }
 
     public void release(SandboxAcquireResult result) {
+        release(result, null);
+    }
+
+    public void release(SandboxAcquireResult result, RuntimeContext runtimeContext) {
         if (result == null) {
             return;
         }
@@ -168,6 +184,7 @@ public class SandboxManager {
             try {
                 sandbox.stop();
             } catch (Exception e) {
+                notifyObserver(obs -> obs.onSandboxStopFailed(runtimeContext, e));
                 log.warn("[sandbox] Sandbox stop failed: {}", e.getMessage(), e);
             }
         } else {
@@ -177,6 +194,7 @@ public class SandboxManager {
         try {
             sandbox.shutdown();
         } catch (Exception e) {
+            notifyObserver(obs -> obs.onSandboxShutdownFailed(runtimeContext, e));
             log.warn("[sandbox] Sandbox shutdown failed: {}", e.getMessage(), e);
         }
     }
@@ -217,6 +235,7 @@ public class SandboxManager {
                     scopeKey.get(),
                     state.getSessionId());
         } catch (Exception e) {
+            notifyObserver(obs -> obs.onStatePersistFailed(runtimeContext, e));
             log.warn("[sandbox] Failed to persist sandbox state: {}", e.getMessage(), e);
         }
     }
@@ -235,6 +254,14 @@ public class SandboxManager {
             stateStore.delete(scopeKey.get());
         } catch (Exception e) {
             log.warn("[sandbox] Failed to clear sandbox state: {}", e.getMessage(), e);
+        }
+    }
+
+    private void notifyObserver(Consumer<SandboxLifecycleObserver> notification) {
+        try {
+            notification.accept(observer);
+        } catch (Exception e) {
+            log.warn("[sandbox] Sandbox lifecycle observer failed: {}", e.getMessage(), e);
         }
     }
 }

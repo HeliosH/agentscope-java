@@ -73,6 +73,7 @@ import io.agentscope.harness.agent.middleware.ToolResultEvictionMiddleware;
 import io.agentscope.harness.agent.middleware.WorkspaceContextMiddleware;
 import io.agentscope.harness.agent.sandbox.SandboxContext;
 import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
+import io.agentscope.harness.agent.sandbox.SandboxLifecycleObserver;
 import io.agentscope.harness.agent.sandbox.SandboxManager;
 import io.agentscope.harness.agent.sandbox.SessionSandboxStateStore;
 import io.agentscope.harness.agent.skill.WorkspaceSkillRepository;
@@ -1045,6 +1046,7 @@ public class HarnessAgent implements Agent, AutoCloseable {
         SandboxFilesystemSpec sandboxFilesystemSpec;
         RemoteFilesystemSpec remoteFilesystemSpec;
         LocalFilesystemSpec localFilesystemSpec;
+        SandboxLifecycleObserver sandboxLifecycleObserver = SandboxLifecycleObserver.noop();
 
         // AgentStateStore — mirrored only to pass through to inner; the user-set AgentStateStore
         // can also be replaced inside orchestration when none is provided (defaults to a
@@ -1483,6 +1485,13 @@ public class HarnessAgent implements Agent, AutoCloseable {
         /** Configures Mode 2 — sandbox filesystem. */
         public Builder filesystem(SandboxFilesystemSpec spec) {
             this.sandboxFilesystemSpec = spec;
+            return this;
+        }
+
+        /** Observes sandbox lifecycle failures and release-time projection outcomes. */
+        public Builder sandboxLifecycleObserver(SandboxLifecycleObserver observer) {
+            this.sandboxLifecycleObserver =
+                    observer != null ? observer : SandboxLifecycleObserver.noop();
             return this;
         }
 
@@ -1944,9 +1953,11 @@ public class HarnessAgent implements Agent, AutoCloseable {
                                 defaultSandboxContext.getClient(),
                                 stateStore,
                                 resolvedAgentId,
-                                executionGuard);
+                                executionGuard,
+                                sandboxLifecycleObserver);
                 sandboxLifecycleMw =
-                        new SandboxLifecycleMiddleware(sandboxManager, capturedSandboxFs);
+                        new SandboxLifecycleMiddleware(
+                                sandboxManager, capturedSandboxFs, sandboxLifecycleObserver);
             }
             WorkspaceManager wsManager =
                     new WorkspaceManager(resolvedWorkspace, filesystem, workspaceIndex, nsFactory);

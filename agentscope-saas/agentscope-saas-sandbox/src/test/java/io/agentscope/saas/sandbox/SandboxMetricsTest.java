@@ -32,6 +32,7 @@ class SandboxMetricsTest {
         metrics.registerActive("E2B");
         metrics.release("e2b");
         metrics.quotaRejected("e2b");
+        metrics.workspaceProjectionFailed("e2b");
 
         assertThat(
                         registry.get("saas.sandbox.lifecycle.events")
@@ -51,6 +52,13 @@ class SandboxMetricsTest {
                         registry.get("saas.sandbox.lifecycle.events")
                                 .tag("type", "e2b")
                                 .tag("event", "quota_rejected")
+                                .counter()
+                                .count())
+                .isEqualTo(1.0d);
+        assertThat(
+                        registry.get("saas.sandbox.lifecycle.events")
+                                .tag("type", "e2b")
+                                .tag("event", "workspace_projection_failed")
                                 .counter()
                                 .count())
                 .isEqualTo(1.0d);
@@ -77,6 +85,8 @@ class SandboxMetricsTest {
         SandboxMetrics metrics = SandboxMetrics.noop();
 
         metrics.registerActive("e2b");
+        metrics.workspaceProjectionSucceeded("e2b");
+        metrics.backendReleaseFailed("e2b");
         metrics.recordRun("e2b", "on_complete", 1);
     }
 }

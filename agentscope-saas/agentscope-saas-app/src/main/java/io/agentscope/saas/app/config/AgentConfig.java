@@ -120,6 +120,11 @@ public class AgentConfig {
         // does not attempt to exec in an unconfigured environment.
         SandboxFilesystemSpec sandboxSpec = sandboxSpecProvider.getIfAvailable();
         if (properties.getSandbox().isEnabled() && sandboxSpec != null) {
+            SandboxMetrics sandboxMetrics =
+                    sandboxMetricsProvider.getIfAvailable(SandboxMetrics::noop);
+            builder.sandboxLifecycleObserver(
+                    new MeteredSandboxLifecycleObserver(
+                            properties.getSandbox().getType(), sandboxMetrics));
             // F3-S2: when a BaseStore (Redis/Oss) is available, wire a remote projection so
             // workspace files (MEMORY.md, skills, …) stay readable/writable between calls. Without
             // this, SandboxBackedFilesystem throws "No active sandbox" on out-of-call IO (the
@@ -146,7 +151,7 @@ public class AgentConfig {
                                 broker,
                                 properties.getSandbox().getType(),
                                 properties.getSandbox().getIdleTtlSeconds(),
-                                sandboxMetricsProvider.getIfAvailable(SandboxMetrics::noop)));
+                                sandboxMetrics));
             }
             // Skill self-evolution (Phase B): with a workspace filesystem present, let the agent
             // propose/promote skills from its own runs and run the background curator that
