@@ -1,0 +1,62 @@
+groups:
+  - name: agentscope-saas-sandbox
+    rules:
+      - alert: SaasSandboxExpiredActiveRows
+        expr: sum by (type) (saas_sandbox_pool_expired_active) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: agentscope-saas
+        annotations:
+          summary: "Expired active sandbox tracking rows detected"
+          description: "Sandbox type {{ $labels.type }} has {{ $value }} active tracking row(s) past their lease. Check /api/admin/sandboxes?expiredOnly=true and backend release logs."
+
+      - alert: SaasSandboxReleaseFailures
+        expr: sum by (type, event) (increase(saas_sandbox_lifecycle_events_total{event=~"tracking_release_failed|backend_release_failed|sandbox_shutdown_failed"}[10m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: agentscope-saas
+        annotations:
+          summary: "Sandbox release failure"
+          description: "Sandbox type {{ $labels.type }} reported {{ $labels.event }} {{ $value }} time(s) in 10m. Runtime resources may leak until garbage collection catches up."
+
+      - alert: SaasSandboxPersistenceFailures
+        expr: sum by (type, event) (increase(saas_sandbox_lifecycle_events_total{event=~"workspace_projection_failed|state_persist_failed|sandbox_stop_failed"}[10m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: agentscope-saas
+        annotations:
+          summary: "Sandbox state persistence failure"
+          description: "Sandbox type {{ $labels.type }} reported {{ $labels.event }} {{ $value }} time(s) in 10m. User workspace or snapshot durability may be affected."
+
+      - alert: SaasSandboxAcquireFailures
+        expr: sum by (type) (increase(saas_sandbox_lifecycle_events_total{event="acquire_start_failed"}[10m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: agentscope-saas
+        annotations:
+          summary: "Sandbox acquire failures"
+          description: "Sandbox type {{ $labels.type }} failed to acquire {{ $value }} time(s) in 10m. Check provider quota, template availability, and network reachability."
+
+      - alert: SaasSandboxQuotaRejectedSpike
+        expr: sum by (type) (increase(saas_sandbox_lifecycle_events_total{event="quota_rejected"}[15m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: agentscope-saas
+        annotations:
+          summary: "Sandbox quota rejections are spiking"
+          description: "Sandbox type {{ $labels.type }} rejected {{ $value }} request(s) in 15m. Review tenant concurrency limits and active sandbox inventory."
+
+      - alert: SaasSandboxActivePoolHigh
+        expr: sum by (type) (saas_sandbox_pool_size{status="active"}) > 50
+        for: 15m
+        labels:
+          severity: warning
+          service: agentscope-saas
+        annotations:
+          summary: "Sandbox active pool is high"
+          description: "Sandbox type {{ $labels.type }} has {{ $value }} active tracking row(s) for 15m. Tune this threshold to the deployment capacity."

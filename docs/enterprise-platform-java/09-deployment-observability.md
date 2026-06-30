@@ -111,11 +111,23 @@ saas.channel.messages            Counter channel_type,direction (planned)
 ### 4.3 Grafana 面板
 Sandbox Pool Overview / Request Latency(p50/p95/p99) / Token Usage by Org / Channel Activity / Error Rate / Sandbox Health。
 
-### 4.4 运维查询
+### 4.4 告警规则
+
+已落地 Prometheus 沙箱运行时告警规则：[alerts.yml](../../agentscope-saas/observability/prometheus/alerts.yml)。当前覆盖：
+- expired active tracking row：资源释放延迟/泄漏；
+- release 链路失败：tracking release、backend release、sandbox shutdown；
+- snapshot / projection 持久化失败：workspace projection、state persist、sandbox stop；
+- acquire 失败：provider/template/network 不可用；
+- quota rejection spike：租户并发配额不足或资源池耗尽；
+- active pool high：长期高水位容量风险。
+
+`SaasSandboxActivePoolHigh` 的默认阈值是保守样例，生产环境应按 CubeSandbox/E2B 节点池容量调整；低基数 runtime 指标只做全局告警，租户级排查继续走 Admin API 和审计表。
+
+### 4.5 运维查询
 
 `GET /api/admin/sandboxes` 已提供 org-admin 级 sandbox inventory，支持 `userId`、`status`、`sandboxType`、`expiredOnly`、`limit` 过滤。该接口只从 JWT 读取 org scope，不能通过参数跨租户查询，适合巡检 active/expired tracking row 和资源泄漏。
 
-### 4.5 健康检查
+### 4.6 健康检查
 ```java
 @Scheduled(fixedRate = 30_000)
 public Mono<Void> checkAll() {  // 每沙箱 exec("echo ok")，3 次失败 → rebuild
@@ -123,7 +135,7 @@ public Mono<Void> checkAll() {  // 每沙箱 exec("echo ok")，3 次失败 → r
 }
 ```
 
-### 4.6 SLA 目标
+### 4.7 SLA 目标
 | 指标 | 目标 |
 |------|------|
 | API p50（非 agent） | < 200ms |
