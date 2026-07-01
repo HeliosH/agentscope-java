@@ -59,6 +59,10 @@ public class SandboxMetrics {
         incrementLifecycle(sandboxType, "evicted");
     }
 
+    public void forceEvict(String sandboxType) {
+        incrementLifecycle(sandboxType, "force_evicted");
+    }
+
     public void quotaRejected(String sandboxType) {
         incrementLifecycle(sandboxType, "quota_rejected");
     }

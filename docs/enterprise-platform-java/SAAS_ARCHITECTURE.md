@@ -984,6 +984,7 @@ public class TenantTraceMiddleware implements MiddlewareBase {
 | `saas.sandbox.execution.active` | Gauge | type, scope | 正在持有 execution guard 的请求数 |
 | `saas.sandbox.queue.wait.duration` | Timer | type, scope, outcome | 等待 execution guard 的耗时 |
 | `saas.sandbox.queue.timeouts` | Counter | type, scope | execution guard 等待超时次数 |
+| `saas.sandbox.lifecycle.events{event=force_evicted}` | Counter | type, event | 管理员人工驱逐 tracking row |
 | `saas.agent.call.duration` | Timer | model | Agent 调用耗时 |
 | `saas.llm.token.usage` | Counter | model, type | LLM token 消耗 |
 | `saas.channel.messages` | Counter | channel_type, direction | 频道消息数 |
@@ -1009,6 +1010,8 @@ public class SaasMetrics {
 ```
 
 运行时 Prometheus 指标不带 `org_id`/`user_id`，避免高基数拖垮指标后端；租户级排查走 Admin API、业务表和审计日志。
+
+`/api/admin/sandboxes/{sandboxId}/force-evict` 是资源泄漏恢复接口：只允许 org-admin 操作本 org 记录，将非终态 tracking row 标记为 `evicted` 以释放配额。它不假定 provider stop 已完成；真实 E2B/Cube 后端清理由正常 release 链路或基础设施 GC 负责。
 
 ### 12.3 Grafana Dashboard
 

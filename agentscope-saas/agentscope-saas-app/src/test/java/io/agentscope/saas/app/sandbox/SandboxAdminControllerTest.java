@@ -25,8 +25,10 @@ import static org.mockito.Mockito.when;
 
 import io.agentscope.saas.core.persistence.entity.SandboxEntity;
 import io.agentscope.saas.core.persistence.repo.SandboxRepository;
+import io.agentscope.saas.sandbox.SandboxBroker;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.Pageable;
@@ -37,7 +39,9 @@ import org.springframework.web.server.ResponseStatusException;
 class SandboxAdminControllerTest {
 
     private final SandboxRepository repository = mock(SandboxRepository.class);
-    private final SandboxAdminController controller = new SandboxAdminController(repository);
+    private final SandboxBroker broker = mock(SandboxBroker.class);
+    private final SandboxAdminController controller =
+            new SandboxAdminController(repository, broker);
 
     @Test
     void adminCanQueryOwnOrgSandboxesWithFilters() {
@@ -100,6 +104,50 @@ class SandboxAdminControllerTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .extracting("statusCode")
                 .isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void adminCanForceEvictOwnOrgSandbox() {
+        UUID orgId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID sandboxId = UUID.randomUUID();
+        SandboxEntity sandbox = sandbox(orgId, userId, "evicted", "e2b", -1);
+        sandbox.setId(sandboxId);
+        when(broker.forceEvict(orgId, sandboxId, "stuck"))
+                .thenReturn(
+                        Optional.of(new SandboxBroker.ForceEvictResult(sandbox, "active", true)));
+
+        var response =
+                controller
+                        .forceEvict(
+                                adminJwt(orgId),
+                                sandboxId.toString(),
+                                new SandboxAdminController.ForceEvictRequest("stuck"))
+                        .block();
+
+        assertThat(response).isNotNull();
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().id()).isEqualTo(sandboxId.toString());
+        assertThat(response.getBody().previousStatus()).isEqualTo("active");
+        assertThat(response.getBody().status()).isEqualTo("evicted");
+        assertThat(response.getBody().changed()).isTrue();
+        verify(broker).forceEvict(orgId, sandboxId, "stuck");
+    }
+
+    @Test
+    void forceEvictReturnsNotFoundForMissingSandboxInOrg() {
+        UUID orgId = UUID.randomUUID();
+        UUID sandboxId = UUID.randomUUID();
+        when(broker.forceEvict(orgId, sandboxId, null)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(
+                        () ->
+                                controller
+                                        .forceEvict(adminJwt(orgId), sandboxId.toString(), null)
+                                        .block())
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting("statusCode")
+                .isEqualTo(HttpStatus.NOT_FOUND);
     }
 
     private static SandboxEntity sandbox(

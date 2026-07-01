@@ -20,6 +20,7 @@ import io.agentscope.saas.core.persistence.repo.SandboxRepository;
 import io.agentscope.saas.core.persistence.repo.UserRepository;
 import io.agentscope.saas.core.ratelimit.QuotaExceededException;
 import java.time.OffsetDateTime;
+import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,6 +49,8 @@ public class SandboxBroker {
     private final SandboxRepository sandboxRepository;
     private final UserRepository userRepository;
     private final SandboxMetrics metrics;
+
+    public record ForceEvictResult(SandboxEntity sandbox, String previousStatus, boolean changed) {}
 
     public SandboxBroker(SandboxRepository sandboxRepository, UserRepository userRepository) {
         this(sandboxRepository, userRepository, SandboxMetrics.noop());
@@ -175,6 +178,13 @@ public class SandboxBroker {
                 .findById(sandboxId)
                 .ifPresent(
                         entity -> {
+                            if (!"active".equals(entity.getStatus())) {
+                                log.debug(
+                                        "Skipping release for sandbox id={} status={}",
+                                        sandboxId,
+                                        entity.getStatus());
+                                return;
+                            }
                             entity.setStatus("released");
                             entity.setLastUsedAt(OffsetDateTime.now());
                             sandboxRepository.save(entity);
@@ -183,6 +193,43 @@ public class SandboxBroker {
                                     "Released sandbox id={} externalId={}",
                                     sandboxId,
                                     entity.getExternalId());
+                        });
+    }
+
+    /**
+     * Tenant-scoped manual recovery path for leaked or stuck sandbox tracking rows. This releases
+     * quota pressure immediately by moving non-terminal rows to {@code evicted}; backend teardown is
+     * still owned by the sandbox provider/lifecycle layer.
+     */
+    @Transactional
+    public Optional<ForceEvictResult> forceEvict(UUID orgId, UUID sandboxId, String reason) {
+        return sandboxRepository
+                .findById(sandboxId)
+                .filter(entity -> orgId.equals(entity.getOrgId()))
+                .map(
+                        entity -> {
+                            String previousStatus = entity.getStatus();
+                            boolean changed =
+                                    !"released".equals(previousStatus)
+                                            && !"evicted".equals(previousStatus);
+                            if (changed) {
+                                OffsetDateTime now = OffsetDateTime.now();
+                                entity.setStatus("evicted");
+                                entity.setLastUsedAt(now);
+                                entity.setExpiresAt(now);
+                                sandboxRepository.save(entity);
+                                metrics.forceEvict(entity.getSandboxType());
+                                log.warn(
+                                        "Force-evicted sandbox id={} externalId={}"
+                                                + " previousStatus={} user={} org={} reason={}",
+                                        sandboxId,
+                                        entity.getExternalId(),
+                                        previousStatus,
+                                        entity.getUserId(),
+                                        entity.getOrgId(),
+                                        sanitizeReason(reason));
+                            }
+                            return new ForceEvictResult(entity, previousStatus, changed);
                         });
     }
 
@@ -228,5 +275,16 @@ public class SandboxBroker {
         }
         sandboxRepository.saveAll(expired);
         return expired.size();
+    }
+
+    private static String sanitizeReason(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return "unspecified";
+        }
+        String normalized = reason.trim().replaceAll("\\s+", " ");
+        if (normalized.length() <= 256) {
+            return normalized;
+        }
+        return normalized.substring(0, 256);
     }
 }

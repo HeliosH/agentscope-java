@@ -17,6 +17,7 @@ package io.agentscope.saas.app.sandbox;
 
 import io.agentscope.saas.core.persistence.entity.SandboxEntity;
 import io.agentscope.saas.core.persistence.repo.SandboxRepository;
+import io.agentscope.saas.sandbox.SandboxBroker;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -26,6 +27,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -46,9 +50,11 @@ public class SandboxAdminController {
     private static final int MAX_LIMIT = 500;
 
     private final SandboxRepository repository;
+    private final SandboxBroker broker;
 
-    public SandboxAdminController(SandboxRepository repository) {
+    public SandboxAdminController(SandboxRepository repository, SandboxBroker broker) {
         this.repository = repository;
+        this.broker = broker;
     }
 
     public record SandboxView(
@@ -64,6 +70,18 @@ public class SandboxAdminController {
             OffsetDateTime lastUsedAt,
             OffsetDateTime expiresAt,
             boolean expired) {}
+
+    public record ForceEvictRequest(String reason) {}
+
+    public record SandboxActionView(
+            String id,
+            String orgId,
+            String userId,
+            String sandboxType,
+            String externalId,
+            String previousStatus,
+            String status,
+            boolean changed) {}
 
     @GetMapping
     public Mono<ResponseEntity<List<SandboxView>>> list(
@@ -99,6 +117,27 @@ public class SandboxAdminController {
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
+    @PostMapping("/{sandboxId}/force-evict")
+    public Mono<ResponseEntity<SandboxActionView>> forceEvict(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String sandboxId,
+            @RequestBody(required = false) ForceEvictRequest request) {
+        requireAdmin(jwt);
+        UUID orgId = parseRequiredUuid("org_id", jwt.getClaimAsString("org_id"));
+        UUID parsedSandboxId = parseRequiredUuid("sandboxId", sandboxId);
+        String reason = request != null ? normalize(request.reason()) : null;
+        return Mono.fromCallable(
+                        () ->
+                                broker.forceEvict(orgId, parsedSandboxId, reason)
+                                        .map(result -> ResponseEntity.ok(toActionView(result)))
+                                        .orElseThrow(
+                                                () ->
+                                                        new ResponseStatusException(
+                                                                HttpStatus.NOT_FOUND,
+                                                                "sandbox not found")))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
     private static SandboxView toView(SandboxEntity entity, OffsetDateTime now) {
         OffsetDateTime expiresAt = entity.getExpiresAt();
         boolean expired =
@@ -116,6 +155,19 @@ public class SandboxAdminController {
                 entity.getLastUsedAt(),
                 expiresAt,
                 expired);
+    }
+
+    private static SandboxActionView toActionView(SandboxBroker.ForceEvictResult result) {
+        SandboxEntity entity = result.sandbox();
+        return new SandboxActionView(
+                entity.getId().toString(),
+                entity.getOrgId().toString(),
+                entity.getUserId().toString(),
+                entity.getSandboxType(),
+                entity.getExternalId(),
+                result.previousStatus(),
+                entity.getStatus(),
+                result.changed());
     }
 
     private static void requireAdmin(Jwt jwt) {

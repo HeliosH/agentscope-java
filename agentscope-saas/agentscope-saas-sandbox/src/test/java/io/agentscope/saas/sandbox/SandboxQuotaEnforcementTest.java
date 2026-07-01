@@ -18,7 +18,9 @@ package io.agentscope.saas.sandbox;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -44,6 +46,7 @@ class SandboxQuotaEnforcementTest {
 
     @Mock private SandboxRepository sandboxRepository;
     @Mock private UserRepository userRepository;
+    @Mock private SandboxMetrics metrics;
 
     private SandboxBroker broker;
 
@@ -52,7 +55,7 @@ class SandboxQuotaEnforcementTest {
 
     @BeforeEach
     void setUp() {
-        broker = new SandboxBroker(sandboxRepository, userRepository);
+        broker = new SandboxBroker(sandboxRepository, userRepository, metrics);
     }
 
     @Test
@@ -170,5 +173,65 @@ class SandboxQuotaEnforcementTest {
         broker.refreshLease(sandboxId, OffsetDateTime.now().plusSeconds(120));
 
         verify(sandboxRepository, never()).save(eq(released));
+    }
+
+    @Test
+    void releaseSkipsRowsThatAreAlreadyTerminal() {
+        UUID sandboxId = UUID.randomUUID();
+        SandboxEntity evicted = new SandboxEntity();
+        evicted.setId(sandboxId);
+        evicted.setStatus("evicted");
+        when(sandboxRepository.findById(sandboxId)).thenReturn(Optional.of(evicted));
+
+        broker.release(sandboxId);
+
+        assertEquals("evicted", evicted.getStatus());
+        verify(sandboxRepository, never()).save(eq(evicted));
+        verify(metrics, never()).release(anyString());
+    }
+
+    @Test
+    void forceEvictMarksTenantSandboxEvictedAndRecordsMetric() {
+        UUID sandboxId = UUID.randomUUID();
+        SandboxEntity active = new SandboxEntity();
+        active.setId(sandboxId);
+        active.setOrgId(ORG_ID);
+        active.setUserId(USER_ID);
+        active.setSandboxType("e2b");
+        active.setExternalId("external-1");
+        active.setStatus("active");
+        active.setExpiresAt(OffsetDateTime.now().plusSeconds(60));
+        when(sandboxRepository.findById(sandboxId)).thenReturn(Optional.of(active));
+        when(sandboxRepository.save(any(SandboxEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        var result = broker.forceEvict(ORG_ID, sandboxId, "stuck row");
+
+        assertTrue(result.isPresent());
+        assertEquals("active", result.get().previousStatus());
+        assertTrue(result.get().changed());
+        assertEquals("evicted", active.getStatus());
+        assertEquals(active.getLastUsedAt(), active.getExpiresAt());
+        verify(sandboxRepository).save(active);
+        verify(metrics).forceEvict("e2b");
+    }
+
+    @Test
+    void forceEvictDoesNotCrossTenantBoundary() {
+        UUID sandboxId = UUID.randomUUID();
+        SandboxEntity active = new SandboxEntity();
+        active.setId(sandboxId);
+        active.setOrgId(UUID.randomUUID());
+        active.setUserId(USER_ID);
+        active.setSandboxType("e2b");
+        active.setStatus("active");
+        when(sandboxRepository.findById(sandboxId)).thenReturn(Optional.of(active));
+
+        var result = broker.forceEvict(ORG_ID, sandboxId, "wrong tenant");
+
+        assertTrue(result.isEmpty());
+        assertEquals("active", active.getStatus());
+        verify(sandboxRepository, never()).save(any(SandboxEntity.class));
+        verify(metrics, never()).forceEvict(anyString());
     }
 }
