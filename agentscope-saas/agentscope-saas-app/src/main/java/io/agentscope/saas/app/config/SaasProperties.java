@@ -162,6 +162,15 @@ public class SaasProperties {
         /** Idle TTL in seconds before a sandbox is eligible for eviction. */
         private int idleTtlSeconds = 600;
 
+        /** Maximum seconds a request may wait for the same sandbox execution slot. <=0 disables. */
+        private int executionGuardMaxWaitSeconds = 60;
+
+        /** Redis execution guard lease TTL in seconds. Must exceed worst-case agent call duration. */
+        private int executionGuardLeaseTtlSeconds = 1800;
+
+        /** Redis execution guard retry interval in milliseconds. */
+        private int executionGuardRetryIntervalMillis = 500;
+
         // --- Cube-specific fields ---
 
         /** Cube API base URL (e.g. {@code http://cube-api.internal:8080}). Required when type=cube. */
@@ -400,6 +409,30 @@ public class SaasProperties {
 
         public void setIdleTtlSeconds(int idleTtlSeconds) {
             this.idleTtlSeconds = idleTtlSeconds;
+        }
+
+        public int getExecutionGuardMaxWaitSeconds() {
+            return executionGuardMaxWaitSeconds;
+        }
+
+        public void setExecutionGuardMaxWaitSeconds(int executionGuardMaxWaitSeconds) {
+            this.executionGuardMaxWaitSeconds = executionGuardMaxWaitSeconds;
+        }
+
+        public int getExecutionGuardLeaseTtlSeconds() {
+            return executionGuardLeaseTtlSeconds;
+        }
+
+        public void setExecutionGuardLeaseTtlSeconds(int executionGuardLeaseTtlSeconds) {
+            this.executionGuardLeaseTtlSeconds = executionGuardLeaseTtlSeconds;
+        }
+
+        public int getExecutionGuardRetryIntervalMillis() {
+            return executionGuardRetryIntervalMillis;
+        }
+
+        public void setExecutionGuardRetryIntervalMillis(int executionGuardRetryIntervalMillis) {
+            this.executionGuardRetryIntervalMillis = executionGuardRetryIntervalMillis;
         }
 
         public String getCubeApiUrl() {

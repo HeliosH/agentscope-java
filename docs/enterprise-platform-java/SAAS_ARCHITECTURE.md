@@ -980,7 +980,10 @@ public class TenantTraceMiddleware implements MiddlewareBase {
 |--------|------|------|------|
 | `saas.sandbox.pool.size` | Gauge | type, status | 当前沙箱池状态 |
 | `saas.sandbox.acquire.duration` | Timer | type, source | 沙箱 acquire+start 端到端耗时 |
-| `saas.sandbox.request.queue_depth` | Gauge | type | 请求队列深度 |
+| `saas.sandbox.request.queue_depth` | Gauge | type, scope | 等待 execution guard 的请求数 |
+| `saas.sandbox.execution.active` | Gauge | type, scope | 正在持有 execution guard 的请求数 |
+| `saas.sandbox.queue.wait.duration` | Timer | type, scope, outcome | 等待 execution guard 的耗时 |
+| `saas.sandbox.queue.timeouts` | Counter | type, scope | execution guard 等待超时次数 |
 | `saas.agent.call.duration` | Timer | model | Agent 调用耗时 |
 | `saas.llm.token.usage` | Counter | model, type | LLM token 消耗 |
 | `saas.channel.messages` | Counter | channel_type, direction | 频道消息数 |

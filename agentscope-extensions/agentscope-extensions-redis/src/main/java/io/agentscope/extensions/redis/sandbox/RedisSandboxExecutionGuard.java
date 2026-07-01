@@ -16,12 +16,14 @@
 package io.agentscope.extensions.redis.sandbox;
 
 import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
+import io.agentscope.harness.agent.sandbox.SandboxExecutionTimeoutException;
 import io.agentscope.harness.agent.sandbox.SandboxIsolationKey;
 import io.agentscope.harness.agent.sandbox.SandboxLease;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.UnifiedJedis;
@@ -36,7 +38,7 @@ import redis.clients.jedis.params.SetParams;
  * <ol>
  *   <li>{@link #tryEnter} writes a unique token to a Redis key with {@code SET NX PX <ttlMs>}.
  *       If the key is already held by another caller, it retries at {@code retryInterval} intervals
- *       until the slot becomes free or the thread is interrupted.
+ *       until the slot becomes free, {@code maxWait} is reached, or the thread is interrupted.
  *   <li>The returned {@link SandboxLease#close()} executes a Lua CAS script that deletes the key
  *       only when the stored value equals the caller's token, preventing another holder's lock from
  *       being released by mistake.
@@ -111,12 +113,14 @@ public final class RedisSandboxExecutionGuard implements SandboxExecutionGuard {
     private final String keyPrefix;
     private final long leaseTtlMs;
     private final long retryIntervalMs;
+    private final Long maxWaitMs;
 
     private RedisSandboxExecutionGuard(Builder builder) {
         this.jedis = builder.jedis;
         this.keyPrefix = builder.keyPrefix;
         this.leaseTtlMs = builder.leaseTtlMs;
         this.retryIntervalMs = builder.retryIntervalMs;
+        this.maxWaitMs = builder.maxWaitMs;
     }
 
     /**
@@ -142,8 +146,12 @@ public final class RedisSandboxExecutionGuard implements SandboxExecutionGuard {
         SetParams params = SetParams.setParams().nx().px(leaseTtlMs);
 
         log.debug(
-                "[sandbox-guard] Acquiring Redis lease for key={} ttlMs={}", redisKey, leaseTtlMs);
+                "[sandbox-guard] Acquiring Redis lease for key={} ttlMs={} maxWaitMs={}",
+                redisKey,
+                leaseTtlMs,
+                maxWaitMs != null ? maxWaitMs : "unbounded");
 
+        long startedAt = System.nanoTime();
         while (true) {
             String result = jedis.set(redisKey, token, params);
             if ("OK".equals(result)) {
@@ -154,7 +162,15 @@ public final class RedisSandboxExecutionGuard implements SandboxExecutionGuard {
                 throw new InterruptedException(
                         "Interrupted while waiting for sandbox execution guard on " + redisKey);
             }
-            Thread.sleep(retryIntervalMs);
+            if (maxWaitMs != null) {
+                long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+                if (elapsedMs >= maxWaitMs) {
+                    throw new SandboxExecutionTimeoutException(key, Duration.ofMillis(maxWaitMs));
+                }
+                Thread.sleep(Math.min(retryIntervalMs, Math.max(1L, maxWaitMs - elapsedMs)));
+            } else {
+                Thread.sleep(retryIntervalMs);
+            }
         }
     }
 
@@ -197,6 +213,7 @@ public final class RedisSandboxExecutionGuard implements SandboxExecutionGuard {
         private String keyPrefix = DEFAULT_KEY_PREFIX;
         private long leaseTtlMs = DEFAULT_LEASE_TTL.toMillis();
         private long retryIntervalMs = DEFAULT_RETRY_INTERVAL.toMillis();
+        private Long maxWaitMs;
 
         private Builder(UnifiedJedis jedis) {
             this.jedis = Objects.requireNonNull(jedis, "jedis must not be null");
@@ -251,6 +268,24 @@ public final class RedisSandboxExecutionGuard implements SandboxExecutionGuard {
                 throw new IllegalArgumentException("retryInterval must be positive");
             }
             this.retryIntervalMs = interval.toMillis();
+            return this;
+        }
+
+        /**
+         * Sets the maximum time a caller waits for an occupied sandbox slot.
+         *
+         * <p>Default is unbounded for backwards compatibility. Production SaaS deployments should
+         * configure a finite value so duplicate turns or hot users do not hold request threads
+         * indefinitely.
+         *
+         * @param maxWait maximum wait duration; must be positive
+         */
+        public Builder maxWait(Duration maxWait) {
+            Objects.requireNonNull(maxWait, "maxWait must not be null");
+            if (maxWait.isNegative() || maxWait.isZero()) {
+                throw new IllegalArgumentException("maxWait must be positive");
+            }
+            this.maxWaitMs = Math.max(1L, maxWait.toMillis());
             return this;
         }
 

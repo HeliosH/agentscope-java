@@ -98,6 +98,65 @@ class SandboxMetricsTest {
     }
 
     @Test
+    void recordsQueueDepthActiveExecutionWaitAndTimeoutMetrics() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        SandboxMetrics metrics = new SandboxMetrics(registry);
+
+        metrics.incrementQueueDepth("E2B", "USER");
+        metrics.incrementActiveExecution("E2B", "USER");
+        metrics.recordQueueWait("E2B", "USER", "ACQUIRED", TimeUnit.MILLISECONDS.toNanos(7));
+        metrics.recordQueueTimeout("E2B", "USER");
+
+        assertThat(
+                        registry.get("saas.sandbox.request.queue_depth")
+                                .tag("type", "e2b")
+                                .tag("scope", "user")
+                                .gauge()
+                                .value())
+                .isEqualTo(1.0d);
+        assertThat(
+                        registry.get("saas.sandbox.execution.active")
+                                .tag("type", "e2b")
+                                .tag("scope", "user")
+                                .gauge()
+                                .value())
+                .isEqualTo(1.0d);
+        assertThat(
+                        registry.get("saas.sandbox.queue.wait.duration")
+                                .tag("type", "e2b")
+                                .tag("scope", "user")
+                                .tag("outcome", "acquired")
+                                .timer()
+                                .count())
+                .isEqualTo(1);
+        assertThat(
+                        registry.get("saas.sandbox.queue.timeouts")
+                                .tag("type", "e2b")
+                                .tag("scope", "user")
+                                .counter()
+                                .count())
+                .isEqualTo(1.0d);
+
+        metrics.decrementQueueDepth("E2B", "USER");
+        metrics.decrementActiveExecution("E2B", "USER");
+
+        assertThat(
+                        registry.get("saas.sandbox.request.queue_depth")
+                                .tag("type", "e2b")
+                                .tag("scope", "user")
+                                .gauge()
+                                .value())
+                .isEqualTo(0.0d);
+        assertThat(
+                        registry.get("saas.sandbox.execution.active")
+                                .tag("type", "e2b")
+                                .tag("scope", "user")
+                                .gauge()
+                                .value())
+                .isEqualTo(0.0d);
+    }
+
+    @Test
     void springConstructsMetricsWithMeterRegistry() {
         try (AnnotationConfigApplicationContext ctx = new AnnotationConfigApplicationContext()) {
             ctx.registerBean(SimpleMeterRegistry.class);
@@ -125,6 +184,12 @@ class SandboxMetricsTest {
         metrics.workspaceProjectionSucceeded("e2b");
         metrics.backendReleaseFailed("e2b");
         metrics.recordAcquireStart("e2b", "create", 1);
+        metrics.incrementQueueDepth("e2b", "user");
+        metrics.decrementQueueDepth("e2b", "user");
+        metrics.incrementActiveExecution("e2b", "user");
+        metrics.decrementActiveExecution("e2b", "user");
+        metrics.recordQueueWait("e2b", "user", "acquired", 1);
+        metrics.recordQueueTimeout("e2b", "user");
         metrics.recordRun("e2b", "on_complete", 1);
     }
 }

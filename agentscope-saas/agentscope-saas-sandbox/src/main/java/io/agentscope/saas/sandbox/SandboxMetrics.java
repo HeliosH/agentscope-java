@@ -18,7 +18,10 @@ package io.agentscope.saas.sandbox;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -29,6 +32,7 @@ public class SandboxMetrics {
     private static final String UNKNOWN = "unknown";
 
     private final MeterRegistry registry;
+    private final ConcurrentMap<GaugeKey, AtomicInteger> gauges = new ConcurrentHashMap<>();
 
     @Autowired
     public SandboxMetrics(MeterRegistry registry) {
@@ -111,6 +115,80 @@ public class SandboxMetrics {
                 .record(durationNanos, TimeUnit.NANOSECONDS);
     }
 
+    public void incrementQueueDepth(String sandboxType, String scope) {
+        AtomicInteger gauge =
+                gauge(
+                        "saas.sandbox.request.queue_depth",
+                        "Sandbox execution requests waiting for a guard slot",
+                        sandboxType,
+                        scope);
+        if (gauge != null) {
+            gauge.incrementAndGet();
+        }
+    }
+
+    public void decrementQueueDepth(String sandboxType, String scope) {
+        AtomicInteger gauge =
+                gauge(
+                        "saas.sandbox.request.queue_depth",
+                        "Sandbox execution requests waiting for a guard slot",
+                        sandboxType,
+                        scope);
+        if (gauge != null) {
+            gauge.updateAndGet(value -> Math.max(0, value - 1));
+        }
+    }
+
+    public void incrementActiveExecution(String sandboxType, String scope) {
+        AtomicInteger gauge =
+                gauge(
+                        "saas.sandbox.execution.active",
+                        "Sandbox executions currently holding a guard slot",
+                        sandboxType,
+                        scope);
+        if (gauge != null) {
+            gauge.incrementAndGet();
+        }
+    }
+
+    public void decrementActiveExecution(String sandboxType, String scope) {
+        AtomicInteger gauge =
+                gauge(
+                        "saas.sandbox.execution.active",
+                        "Sandbox executions currently holding a guard slot",
+                        sandboxType,
+                        scope);
+        if (gauge != null) {
+            gauge.updateAndGet(value -> Math.max(0, value - 1));
+        }
+    }
+
+    public void recordQueueWait(
+            String sandboxType, String scope, String outcome, long durationNanos) {
+        if (registry == null || durationNanos < 0) {
+            return;
+        }
+        Timer.builder("saas.sandbox.queue.wait.duration")
+                .description("Time spent waiting for a sandbox execution guard slot")
+                .tag("type", normalize(sandboxType))
+                .tag("scope", normalize(scope))
+                .tag("outcome", normalize(outcome))
+                .register(registry)
+                .record(durationNanos, TimeUnit.NANOSECONDS);
+    }
+
+    public void recordQueueTimeout(String sandboxType, String scope) {
+        if (registry == null) {
+            return;
+        }
+        io.micrometer.core.instrument.Counter.builder("saas.sandbox.queue.timeouts")
+                .description("Sandbox execution guard wait timeouts")
+                .tag("type", normalize(sandboxType))
+                .tag("scope", normalize(scope))
+                .register(registry)
+                .increment();
+    }
+
     public void recordRun(String sandboxType, String signalType, long durationNanos) {
         if (registry == null || durationNanos < 0) {
             return;
@@ -135,10 +213,31 @@ public class SandboxMetrics {
                 .increment();
     }
 
+    private AtomicInteger gauge(String name, String description, String sandboxType, String scope) {
+        if (registry == null) {
+            return null;
+        }
+        String normalizedType = normalize(sandboxType);
+        String normalizedScope = normalize(scope);
+        return gauges.computeIfAbsent(
+                new GaugeKey(name, normalizedType, normalizedScope),
+                key -> {
+                    AtomicInteger value = new AtomicInteger();
+                    io.micrometer.core.instrument.Gauge.builder(name, value, AtomicInteger::get)
+                            .description(description)
+                            .tag("type", normalizedType)
+                            .tag("scope", normalizedScope)
+                            .register(registry);
+                    return value;
+                });
+    }
+
     private static String normalize(String value) {
         if (value == null || value.isBlank()) {
             return UNKNOWN;
         }
         return value.trim().toLowerCase(Locale.ROOT);
     }
+
+    private record GaugeKey(String name, String type, String scope) {}
 }

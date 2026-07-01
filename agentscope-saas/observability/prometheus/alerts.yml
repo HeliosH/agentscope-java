@@ -41,6 +41,26 @@ groups:
           summary: "Sandbox acquire failures"
           description: "Sandbox type {{ $labels.type }} failed to acquire {{ $value }} time(s) in 10m. Check provider quota, template availability, and network reachability."
 
+      - alert: SaasSandboxQueueTimeouts
+        expr: sum by (type, scope) (increase(saas_sandbox_queue_timeouts_total[10m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: agentscope-saas
+        annotations:
+          summary: "Sandbox execution queue timeouts"
+          description: "Sandbox type {{ $labels.type }} scope {{ $labels.scope }} timed out {{ $value }} request(s) while waiting for an execution slot in 10m. Check duplicate turns, long-running calls, and sandbox capacity."
+
+      - alert: SaasSandboxQueueDepthHigh
+        expr: sum by (type, scope) (saas_sandbox_request_queue_depth) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: agentscope-saas
+        annotations:
+          summary: "Sandbox execution queue depth is high"
+          description: "Sandbox type {{ $labels.type }} scope {{ $labels.scope }} has {{ $value }} request(s) waiting for execution slots for 5m. Review per-user concurrency, model latency, and sandbox runtime capacity."
+
       - alert: SaasSandboxQuotaRejectedSpike
         expr: sum by (type) (increase(saas_sandbox_lifecycle_events_total{event="quota_rejected"}[15m])) > 10
         for: 5m

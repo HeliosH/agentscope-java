@@ -66,6 +66,9 @@ saas:
     memory-limit-bytes: ${SAAS_SANDBOX_MEMORY_BYTES:}
     cpu-count: ${SAAS_SANDBOX_CPU_COUNT:}
     idle-ttl-seconds: ${SAAS_SANDBOX_IDLE_TTL:600}
+    execution-guard-max-wait-seconds: ${SAAS_SANDBOX_GUARD_MAX_WAIT_SECONDS:60}
+    execution-guard-lease-ttl-seconds: ${SAAS_SANDBOX_GUARD_LEASE_TTL_SECONDS:1800}
+    execution-guard-retry-interval-millis: ${SAAS_SANDBOX_GUARD_RETRY_INTERVAL_MS:500}
     cube-api-url: ${SAAS_SANDBOX_CUBE_API_URL:${CUBE_API_URL:http://localhost:8080}}
     cube-api-key: ${SAAS_SANDBOX_CUBE_API_KEY:${CUBE_API_KEY:}}
     cube-template-id: ${SAAS_SANDBOX_CUBE_TEMPLATE_ID:${CUBE_TEMPLATE_ID:}}

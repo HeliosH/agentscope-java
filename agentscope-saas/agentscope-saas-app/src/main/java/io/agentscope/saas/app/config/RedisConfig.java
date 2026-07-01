@@ -25,6 +25,8 @@ import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
 import io.agentscope.saas.core.ratelimit.InMemoryRateLimiter;
 import io.agentscope.saas.core.ratelimit.RateLimiter;
 import io.agentscope.saas.core.ratelimit.RedisRateLimiter;
+import io.agentscope.saas.sandbox.MeteredSandboxExecutionGuard;
+import io.agentscope.saas.sandbox.SandboxMetrics;
 import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -103,12 +105,30 @@ public class RedisConfig {
     @Bean
     @ConditionalOnProperty(prefix = "saas.redis", name = "enabled", havingValue = "true")
     public SandboxExecutionGuard sandboxExecutionGuard(
-            SaasProperties properties, UnifiedJedis jedis) {
-        log.info("Creating Redis-backed sandbox execution guard");
-        return RedisSandboxExecutionGuard.builder(jedis)
-                .keyPrefix(properties.getRedis().getKeyPrefix() + "sandbox:lock:")
-                .leaseTtl(Duration.ofMinutes(30))
-                .retryInterval(Duration.ofMillis(500))
-                .build();
+            SaasProperties properties, UnifiedJedis jedis, SandboxMetrics sandboxMetrics) {
+        SaasProperties.Sandbox sandbox = properties.getSandbox();
+        RedisSandboxExecutionGuard.Builder builder =
+                RedisSandboxExecutionGuard.builder(jedis)
+                        .keyPrefix(properties.getRedis().getKeyPrefix() + "sandbox:lock:")
+                        .leaseTtl(
+                                Duration.ofSeconds(
+                                        Math.max(1, sandbox.getExecutionGuardLeaseTtlSeconds())))
+                        .retryInterval(
+                                Duration.ofMillis(
+                                        Math.max(
+                                                1,
+                                                sandbox.getExecutionGuardRetryIntervalMillis())));
+        if (sandbox.getExecutionGuardMaxWaitSeconds() > 0) {
+            builder.maxWait(Duration.ofSeconds(sandbox.getExecutionGuardMaxWaitSeconds()));
+        }
+        log.info(
+                "Creating Redis-backed sandbox execution guard (leaseTtl={}s retry={}ms"
+                        + " maxWait={}s)",
+                Math.max(1, sandbox.getExecutionGuardLeaseTtlSeconds()),
+                Math.max(1, sandbox.getExecutionGuardRetryIntervalMillis()),
+                sandbox.getExecutionGuardMaxWaitSeconds() > 0
+                        ? sandbox.getExecutionGuardMaxWaitSeconds()
+                        : "unbounded");
+        return new MeteredSandboxExecutionGuard(builder.build(), sandbox.getType(), sandboxMetrics);
     }
 }
