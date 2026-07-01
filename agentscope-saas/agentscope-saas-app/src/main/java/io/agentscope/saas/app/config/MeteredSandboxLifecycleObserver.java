@@ -18,16 +18,32 @@ package io.agentscope.saas.app.config;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.sandbox.SandboxAcquireResult.AcquisitionSource;
 import io.agentscope.harness.agent.sandbox.SandboxLifecycleObserver;
+import io.agentscope.saas.core.tenant.TenantContextHolder;
+import io.agentscope.saas.sandbox.SandboxBroker;
+import io.agentscope.saas.sandbox.SandboxExternalIds;
 import io.agentscope.saas.sandbox.SandboxMetrics;
+import io.agentscope.saas.sandbox.SandboxTrackingContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 final class MeteredSandboxLifecycleObserver implements SandboxLifecycleObserver {
 
+    private static final Logger log =
+            LoggerFactory.getLogger(MeteredSandboxLifecycleObserver.class);
+
     private final String sandboxType;
     private final SandboxMetrics metrics;
+    private final SandboxBroker broker;
 
     MeteredSandboxLifecycleObserver(String sandboxType, SandboxMetrics metrics) {
+        this(sandboxType, metrics, null);
+    }
+
+    MeteredSandboxLifecycleObserver(
+            String sandboxType, SandboxMetrics metrics, SandboxBroker broker) {
         this.sandboxType = sandboxType;
         this.metrics = metrics != null ? metrics : SandboxMetrics.noop();
+        this.broker = broker;
     }
 
     @Override
@@ -40,6 +56,7 @@ final class MeteredSandboxLifecycleObserver implements SandboxLifecycleObserver 
             RuntimeContext runtimeContext, AcquisitionSource source, long durationNanos) {
         metrics.recordAcquireStart(
                 sandboxType, source != null ? source.metricTag() : null, durationNanos);
+        updateExternalId(runtimeContext);
     }
 
     @Override
@@ -72,5 +89,32 @@ final class MeteredSandboxLifecycleObserver implements SandboxLifecycleObserver 
     @Override
     public void onBackendReleaseFailed(RuntimeContext runtimeContext, Exception error) {
         metrics.backendReleaseFailed(sandboxType);
+    }
+
+    private void updateExternalId(RuntimeContext runtimeContext) {
+        if (broker == null || runtimeContext == null) {
+            return;
+        }
+        SandboxTrackingContext tracking = runtimeContext.get(SandboxTrackingContext.class);
+        if (tracking == null || tracking.trackingId() == null || tracking.orgId() == null) {
+            return;
+        }
+        SandboxExternalIds.fromRuntimeContext(runtimeContext)
+                .ifPresent(externalId -> updateExternalId(tracking, externalId));
+    }
+
+    private void updateExternalId(SandboxTrackingContext tracking, String externalId) {
+        String previous = TenantContextHolder.getOrgId();
+        TenantContextHolder.setOrgId(tracking.orgId());
+        try {
+            broker.updateExternalId(tracking.trackingId(), externalId);
+        } catch (Exception e) {
+            log.warn(
+                    "Failed to update sandbox tracking externalId for row {}: {}",
+                    tracking.trackingId(),
+                    e.getMessage());
+        } finally {
+            TenantContextHolder.setOrgId(previous);
+        }
     }
 }

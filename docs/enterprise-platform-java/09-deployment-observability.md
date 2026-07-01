@@ -130,8 +130,8 @@ Sandbox Pool Overview / Request Latency(p50/p95/p99) / Token Usage by Org / Chan
 
 ### 4.5 运维查询
 
-`GET /api/admin/sandboxes` 已提供 org-admin 级 sandbox inventory，支持 `userId`、`status`、`sandboxType`、`expiredOnly`、`limit` 过滤。该接口只从 JWT 读取 org scope，不能通过参数跨租户查询，适合巡检 active/expired tracking row 和资源泄漏。
-`POST /api/admin/sandboxes/{sandboxId}/force-evict` 提供人工恢复通道：仅能操作 JWT 所属 org 的 sandbox tracking row，将非终态记录标记为 `evicted` 并释放配额压力，同时记录 `force_evicted` lifecycle metric。当前该接口不直接调用 E2B/Cube backend stop，底层资源仍由正常 release 链路或 provider/infra GC 清理。
+`GET /api/admin/sandboxes` 已提供 org-admin 级 sandbox inventory，支持 `userId`、`status`、`sandboxType`、`expiredOnly`、`limit` 过滤。该接口只从 JWT 读取 org scope，不能通过参数跨租户查询，适合巡检 active/expired tracking row 和资源泄漏。`externalId` 优先记录真实 provider sandbox id（E2B/Cube/Daytona 的 `sandboxId`、Docker 的 `containerId`），拿不到时才回退到 session id。
+`POST /api/admin/sandboxes/{sandboxId}/force-evict` 提供人工恢复通道：仅能操作 JWT 所属 org 的 sandbox tracking row，将非终态记录标记为 `evicted` 并释放配额压力，同时记录 `force_evicted` lifecycle metric。请求默认 `terminateBackend=true`，会按当前配置的 E2B/Cube provider 对 `externalId` 做 best-effort 后端终止；响应里的 `backendTerminationStatus` 明确区分 `succeeded`、`failed`、`unsupported`、`no_external_id`、`skipped`。tracking row 状态变更与后端终止结果解耦，后端失败不会回滚配额释放。
 
 ### 4.6 健康检查
 ```java

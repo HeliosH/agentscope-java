@@ -16,10 +16,20 @@
 package io.agentscope.saas.app.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
+import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxAcquireResult.AcquisitionSource;
+import io.agentscope.harness.agent.sandbox.SandboxState;
+import io.agentscope.saas.core.tenant.TenantContextHolder;
+import io.agentscope.saas.sandbox.SandboxBroker;
 import io.agentscope.saas.sandbox.SandboxMetrics;
+import io.agentscope.saas.sandbox.SandboxTrackingContext;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
@@ -41,5 +51,52 @@ class MeteredSandboxLifecycleObserverTest {
                                 .timer()
                                 .count())
                 .isEqualTo(1);
+    }
+
+    @Test
+    void updatesTrackingRowWithProviderSandboxIdAfterAcquireSuccess() {
+        UUID trackingId = UUID.randomUUID();
+        String orgId = "00000000-0000-0000-0000-000000000001";
+        SandboxBroker broker = mock(SandboxBroker.class);
+        doAnswer(
+                        invocation -> {
+                            assertThat(TenantContextHolder.getOrgId()).isEqualTo(orgId);
+                            return null;
+                        })
+                .when(broker)
+                .updateExternalId(trackingId, "provider-sandbox-1");
+        ProviderState state = new ProviderState();
+        state.setSessionId("sess-1");
+        state.setSandboxId("provider-sandbox-1");
+        Sandbox sandbox = mock(Sandbox.class);
+        org.mockito.Mockito.when(sandbox.getState()).thenReturn(state);
+        RuntimeContext ctx =
+                RuntimeContext.builder()
+                        .put(
+                                SandboxTrackingContext.class,
+                                new SandboxTrackingContext(trackingId, orgId))
+                        .put(Sandbox.class, sandbox)
+                        .build();
+
+        MeteredSandboxLifecycleObserver observer =
+                new MeteredSandboxLifecycleObserver(
+                        "e2b", new SandboxMetrics(new SimpleMeterRegistry()), broker);
+
+        observer.onAcquireStartSucceeded(ctx, AcquisitionSource.CREATE, 1L);
+
+        verify(broker).updateExternalId(trackingId, "provider-sandbox-1");
+        assertThat(TenantContextHolder.getOrgId()).isNull();
+    }
+
+    private static final class ProviderState extends SandboxState {
+        private String sandboxId;
+
+        public String getSandboxId() {
+            return sandboxId;
+        }
+
+        void setSandboxId(String sandboxId) {
+            this.sandboxId = sandboxId;
+        }
     }
 }

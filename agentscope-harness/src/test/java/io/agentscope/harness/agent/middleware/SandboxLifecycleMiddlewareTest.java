@@ -141,6 +141,7 @@ class SandboxLifecycleMiddlewareTest {
         assertEquals(List.of("acquire_start_succeeded:create"), observer.events);
         assertEquals(1, observer.acquireDurations.size());
         assertTrue(observer.acquireDurations.get(0) >= 0);
+        assertEquals(List.of(sandbox), observer.acquireSandboxes);
     }
 
     @Test
@@ -233,6 +234,7 @@ class SandboxLifecycleMiddlewareTest {
 
         private final List<String> events = new ArrayList<>();
         private final List<Long> acquireDurations = new ArrayList<>();
+        private final List<Sandbox> acquireSandboxes = new ArrayList<>();
 
         @Override
         public void onAcquireStartFailure(RuntimeContext runtimeContext, Exception error) {
@@ -244,6 +246,7 @@ class SandboxLifecycleMiddlewareTest {
                 RuntimeContext runtimeContext, AcquisitionSource source, long durationNanos) {
             events.add("acquire_start_succeeded:" + source.metricTag());
             acquireDurations.add(durationNanos);
+            acquireSandboxes.add(runtimeContext.get(Sandbox.class));
         }
 
         @Override

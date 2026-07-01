@@ -254,6 +254,31 @@ public class SandboxBroker {
     }
 
     /**
+     * Updates the provider-owned backend id once the framework has actually started the sandbox.
+     * Registration happens before framework acquire, so the initial value may be the session id.
+     */
+    @Transactional
+    public void updateExternalId(UUID sandboxId, String externalId) {
+        if (sandboxId == null || externalId == null || externalId.isBlank()) {
+            return;
+        }
+        String normalized = externalId.trim();
+        sandboxRepository
+                .findById(sandboxId)
+                .ifPresent(
+                        entity -> {
+                            if (!"active".equals(entity.getStatus())
+                                    || normalized.equals(entity.getExternalId())) {
+                                return;
+                            }
+                            entity.setExternalId(normalized);
+                            entity.setLastUsedAt(OffsetDateTime.now());
+                            sandboxRepository.save(entity);
+                            log.debug("Updated sandbox id={} externalId={}", sandboxId, normalized);
+                        });
+    }
+
+    /**
      * Finds and marks expired sandboxes as evicted. Called periodically by
      * {@link SandboxEvictionJob}.
      *

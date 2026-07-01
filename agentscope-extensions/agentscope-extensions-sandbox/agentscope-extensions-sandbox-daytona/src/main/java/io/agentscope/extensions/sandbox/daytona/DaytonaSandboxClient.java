@@ -18,6 +18,7 @@ package io.agentscope.extensions.sandbox.daytona;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
+import io.agentscope.harness.agent.sandbox.SandboxErrorCode;
 import io.agentscope.harness.agent.sandbox.SandboxException;
 import io.agentscope.harness.agent.sandbox.SandboxState;
 import io.agentscope.harness.agent.sandbox.WorkspaceSpec;
@@ -87,7 +88,17 @@ public class DaytonaSandboxClient implements SandboxClient<DaytonaSandboxClientO
     }
 
     @Override
-    public void delete(Sandbox sandbox) {}
+    public void delete(Sandbox sandbox) {
+        if (sandbox == null) {
+            return;
+        }
+        try {
+            sandbox.shutdown();
+        } catch (Exception e) {
+            throw new SandboxException.SandboxRuntimeException(
+                    SandboxErrorCode.WORKSPACE_START_ERROR, "Failed to delete Daytona sandbox", e);
+        }
+    }
 
     @Override
     public String serializeState(SandboxState state) {

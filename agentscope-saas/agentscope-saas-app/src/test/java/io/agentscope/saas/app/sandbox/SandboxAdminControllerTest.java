@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -40,8 +41,9 @@ class SandboxAdminControllerTest {
 
     private final SandboxRepository repository = mock(SandboxRepository.class);
     private final SandboxBroker broker = mock(SandboxBroker.class);
+    private final SandboxBackendTerminator terminator = mock(SandboxBackendTerminator.class);
     private final SandboxAdminController controller =
-            new SandboxAdminController(repository, broker);
+            new SandboxAdminController(repository, broker, terminator);
 
     @Test
     void adminCanQueryOwnOrgSandboxesWithFilters() {
@@ -116,6 +118,8 @@ class SandboxAdminControllerTest {
         when(broker.forceEvict(orgId, sandboxId, "stuck"))
                 .thenReturn(
                         Optional.of(new SandboxBroker.ForceEvictResult(sandbox, "active", true)));
+        when(terminator.terminate("e2b", "external-1"))
+                .thenReturn(SandboxBackendTerminator.TerminationResult.success());
 
         var response =
                 controller
@@ -131,7 +135,35 @@ class SandboxAdminControllerTest {
         assertThat(response.getBody().previousStatus()).isEqualTo("active");
         assertThat(response.getBody().status()).isEqualTo("evicted");
         assertThat(response.getBody().changed()).isTrue();
+        assertThat(response.getBody().backendTerminationStatus()).isEqualTo("succeeded");
         verify(broker).forceEvict(orgId, sandboxId, "stuck");
+        verify(terminator).terminate("e2b", "external-1");
+    }
+
+    @Test
+    void forceEvictCanSkipBackendTerminationByRequest() {
+        UUID orgId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID sandboxId = UUID.randomUUID();
+        SandboxEntity sandbox = sandbox(orgId, userId, "evicted", "e2b", -1);
+        sandbox.setId(sandboxId);
+        when(broker.forceEvict(orgId, sandboxId, "tracking only"))
+                .thenReturn(
+                        Optional.of(new SandboxBroker.ForceEvictResult(sandbox, "active", true)));
+
+        var response =
+                controller
+                        .forceEvict(
+                                adminJwt(orgId),
+                                sandboxId.toString(),
+                                new SandboxAdminController.ForceEvictRequest(
+                                        "tracking only", false))
+                        .block();
+
+        assertThat(response).isNotNull();
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().backendTerminationStatus()).isEqualTo("skipped");
+        verify(terminator, never()).terminate(any(), any());
     }
 
     @Test

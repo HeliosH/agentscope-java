@@ -18,6 +18,8 @@ package io.agentscope.extensions.sandbox.cube;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
+import io.agentscope.harness.agent.sandbox.SandboxErrorCode;
+import io.agentscope.harness.agent.sandbox.SandboxException;
 import io.agentscope.harness.agent.sandbox.SandboxState;
 import io.agentscope.harness.agent.sandbox.WorkspaceSpec;
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
@@ -85,7 +87,15 @@ public class CubeSandboxClient implements SandboxClient<CubeSandboxClientOptions
 
     @Override
     public void delete(Sandbox sandbox) {
-        // No-op; Cube server handles cleanup via TTL
+        if (sandbox == null) {
+            return;
+        }
+        try {
+            sandbox.shutdown();
+        } catch (Exception e) {
+            throw new SandboxException.SandboxRuntimeException(
+                    SandboxErrorCode.WORKSPACE_START_ERROR, "Failed to delete Cube sandbox", e);
+        }
     }
 
     @Override

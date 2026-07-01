@@ -122,9 +122,10 @@ public class AgentConfig {
         if (properties.getSandbox().isEnabled() && sandboxSpec != null) {
             SandboxMetrics sandboxMetrics =
                     sandboxMetricsProvider.getIfAvailable(SandboxMetrics::noop);
+            SandboxBroker broker = sandboxBrokerProvider.getIfAvailable();
             builder.sandboxLifecycleObserver(
                     new MeteredSandboxLifecycleObserver(
-                            properties.getSandbox().getType(), sandboxMetrics));
+                            properties.getSandbox().getType(), sandboxMetrics, broker));
             // F3-S2: when a BaseStore (Redis/Oss) is available, wire a remote projection so
             // workspace files (MEMORY.md, skills, …) stay readable/writable between calls. Without
             // this, SandboxBackedFilesystem throws "No active sandbox" on out-of-call IO (the
@@ -143,7 +144,6 @@ public class AgentConfig {
                                 + " workspace IO will throw 'No active sandbox'");
             }
             builder.filesystem(sandboxSpec);
-            SandboxBroker broker = sandboxBrokerProvider.getIfAvailable();
             if (broker != null) {
                 builder.middleware(new SandboxQuotaMiddleware(broker));
                 builder.middleware(

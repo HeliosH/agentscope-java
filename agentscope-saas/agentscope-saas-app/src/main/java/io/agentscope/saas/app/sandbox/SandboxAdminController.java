@@ -51,10 +51,15 @@ public class SandboxAdminController {
 
     private final SandboxRepository repository;
     private final SandboxBroker broker;
+    private final SandboxBackendTerminator terminator;
 
-    public SandboxAdminController(SandboxRepository repository, SandboxBroker broker) {
+    public SandboxAdminController(
+            SandboxRepository repository,
+            SandboxBroker broker,
+            SandboxBackendTerminator terminator) {
         this.repository = repository;
         this.broker = broker;
+        this.terminator = terminator != null ? terminator : SandboxBackendTerminator.unsupported();
     }
 
     public record SandboxView(
@@ -71,7 +76,11 @@ public class SandboxAdminController {
             OffsetDateTime expiresAt,
             boolean expired) {}
 
-    public record ForceEvictRequest(String reason) {}
+    public record ForceEvictRequest(String reason, Boolean terminateBackend) {
+        public ForceEvictRequest(String reason) {
+            this(reason, null);
+        }
+    }
 
     public record SandboxActionView(
             String id,
@@ -81,7 +90,9 @@ public class SandboxAdminController {
             String externalId,
             String previousStatus,
             String status,
-            boolean changed) {}
+            boolean changed,
+            String backendTerminationStatus,
+            String backendTerminationMessage) {}
 
     @GetMapping
     public Mono<ResponseEntity<List<SandboxView>>> list(
@@ -126,10 +137,21 @@ public class SandboxAdminController {
         UUID orgId = parseRequiredUuid("org_id", jwt.getClaimAsString("org_id"));
         UUID parsedSandboxId = parseRequiredUuid("sandboxId", sandboxId);
         String reason = request != null ? normalize(request.reason()) : null;
+        boolean terminateBackend =
+                request == null || request.terminateBackend() == null || request.terminateBackend();
         return Mono.fromCallable(
                         () ->
                                 broker.forceEvict(orgId, parsedSandboxId, reason)
-                                        .map(result -> ResponseEntity.ok(toActionView(result)))
+                                        .map(
+                                                result -> {
+                                                    SandboxBackendTerminator.TerminationResult
+                                                            termination =
+                                                                    terminateBackend(
+                                                                            result,
+                                                                            terminateBackend);
+                                                    return ResponseEntity.ok(
+                                                            toActionView(result, termination));
+                                                })
                                         .orElseThrow(
                                                 () ->
                                                         new ResponseStatusException(
@@ -157,7 +179,18 @@ public class SandboxAdminController {
                 expired);
     }
 
-    private static SandboxActionView toActionView(SandboxBroker.ForceEvictResult result) {
+    private SandboxBackendTerminator.TerminationResult terminateBackend(
+            SandboxBroker.ForceEvictResult result, boolean enabled) {
+        if (!enabled) {
+            return SandboxBackendTerminator.TerminationResult.skipped("disabled by request");
+        }
+        SandboxEntity entity = result.sandbox();
+        return terminator.terminate(entity.getSandboxType(), entity.getExternalId());
+    }
+
+    private static SandboxActionView toActionView(
+            SandboxBroker.ForceEvictResult result,
+            SandboxBackendTerminator.TerminationResult termination) {
         SandboxEntity entity = result.sandbox();
         return new SandboxActionView(
                 entity.getId().toString(),
@@ -167,7 +200,9 @@ public class SandboxAdminController {
                 entity.getExternalId(),
                 result.previousStatus(),
                 entity.getStatus(),
-                result.changed());
+                result.changed(),
+                termination.status(),
+                termination.message());
     }
 
     private static void requireAdmin(Jwt jwt) {

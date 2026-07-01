@@ -27,8 +27,6 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * HTTP client for the Cube sandbox platform API. Cube exposes an E2B-compatible REST API for
@@ -36,7 +34,6 @@ import org.slf4j.LoggerFactory;
  */
 final class CubePlatformHttp {
 
-    private static final Logger log = LoggerFactory.getLogger(CubePlatformHttp.class);
     private static final MediaType JSON_MT = MediaType.get("application/json; charset=utf-8");
 
     private final OkHttpClient http;
@@ -86,30 +83,24 @@ final class CubePlatformHttp {
      *
      * @param sandboxId the sandbox to kill
      */
-    void killSandbox(String sandboxId) {
-        try {
-            CubeRetry.withRetries(
-                    maxRetries,
-                    () -> {
-                        Request req =
-                                new Request.Builder()
-                                        .url(baseUrl + "/sandboxes/" + sandboxId)
-                                        .delete()
-                                        .header("X-API-Key", apiKey)
-                                        .build();
-                        try (Response res = http.newCall(req).execute()) {
-                            if (!res.isSuccessful() && res.code() != 404) {
-                                log.warn(
-                                        "Failed to kill sandbox {}: HTTP {}",
-                                        sandboxId,
-                                        res.code());
-                            }
+    void killSandbox(String sandboxId) throws Exception {
+        CubeRetry.withRetries(
+                maxRetries,
+                () -> {
+                    Request.Builder rb =
+                            new Request.Builder().url(baseUrl + "/sandboxes/" + sandboxId).delete();
+                    if (apiKey != null && !apiKey.isBlank()) {
+                        rb.header("X-API-Key", apiKey);
+                    }
+                    try (Response res = http.newCall(rb.build()).execute()) {
+                        if (!res.isSuccessful() && res.code() != 404) {
+                            throw new SandboxException.SandboxRuntimeException(
+                                    SandboxErrorCode.WORKSPACE_START_ERROR,
+                                    "Cube delete failed: HTTP " + res.code() + " " + res.message());
                         }
-                        return null; // Void return for the callable
-                    });
-        } catch (Exception e) {
-            log.warn("Failed to kill sandbox {}: {}", sandboxId, e.getMessage());
-        }
+                    }
+                    return null;
+                });
     }
 
     // ---- internals ----

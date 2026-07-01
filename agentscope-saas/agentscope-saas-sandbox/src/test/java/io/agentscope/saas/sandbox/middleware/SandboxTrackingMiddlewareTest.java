@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -29,10 +30,13 @@ import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.middleware.AgentInput;
+import io.agentscope.harness.agent.sandbox.Sandbox;
+import io.agentscope.harness.agent.sandbox.SandboxState;
 import io.agentscope.saas.core.ratelimit.QuotaExceededException;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.sandbox.SandboxBroker;
 import io.agentscope.saas.sandbox.SandboxMetrics;
+import io.agentscope.saas.sandbox.SandboxTrackingContext;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.OffsetDateTime;
 import java.util.Collections;
@@ -145,6 +149,45 @@ class SandboxTrackingMiddlewareTest {
                 .isEqualTo(1);
     }
 
+    @Test
+    void registersProviderSandboxIdWhenRuntimeContextHasLiveSandbox() {
+        RuntimeContext ctx = tenantContext();
+        ProviderState state = new ProviderState();
+        state.setSessionId("sess-1");
+        state.setSandboxId("provider-sandbox-1");
+        Sandbox sandbox = org.mockito.Mockito.mock(Sandbox.class);
+        when(sandbox.getState()).thenReturn(state);
+        ctx.put(Sandbox.class, sandbox);
+        AgentInput input = new AgentInput(Collections.emptyList());
+        UUID trackingId = UUID.randomUUID();
+        when(broker.registerActive(
+                        any(UUID.class),
+                        any(UUID.class),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        any(OffsetDateTime.class),
+                        anyInt()))
+                .thenReturn(trackingId);
+        when(next.apply(input)).thenReturn(Flux.empty());
+
+        middleware.onAgent(agent, ctx, input, next).blockLast();
+
+        SandboxTrackingContext tracking = ctx.get(SandboxTrackingContext.class);
+        assertThat(tracking).isNotNull();
+        assertThat(tracking.trackingId()).isEqualTo(trackingId);
+        assertThat(tracking.orgId()).isEqualTo(ORG_ID.toString());
+        verify(broker)
+                .registerActive(
+                        eq(ORG_ID),
+                        eq(USER_ID),
+                        eq("sess-1"),
+                        eq("e2b"),
+                        eq("provider-sandbox-1"),
+                        any(OffsetDateTime.class),
+                        eq(1));
+    }
+
     private static RuntimeContext tenantContext() {
         TenantContext tc =
                 new TenantContext(
@@ -154,5 +197,17 @@ class SandboxTrackingMiddlewareTest {
                 .sessionId("sess-1")
                 .put(TenantContext.class, tc)
                 .build();
+    }
+
+    private static final class ProviderState extends SandboxState {
+        private String sandboxId;
+
+        public String getSandboxId() {
+            return sandboxId;
+        }
+
+        void setSandboxId(String sandboxId) {
+            this.sandboxId = sandboxId;
+        }
     }
 }

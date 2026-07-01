@@ -176,6 +176,32 @@ class SandboxQuotaEnforcementTest {
     }
 
     @Test
+    void updateExternalIdOnlyUpdatesActiveRows() {
+        UUID sandboxId = UUID.randomUUID();
+        SandboxEntity active = new SandboxEntity();
+        active.setId(sandboxId);
+        active.setStatus("active");
+        active.setExternalId("sess-1");
+        when(sandboxRepository.findById(sandboxId)).thenReturn(Optional.of(active));
+
+        broker.updateExternalId(sandboxId, " provider-1 ");
+
+        assertEquals("provider-1", active.getExternalId());
+        verify(sandboxRepository).save(active);
+
+        SandboxEntity released = new SandboxEntity();
+        released.setId(sandboxId);
+        released.setStatus("released");
+        released.setExternalId("old");
+        when(sandboxRepository.findById(sandboxId)).thenReturn(Optional.of(released));
+
+        broker.updateExternalId(sandboxId, "provider-2");
+
+        assertEquals("old", released.getExternalId());
+        verify(sandboxRepository, never()).save(eq(released));
+    }
+
+    @Test
     void releaseSkipsRowsThatAreAlreadyTerminal() {
         UUID sandboxId = UUID.randomUUID();
         SandboxEntity evicted = new SandboxEntity();

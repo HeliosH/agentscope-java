@@ -24,7 +24,9 @@ import io.agentscope.saas.core.ratelimit.QuotaExceededException;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.sandbox.SandboxBroker;
+import io.agentscope.saas.sandbox.SandboxExternalIds;
 import io.agentscope.saas.sandbox.SandboxMetrics;
+import io.agentscope.saas.sandbox.SandboxTrackingContext;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
@@ -90,14 +92,13 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
         UUID orgId = UUID.fromString(tc.orgId());
         UUID userId = UUID.fromString(tc.userId());
         String sessionId = ctx.getSessionId();
+        String externalId = SandboxExternalIds.fromRuntimeContext(ctx).orElse(sessionId);
         AtomicReference<UUID> trackingId = new AtomicReference<>();
         AtomicReference<Disposable> heartbeat = new AtomicReference<>();
         long ttlSeconds = Math.max(1L, idleTtlSeconds);
         long startedAtNanos = System.nanoTime();
 
         try {
-            // External id is unknown at this layer (the framework owns the backend handle); the
-            // sessionId identifies the sandbox slot under USER/SESSION isolation.
             UUID id =
                     withTenantOrg(
                             tc.orgId(),
@@ -107,10 +108,11 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
                                             userId,
                                             sessionId,
                                             sandboxType,
-                                            sessionId,
+                                            externalId,
                                             OffsetDateTime.now().plusSeconds(ttlSeconds),
                                             tc.maxSandboxes()));
             trackingId.set(id);
+            ctx.put(SandboxTrackingContext.class, new SandboxTrackingContext(id, tc.orgId()));
         } catch (QuotaExceededException e) {
             metrics.quotaRejected(sandboxType);
             throw e;
