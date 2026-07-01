@@ -94,10 +94,9 @@ public class TenantTraceMiddleware implements MiddlewareBase {
 ```
 saas.sandbox.lifecycle.events    Counter type,event
 saas.sandbox.run.duration        Timer   type,signal
+saas.sandbox.acquire.duration    Timer   type,source
 saas.sandbox.pool.size           Gauge   type,status
 saas.sandbox.pool.expired_active Gauge   type
-saas.sandbox.create.duration     Timer   type               (planned)
-saas.sandbox.resume.duration     Timer   type               (planned)
 saas.sandbox.request.queue_depth Gauge   type               (planned)
 saas.agent.call.duration         Timer   model              (planned)
 saas.llm.token.usage             Counter model,type         (planned)
@@ -106,6 +105,7 @@ saas.channel.messages            Counter channel_type,direction (planned)
 
 已实现的 sandbox 指标刻意不带 `org_id`/`user_id`，避免高基数标签拖垮指标后端；租户级排查继续通过 `sandboxes` 表、`memory_events` 表和审计日志完成。
 `saas.sandbox.lifecycle.events{type,event}` 当前事件包括：`registered`、`released`、`evicted`、`quota_rejected`、tracking failure，以及 release 链路的 `workspace_projection_succeeded`、`workspace_projection_failed`、`state_persist_failed`、`sandbox_stop_failed`、`sandbox_shutdown_failed`、`backend_release_failed`、`acquire_start_failed`。其中 `workspace_projection_succeeded` 只在实际投影文件数大于 0 时计数，`sandbox_stop_failed` 覆盖 stop 阶段的 workspace snapshot 持久化失败。
+`saas.sandbox.acquire.duration{type,source}` 记录 acquire+start 的端到端等待，`source=create|resume|external|unknown`，覆盖 execution guard、state store、provider create/resume、workspace setup/restore。
 `saas.sandbox.pool.size{type,status}` 和 `saas.sandbox.pool.expired_active{type}` 由 eviction job 周期性刷新，直接反映 tracking table 中的资源池状态；`expired_active > 0` 应作为资源泄漏/回收延迟告警信号。
 
 ### 4.3 Grafana 面板

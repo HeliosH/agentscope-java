@@ -16,6 +16,7 @@
 package io.agentscope.harness.agent.sandbox;
 
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.harness.agent.sandbox.SandboxAcquireResult.AcquisitionSource;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
@@ -92,7 +93,8 @@ public class SandboxManager {
             log.debug(
                     "[sandbox] Priority 2: resuming from explicit state: {}",
                     sandboxContext.getExternalSandboxState().getSessionId());
-            return SandboxAcquireResult.selfManaged(sandbox);
+            return SandboxAcquireResult.selfManaged(
+                    sandbox, SandboxLease.noop(), AcquisitionSource.RESUME);
         }
 
         // Priority 3 / 4: harness-managed — apply guard when a scope key is present
@@ -124,7 +126,8 @@ public class SandboxManager {
                                     sandboxContext.getSnapshotSpec().build(state.getSessionId()));
                         }
                         Sandbox sandbox = client.resume(state);
-                        return SandboxAcquireResult.selfManaged(sandbox, lease);
+                        return SandboxAcquireResult.selfManaged(
+                                sandbox, lease, AcquisitionSource.RESUME);
                     }
                 } catch (Exception e) {
                     log.warn(
@@ -150,7 +153,7 @@ public class SandboxManager {
                             spec,
                             sandboxContext.getSnapshotSpec(),
                             sandboxContext.getClientOptions());
-            return SandboxAcquireResult.selfManaged(sandbox, lease);
+            return SandboxAcquireResult.selfManaged(sandbox, lease, AcquisitionSource.CREATE);
 
         } catch (Exception e) {
             // Guard must be released if acquire fails — the caller won't see the result

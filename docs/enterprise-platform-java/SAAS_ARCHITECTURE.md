@@ -979,11 +979,10 @@ public class TenantTraceMiddleware implements MiddlewareBase {
 | 指标名 | 类型 | 标签 | 说明 |
 |--------|------|------|------|
 | `saas.sandbox.pool.size` | Gauge | type, status | 当前沙箱池状态 |
-| `saas.sandbox.create.duration` | Timer | type, org_id | 沙箱创建耗时 |
-| `saas.sandbox.resume.duration` | Timer | type, org_id | 沙箱恢复耗时 |
-| `saas.sandbox.request.queue_depth` | Gauge | org_id | 请求队列深度 |
-| `saas.agent.call.duration` | Timer | org_id, model | Agent 调用耗时 |
-| `saas.llm.token.usage` | Counter | org_id, model, type | LLM token 消耗 |
+| `saas.sandbox.acquire.duration` | Timer | type, source | 沙箱 acquire+start 端到端耗时 |
+| `saas.sandbox.request.queue_depth` | Gauge | type | 请求队列深度 |
+| `saas.agent.call.duration` | Timer | model | Agent 调用耗时 |
+| `saas.llm.token.usage` | Counter | model, type | LLM token 消耗 |
 | `saas.channel.messages` | Counter | channel_type, direction | 频道消息数 |
 | `saas.storage.filesystem.ops` | Counter | op, namespace | 文件系统操作数 |
 
@@ -992,20 +991,21 @@ public class TenantTraceMiddleware implements MiddlewareBase {
 public class SaasMetrics {
     private final MeterRegistry registry;
 
-    public void recordSandboxCreate(String type, String orgId, Duration duration) {
-        registry.timer("saas.sandbox.create.duration",
-            "type", type, "org_id", orgId)
+    public void recordSandboxAcquire(String type, String source, Duration duration) {
+        registry.timer("saas.sandbox.acquire.duration",
+            "type", type, "source", source)
             .record(duration);
     }
 
-    public void recordTokenUsage(String orgId, String model,
-                                 String type, long tokens) {
+    public void recordTokenUsage(String model, String type, long tokens) {
         registry.counter("saas.llm.token.usage",
-            "org_id", orgId, "model", model, "type", type)
+            "model", model, "type", type)
             .increment(tokens);
     }
 }
 ```
+
+运行时 Prometheus 指标不带 `org_id`/`user_id`，避免高基数拖垮指标后端；租户级排查走 Admin API、业务表和审计日志。
 
 ### 12.3 Grafana Dashboard
 

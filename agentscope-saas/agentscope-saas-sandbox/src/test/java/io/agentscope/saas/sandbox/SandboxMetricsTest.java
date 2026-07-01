@@ -82,6 +82,22 @@ class SandboxMetricsTest {
     }
 
     @Test
+    void recordsAcquireStartDurationByBackendAndSource() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        SandboxMetrics metrics = new SandboxMetrics(registry);
+
+        metrics.recordAcquireStart("E2B", "CREATE", TimeUnit.MILLISECONDS.toNanos(125));
+
+        assertThat(
+                        registry.get("saas.sandbox.acquire.duration")
+                                .tag("type", "e2b")
+                                .tag("source", "create")
+                                .timer()
+                                .count())
+                .isEqualTo(1);
+    }
+
+    @Test
     void springConstructsMetricsWithMeterRegistry() {
         try (AnnotationConfigApplicationContext ctx = new AnnotationConfigApplicationContext()) {
             ctx.registerBean(SimpleMeterRegistry.class);
@@ -108,6 +124,7 @@ class SandboxMetricsTest {
         metrics.registerActive("e2b");
         metrics.workspaceProjectionSucceeded("e2b");
         metrics.backendReleaseFailed("e2b");
+        metrics.recordAcquireStart("e2b", "create", 1);
         metrics.recordRun("e2b", "on_complete", 1);
     }
 }

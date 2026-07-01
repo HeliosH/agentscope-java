@@ -26,6 +26,11 @@ public interface SandboxLifecycleObserver {
 
     default void onAcquireStartFailure(RuntimeContext runtimeContext, Exception error) {}
 
+    default void onAcquireStartSucceeded(
+            RuntimeContext runtimeContext,
+            SandboxAcquireResult.AcquisitionSource source,
+            long durationNanos) {}
+
     default void onWorkspaceProjectionSucceeded(
             RuntimeContext runtimeContext, int projectedFiles) {}
 

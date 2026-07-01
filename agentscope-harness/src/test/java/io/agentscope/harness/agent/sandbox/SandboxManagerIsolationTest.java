@@ -67,6 +67,8 @@ class SandboxManagerIsolationTest {
 
         assertSame(externalSandbox, result.getSandbox());
         assertEquals(false, result.isSelfManaged());
+        assertEquals(
+                SandboxAcquireResult.AcquisitionSource.EXTERNAL, result.getAcquisitionSource());
         verify(stateStore, never()).load(any());
     }
 
@@ -83,6 +85,7 @@ class SandboxManagerIsolationTest {
 
         assertSame(resumedSandbox, result.getSandbox());
         assertEquals(true, result.isSelfManaged());
+        assertEquals(SandboxAcquireResult.AcquisitionSource.RESUME, result.getAcquisitionSource());
         verify(stateStore, never()).load(any());
     }
 
@@ -102,6 +105,7 @@ class SandboxManagerIsolationTest {
 
         assertSame(resumedSandbox, result.getSandbox());
         assertEquals(true, result.isSelfManaged());
+        assertEquals(SandboxAcquireResult.AcquisitionSource.RESUME, result.getAcquisitionSource());
         verify(client, never()).create(any(), any(), any());
     }
 
@@ -122,6 +126,7 @@ class SandboxManagerIsolationTest {
         SandboxAcquireResult result = manager.acquire(sCtx, rtx);
 
         assertSame(freshSandbox, result.getSandbox());
+        assertEquals(SandboxAcquireResult.AcquisitionSource.CREATE, result.getAcquisitionSource());
         verify(client).create(any(), any(), any());
     }
 

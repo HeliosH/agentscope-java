@@ -34,29 +34,61 @@ package io.agentscope.harness.agent.sandbox;
  */
 public final class SandboxAcquireResult {
 
+    /** Low-cardinality source of the sandbox handle returned by {@link SandboxManager#acquire}. */
+    public enum AcquisitionSource {
+        EXTERNAL("external"),
+        RESUME("resume"),
+        CREATE("create"),
+        UNKNOWN("unknown");
+
+        private final String metricTag;
+
+        AcquisitionSource(String metricTag) {
+            this.metricTag = metricTag;
+        }
+
+        public String metricTag() {
+            return metricTag;
+        }
+    }
+
     private final Sandbox sandbox;
     private final boolean selfManaged;
     private final SandboxLease lease;
+    private final AcquisitionSource acquisitionSource;
 
-    private SandboxAcquireResult(Sandbox sandbox, boolean selfManaged, SandboxLease lease) {
+    private SandboxAcquireResult(
+            Sandbox sandbox,
+            boolean selfManaged,
+            SandboxLease lease,
+            AcquisitionSource acquisitionSource) {
         this.sandbox = sandbox;
         this.selfManaged = selfManaged;
         this.lease = lease != null ? lease : SandboxLease.noop();
+        this.acquisitionSource =
+                acquisitionSource != null ? acquisitionSource : AcquisitionSource.UNKNOWN;
     }
 
     /** Creates a self-managed result with a guard lease (SDK owns the full lifecycle). */
     public static SandboxAcquireResult selfManaged(Sandbox sandbox, SandboxLease lease) {
-        return new SandboxAcquireResult(sandbox, true, lease);
+        return selfManaged(sandbox, lease, AcquisitionSource.UNKNOWN);
+    }
+
+    /** Creates a self-managed result with an explicit acquisition source. */
+    public static SandboxAcquireResult selfManaged(
+            Sandbox sandbox, SandboxLease lease, AcquisitionSource acquisitionSource) {
+        return new SandboxAcquireResult(sandbox, true, lease, acquisitionSource);
     }
 
     /** Creates a self-managed result with no guard (SDK owns the full lifecycle). */
     public static SandboxAcquireResult selfManaged(Sandbox sandbox) {
-        return new SandboxAcquireResult(sandbox, true, SandboxLease.noop());
+        return selfManaged(sandbox, SandboxLease.noop(), AcquisitionSource.UNKNOWN);
     }
 
     /** Creates a user-managed result (caller owns the lifecycle; SDK only calls stop). */
     public static SandboxAcquireResult userManaged(Sandbox sandbox) {
-        return new SandboxAcquireResult(sandbox, false, SandboxLease.noop());
+        return new SandboxAcquireResult(
+                sandbox, false, SandboxLease.noop(), AcquisitionSource.EXTERNAL);
     }
 
     public Sandbox getSandbox() {
@@ -74,5 +106,10 @@ public final class SandboxAcquireResult {
      */
     public SandboxLease getLease() {
         return lease;
+    }
+
+    /** Returns whether the sandbox was externally supplied, resumed, freshly created, or unknown. */
+    public AcquisitionSource getAcquisitionSource() {
+        return acquisitionSource;
     }
 }

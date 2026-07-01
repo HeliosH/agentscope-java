@@ -16,6 +16,7 @@
 package io.agentscope.saas.app.config;
 
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.harness.agent.sandbox.SandboxAcquireResult.AcquisitionSource;
 import io.agentscope.harness.agent.sandbox.SandboxLifecycleObserver;
 import io.agentscope.saas.sandbox.SandboxMetrics;
 
@@ -32,6 +33,13 @@ final class MeteredSandboxLifecycleObserver implements SandboxLifecycleObserver 
     @Override
     public void onAcquireStartFailure(RuntimeContext runtimeContext, Exception error) {
         metrics.acquireStartFailed(sandboxType);
+    }
+
+    @Override
+    public void onAcquireStartSucceeded(
+            RuntimeContext runtimeContext, AcquisitionSource source, long durationNanos) {
+        metrics.recordAcquireStart(
+                sandboxType, source != null ? source.metricTag() : null, durationNanos);
     }
 
     @Override

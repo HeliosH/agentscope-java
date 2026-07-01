@@ -99,6 +99,18 @@ public class SandboxMetrics {
         incrementLifecycle(sandboxType, "backend_release_failed");
     }
 
+    public void recordAcquireStart(String sandboxType, String source, long durationNanos) {
+        if (registry == null || durationNanos < 0) {
+            return;
+        }
+        Timer.builder("saas.sandbox.acquire.duration")
+                .description("Sandbox acquire plus start duration")
+                .tag("type", normalize(sandboxType))
+                .tag("source", normalize(source))
+                .register(registry)
+                .record(durationNanos, TimeUnit.NANOSECONDS);
+    }
+
     public void recordRun(String sandboxType, String signalType, long durationNanos) {
         if (registry == null || durationNanos < 0) {
             return;

@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.state.InMemoryAgentStateStore;
@@ -27,10 +28,12 @@ import io.agentscope.harness.agent.filesystem.sandbox.SandboxBackedFilesystem;
 import io.agentscope.harness.agent.sandbox.ExecResult;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxAcquireResult;
+import io.agentscope.harness.agent.sandbox.SandboxAcquireResult.AcquisitionSource;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
 import io.agentscope.harness.agent.sandbox.SandboxClientOptions;
 import io.agentscope.harness.agent.sandbox.SandboxContext;
 import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
+import io.agentscope.harness.agent.sandbox.SandboxLease;
 import io.agentscope.harness.agent.sandbox.SandboxLifecycleObserver;
 import io.agentscope.harness.agent.sandbox.SandboxManager;
 import io.agentscope.harness.agent.sandbox.SandboxState;
@@ -94,7 +97,9 @@ class SandboxLifecycleMiddlewareTest {
         middleware.acquireForCall(ctx);
         middleware.releaseForCall(ctx);
 
-        assertEquals(List.of("workspace_projection_failed"), observer.events);
+        assertEquals(
+                List.of("acquire_start_succeeded:unknown", "workspace_projection_failed"),
+                observer.events);
     }
 
     @Test
@@ -114,6 +119,28 @@ class SandboxLifecycleMiddlewareTest {
         assertThrows(RuntimeException.class, () -> middleware.acquireForCall(ctx));
 
         assertEquals(List.of("acquire_start_failed"), observer.events);
+    }
+
+    @Test
+    void observerRecordsAcquireStartSuccessDurationAndSource() {
+        RecordingSandbox sandbox = new RecordingSandbox("a");
+        RecordingObserver observer = new RecordingObserver();
+        SandboxLifecycleMiddleware middleware =
+                new SandboxLifecycleMiddleware(
+                        new RecordingSandboxManager(
+                                SandboxAcquireResult.selfManaged(
+                                        sandbox, SandboxLease.noop(), AcquisitionSource.CREATE)),
+                        new SandboxBackedFilesystem(),
+                        observer);
+
+        RuntimeContext ctx = RuntimeContext.empty();
+        ctx.put(SandboxContext.class, SandboxContext.builder().build());
+
+        middleware.acquireForCall(ctx);
+
+        assertEquals(List.of("acquire_start_succeeded:create"), observer.events);
+        assertEquals(1, observer.acquireDurations.size());
+        assertTrue(observer.acquireDurations.get(0) >= 0);
     }
 
     @Test
@@ -155,13 +182,23 @@ class SandboxLifecycleMiddlewareTest {
         private final List<Sandbox> released = new ArrayList<>();
 
         private RecordingSandboxManager(Sandbox... sandboxes) {
+            this(toAcquireResults(sandboxes));
+        }
+
+        private RecordingSandboxManager(SandboxAcquireResult... results) {
             super(
                     new NoopSandboxClient(),
                     new SessionSandboxStateStore(new InMemoryAgentStateStore(), "test-agent"),
                     "test-agent");
-            for (Sandbox sandbox : sandboxes) {
-                acquisitions.add(SandboxAcquireResult.selfManaged(sandbox));
+            acquisitions.addAll(List.of(results));
+        }
+
+        private static SandboxAcquireResult[] toAcquireResults(Sandbox... sandboxes) {
+            SandboxAcquireResult[] results = new SandboxAcquireResult[sandboxes.length];
+            for (int i = 0; i < sandboxes.length; i++) {
+                results[i] = SandboxAcquireResult.selfManaged(sandboxes[i]);
             }
+            return results;
         }
 
         @Override
@@ -195,10 +232,18 @@ class SandboxLifecycleMiddlewareTest {
     private static final class RecordingObserver implements SandboxLifecycleObserver {
 
         private final List<String> events = new ArrayList<>();
+        private final List<Long> acquireDurations = new ArrayList<>();
 
         @Override
         public void onAcquireStartFailure(RuntimeContext runtimeContext, Exception error) {
             events.add("acquire_start_failed");
+        }
+
+        @Override
+        public void onAcquireStartSucceeded(
+                RuntimeContext runtimeContext, AcquisitionSource source, long durationNanos) {
+            events.add("acquire_start_succeeded:" + source.metricTag());
+            acquireDurations.add(durationNanos);
         }
 
         @Override

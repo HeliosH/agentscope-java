@@ -89,11 +89,17 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
         if (sandboxContext == null) {
             return;
         }
+        long acquireStartNanos = System.nanoTime();
         try {
             SandboxAcquireResult result = sandboxManager.acquire(sandboxContext, ctx);
             Sandbox sandbox = result.getSandbox();
             try {
                 sandbox.start();
+                long durationNanos = System.nanoTime() - acquireStartNanos;
+                notifyObserver(
+                        obs ->
+                                obs.onAcquireStartSucceeded(
+                                        ctx, result.getAcquisitionSource(), durationNanos));
                 ctx.put(Sandbox.class, sandbox);
                 ctx.put(SandboxCallState.class, new SandboxCallState(result));
                 filesystemProxy.setSandbox(sandbox);
