@@ -95,6 +95,13 @@
             <version>${revision}</version>
         </dependency>
 
+        <!-- OpenSandbox (Alibaba OpenSandbox lifecycle API + execd command API, private deployment) -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-sandbox-opensandbox</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
         <!-- Mem0 long-term memory (F7b): semantic cross-session recall via the Mem0 client. The
              SaaS LTM middleware uses Mem0Client + request/response types directly (not the
              deprecated LongTermMemory interface), keyed per-tenant by userId + orgId metadata. -->

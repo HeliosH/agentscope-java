@@ -14,41 +14,61 @@
 | `SandboxLifecycleMiddleware` | `.../agent/middleware` | 自动 acquire/release |
 | `DockerSandbox` | harness `impl.docker` | Docker 容器沙箱 |
 | `KubernetesSandbox` | extensions sandbox-kubernetes | K8s Pod 沙箱 |
-| `DaytonaSandbox` / `AgentRunSandbox` / `E2bSandbox` | extensions | 其他后端 |
+| `DaytonaSandbox` / `AgentRunSandbox` / `E2bSandbox` / `CubeSandbox` / `OpenSandbox` | extensions | 其他后端 |
 
 > 对比 Python 方案：Python 需自建 `ExecutionBackend` 抽象 + 逐个改造工具 + `SandboxBroker`；Java 这些**全部框架自带**，工具用 `@Tool` 注解自动在沙箱内执行。
 
-## 2. CubeSandbox 接入（唯一需新建的沙箱代码）
+## 2. 私有化沙箱后端接入
 
-CubeSandbox（腾讯开源，Apache 2.0，KVM microVM，兼容 E2B SDK，可离线）通过实现 `SandboxClient` 接口接入，私有化首选：
+企业内网部署优先使用私有化沙箱后端。当前 SaaS 配置已支持 `cube`、`docker`、`e2b`、`opensandbox` 四类运行时；其中 OpenSandbox 通过 lifecycle API + execd proxy API 接入，适合企业内部自建 Docker/Kubernetes runtime。
 
 ```java
-// agentscope-saas-sandbox/cube/CubeSandboxClient.java
-public class CubeSandboxClient implements SandboxClient<CubeSandboxClientOptions> {
-    private final String apiUrl;   // http://cube-api.internal:8080
-
+// agentscope-extensions-sandbox-opensandbox/OpenSandboxClient.java
+public class OpenSandboxClient implements SandboxClient<OpenSandboxClientOptions> {
     @Override
     public Sandbox create(WorkspaceSpec spec, SnapshotSpec snapshot,
-                          CubeSandboxClientOptions options) {
-        // POST /sandboxes — E2B SDK 兼容 REST API
+                          OpenSandboxClientOptions options) {
+        // POST /sandboxes -> wait Running -> exec via /sandboxes/{id}/proxy/44772/command
     }
     @Override
     public Sandbox resume(SandboxState state) {
-        // POST /sandboxes/{id}/resume
+        // GET /sandboxes/{id}; Running 直接复用，Pending 等待，终态则重建
     }
     @Override
     public String serializeState(Sandbox sandbox) { ... }
 }
 ```
 
-| 维度 | CubeSandbox | Docker | K8s |
-|------|-------------|--------|-----|
-| 隔离 | 硬件级（KVM μVM + eBPF） | 容器级 | 容器/Pod |
-| 冷启动 | < 60ms | ~1-2s | ~2-5s |
-| 单机密度 | 2000+ / 96 核 | ~200 | 取决节点 |
-| 离线 | ✅ | ✅ | ✅ |
+| 维度 | CubeSandbox | OpenSandbox | Docker | K8s |
+|------|-------------|-------------|--------|-----|
+| 隔离 | KVM μVM / eBPF（取决部署） | Docker 或 K8s runtime，支持安全运行时配置 | 容器级 | 容器/Pod |
+| 创建/释放 | Cube API | OpenSandbox lifecycle API | 本机 Docker API | K8s API |
+| 命令执行 | envd/process API | execd proxy API（默认 44772） | docker exec | kubectl exec |
+| 离线私有化 | ✅ | ✅ | ✅ | ✅ |
+| 企业资源治理 | 平台侧配额 + TTL | lifecycle 元数据 + Docker/K8s 配额 + TTL | 本机资源限制 | K8s ResourceQuota/LimitRange |
 
-> 私有化生产用 CubeSandbox（强隔离+高密度+离线）；已有 K8s 基础设施可用 `KubernetesSandbox`；开发/降级用 `DockerSandbox`。
+OpenSandbox SaaS 配置入口：
+
+```bash
+SAAS_SANDBOX_ENABLED=true
+SAAS_SANDBOX_TYPE=opensandbox
+SAAS_SANDBOX_OPENSANDBOX_API_BASE_URL=http://opensandbox.internal:8080/v1
+SAAS_SANDBOX_OPENSANDBOX_API_KEY=...
+SAAS_SANDBOX_OPENSANDBOX_IMAGE=ubuntu:latest
+SAAS_SANDBOX_OPENSANDBOX_CPU_LIMIT=1
+SAAS_SANDBOX_OPENSANDBOX_MEMORY_LIMIT=1Gi
+SAAS_SANDBOX_WORKSPACE_ROOT=/workspace
+```
+
+本地 OpenSandbox API 生命周期验证脚本：
+
+```bash
+OPENSANDBOX_API_BASE_URL=http://localhost:18081/v1 \
+OPENSANDBOX_API_KEY=... \
+agentscope-saas/agentscope-saas-app/scripts/opensandbox-runtime-lifecycle.sh
+```
+
+> 私有化生产建议优先选择企业已托管的 CubeSandbox/OpenSandbox；已有 K8s 基础设施可用 `KubernetesSandbox`；开发/降级用 `DockerSandbox`。OpenSandbox 本地 Docker runtime 需要 server 访问宿主 Docker socket，这只适合受控开发环境，不应作为生产安全边界。
 
 ## 3. IsolationScope.USER — 一用户一沙箱
 

@@ -17,6 +17,7 @@ package io.agentscope.saas.app.config;
 
 import io.agentscope.extensions.sandbox.cube.CubeFilesystemSpec;
 import io.agentscope.extensions.sandbox.e2b.E2bFilesystemSpec;
+import io.agentscope.extensions.sandbox.opensandbox.OpenSandboxFilesystemSpec;
 import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.filesystem.spec.SandboxFilesystemSpec;
 import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
@@ -145,11 +146,53 @@ public class SandboxConfig {
                         }
                         yield e2bSpec;
                     }
+                    case "opensandbox" -> {
+                        if (sb.getOpenSandboxApiBaseUrl() == null
+                                || sb.getOpenSandboxApiBaseUrl().isBlank()) {
+                            throw new IllegalStateException(
+                                    "OpenSandbox requires "
+                                            + "saas.sandbox.open-sandbox-api-base-url to be set");
+                        }
+                        OpenSandboxFilesystemSpec openSandboxSpec =
+                                new OpenSandboxFilesystemSpec()
+                                        .apiBaseUrl(sb.getOpenSandboxApiBaseUrl())
+                                        .image(openSandboxImage(sb))
+                                        .workspaceRoot(
+                                                sb.getWorkspaceRoot() != null
+                                                                && !sb.getWorkspaceRoot().isBlank()
+                                                        ? sb.getWorkspaceRoot()
+                                                        : "/workspace")
+                                        .cpuLimit(sb.getOpenSandboxCpuLimit())
+                                        .memoryLimit(sb.getOpenSandboxMemoryLimit())
+                                        .sandboxTimeoutSeconds(
+                                                sb.getOpenSandboxSandboxTimeoutSeconds())
+                                        .waitTimeoutSeconds(sb.getOpenSandboxWaitTimeoutSeconds())
+                                        .execdPort(sb.getOpenSandboxExecdPort())
+                                        .defaultExecTimeoutSeconds(
+                                                sb.getOpenSandboxDefaultExecTimeoutSeconds())
+                                        .connectTimeoutSeconds(
+                                                sb.getOpenSandboxConnectTimeoutSeconds())
+                                        .readTimeoutSeconds(sb.getOpenSandboxReadTimeoutSeconds())
+                                        .maxRetries(sb.getOpenSandboxMaxRetries());
+                        if (sb.getOpenSandboxApiKey() != null
+                                && !sb.getOpenSandboxApiKey().isBlank()) {
+                            openSandboxSpec.apiKey(sb.getOpenSandboxApiKey());
+                        }
+                        if (sb.getOpenSandboxExecdAccessToken() != null
+                                && !sb.getOpenSandboxExecdAccessToken().isBlank()) {
+                            openSandboxSpec.execdAccessToken(sb.getOpenSandboxExecdAccessToken());
+                        }
+                        openSandboxSpec.isolationScope(scope);
+                        if (snapshotSpec != null) {
+                            openSandboxSpec.snapshotSpec(snapshotSpec);
+                        }
+                        yield openSandboxSpec;
+                    }
                     default ->
                             throw new IllegalStateException(
                                     "Unknown sandbox type: "
                                             + sb.getType()
-                                            + ". Supported: cube, docker, e2b");
+                                            + ". Supported: cube, docker, e2b, opensandbox");
                 };
 
         SandboxExecutionGuard guard = guardProvider.getIfAvailable();
@@ -169,6 +212,14 @@ public class SandboxConfig {
     private static String snapshotBackend(SaasProperties.Sandbox sb) {
         String backend = sb.getSnapshot().getBackend();
         return backend == null || backend.isBlank() ? "pg" : backend.trim().toLowerCase();
+    }
+
+    private static String openSandboxImage(SaasProperties.Sandbox sb) {
+        String image = sb.getOpenSandboxImage();
+        if (image == null || image.isBlank()) {
+            image = sb.getImage();
+        }
+        return image == null || image.isBlank() ? "ubuntu:latest" : image;
     }
 
     /**

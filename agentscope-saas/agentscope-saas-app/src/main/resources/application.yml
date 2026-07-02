@@ -85,6 +85,20 @@ saas:
     # Sandbox domain (defaults to e2b.app). Override for private deployments.
     e2b-domain: ${SAAS_SANDBOX_E2B_DOMAIN:}
     e2b-sandbox-timeout-seconds: ${SAAS_SANDBOX_E2B_TIMEOUT:300}
+    # --- OpenSandbox (Alibaba OpenSandbox lifecycle API + execd). Used when type=opensandbox. ---
+    open-sandbox-api-base-url: ${SAAS_SANDBOX_OPENSANDBOX_API_BASE_URL:http://localhost:8080/v1}
+    open-sandbox-api-key: ${SAAS_SANDBOX_OPENSANDBOX_API_KEY:}
+    open-sandbox-execd-access-token: ${SAAS_SANDBOX_OPENSANDBOX_EXECD_ACCESS_TOKEN:}
+    open-sandbox-image: ${SAAS_SANDBOX_OPENSANDBOX_IMAGE:}
+    open-sandbox-cpu-limit: ${SAAS_SANDBOX_OPENSANDBOX_CPU_LIMIT:1}
+    open-sandbox-memory-limit: ${SAAS_SANDBOX_OPENSANDBOX_MEMORY_LIMIT:1Gi}
+    open-sandbox-sandbox-timeout-seconds: ${SAAS_SANDBOX_OPENSANDBOX_TIMEOUT:300}
+    open-sandbox-wait-timeout-seconds: ${SAAS_SANDBOX_OPENSANDBOX_WAIT_TIMEOUT:120}
+    open-sandbox-execd-port: ${SAAS_SANDBOX_OPENSANDBOX_EXECD_PORT:44772}
+    open-sandbox-default-exec-timeout-seconds: ${SAAS_SANDBOX_OPENSANDBOX_DEFAULT_EXEC_TIMEOUT:120}
+    open-sandbox-connect-timeout-seconds: ${SAAS_SANDBOX_OPENSANDBOX_CONNECT_TIMEOUT:30}
+    open-sandbox-read-timeout-seconds: ${SAAS_SANDBOX_OPENSANDBOX_READ_TIMEOUT:300}
+    open-sandbox-max-retries: ${SAAS_SANDBOX_OPENSANDBOX_MAX_RETRIES:3}
     snapshot:
       enabled: ${SAAS_SANDBOX_SNAPSHOT_ENABLED:true}
       # pg = Postgres BYTEA (dev/H2 fallback, zero infra); minio = S3 object storage (production).

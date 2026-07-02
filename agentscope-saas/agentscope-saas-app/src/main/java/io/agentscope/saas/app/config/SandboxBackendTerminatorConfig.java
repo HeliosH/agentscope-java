@@ -19,6 +19,8 @@ import io.agentscope.extensions.sandbox.cube.CubeSandboxClientOptions;
 import io.agentscope.extensions.sandbox.cube.CubeSandboxTerminator;
 import io.agentscope.extensions.sandbox.e2b.E2bSandboxClientOptions;
 import io.agentscope.extensions.sandbox.e2b.E2bSandboxTerminator;
+import io.agentscope.extensions.sandbox.opensandbox.OpenSandboxClientOptions;
+import io.agentscope.extensions.sandbox.opensandbox.OpenSandboxTerminator;
 import io.agentscope.saas.app.sandbox.SandboxBackendTerminator;
 import java.util.Locale;
 import org.springframework.context.annotation.Bean;
@@ -40,6 +42,10 @@ public class SandboxBackendTerminatorConfig {
                     configured(type, new E2bSandboxTerminator(e2bOptions(sandbox))::terminate);
             case "cube" ->
                     configured(type, new CubeSandboxTerminator(cubeOptions(sandbox))::terminate);
+            case "opensandbox" ->
+                    configured(
+                            type,
+                            new OpenSandboxTerminator(openSandboxOptions(sandbox))::terminate);
             default -> SandboxBackendTerminator.unsupported();
         };
     }
@@ -93,6 +99,30 @@ public class SandboxBackendTerminatorConfig {
         }
         options.setSandboxTimeoutSeconds(sandbox.getCubeSandboxTimeoutSeconds());
         options.setInsecureSkipTlsVerify(sandbox.isCubeInsecureSkipTlsVerify());
+        return options;
+    }
+
+    private static OpenSandboxClientOptions openSandboxOptions(SaasProperties.Sandbox sandbox) {
+        OpenSandboxClientOptions options = new OpenSandboxClientOptions();
+        options.setApiBaseUrl(sandbox.getOpenSandboxApiBaseUrl());
+        options.setApiKey(sandbox.getOpenSandboxApiKey());
+        options.setExecdAccessToken(sandbox.getOpenSandboxExecdAccessToken());
+        options.setImage(
+                sandbox.getOpenSandboxImage() != null && !sandbox.getOpenSandboxImage().isBlank()
+                        ? sandbox.getOpenSandboxImage()
+                        : sandbox.getImage());
+        if (sandbox.getWorkspaceRoot() != null && !sandbox.getWorkspaceRoot().isBlank()) {
+            options.setWorkspaceRoot(sandbox.getWorkspaceRoot());
+        }
+        options.setCpuLimit(sandbox.getOpenSandboxCpuLimit());
+        options.setMemoryLimit(sandbox.getOpenSandboxMemoryLimit());
+        options.setSandboxTimeoutSeconds(sandbox.getOpenSandboxSandboxTimeoutSeconds());
+        options.setWaitTimeoutSeconds(sandbox.getOpenSandboxWaitTimeoutSeconds());
+        options.setExecdPort(sandbox.getOpenSandboxExecdPort());
+        options.setDefaultExecTimeoutSeconds(sandbox.getOpenSandboxDefaultExecTimeoutSeconds());
+        options.setConnectTimeoutSeconds(sandbox.getOpenSandboxConnectTimeoutSeconds());
+        options.setReadTimeoutSeconds(sandbox.getOpenSandboxReadTimeoutSeconds());
+        options.setMaxRetries(sandbox.getOpenSandboxMaxRetries());
         return options;
     }
 

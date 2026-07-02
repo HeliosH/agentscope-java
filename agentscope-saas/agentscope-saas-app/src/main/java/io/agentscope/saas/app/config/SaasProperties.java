@@ -139,7 +139,10 @@ public class SaasProperties {
         /** Whether sandbox-backed command execution is enabled. */
         private boolean enabled = false;
 
-        /** Backend type: {@code "cube"} (private deployment), {@code "docker"} (local), {@code "e2b"} (official hosted). */
+        /**
+         * Backend type: {@code "cube"} (private deployment), {@code "docker"} (local), {@code
+         * "e2b"} (official hosted), {@code "opensandbox"} (OpenSandbox lifecycle API).
+         */
         private String type = "cube";
 
         /** Docker image for sandbox containers (type=docker only). */
@@ -219,6 +222,47 @@ public class SaasProperties {
 
         /** E2B sandbox idle timeout in seconds (defaults to 300). */
         private int e2bSandboxTimeoutSeconds = 300;
+
+        // --- OpenSandbox-specific fields ---
+
+        /** OpenSandbox lifecycle API base URL. Both root and /v1 prefixes are supported. */
+        private String openSandboxApiBaseUrl = "http://localhost:8080/v1";
+
+        /** Optional OpenSandbox lifecycle API key (OPEN-SANDBOX-API-KEY). */
+        private String openSandboxApiKey;
+
+        /** Optional execd token (X-EXECD-ACCESS-TOKEN) when execd auth is enabled. */
+        private String openSandboxExecdAccessToken;
+
+        /** Container image OpenSandbox should provision for assistant task sandboxes. */
+        private String openSandboxImage;
+
+        /** OpenSandbox resource limit string for CPU (for example 1, 500m). */
+        private String openSandboxCpuLimit = "1";
+
+        /** OpenSandbox resource limit string for memory (for example 1Gi, 512Mi). */
+        private String openSandboxMemoryLimit = "1Gi";
+
+        /** OpenSandbox sandbox timeout in seconds. */
+        private int openSandboxSandboxTimeoutSeconds = 300;
+
+        /** Maximum seconds to wait for OpenSandbox async provisioning to reach Running. */
+        private int openSandboxWaitTimeoutSeconds = 120;
+
+        /** Port used by OpenSandbox execd inside the sandbox. */
+        private int openSandboxExecdPort = 44772;
+
+        /** Default command execution timeout in seconds. */
+        private int openSandboxDefaultExecTimeoutSeconds = 120;
+
+        /** HTTP connect timeout in seconds for OpenSandbox calls. */
+        private int openSandboxConnectTimeoutSeconds = 30;
+
+        /** HTTP read timeout in seconds for OpenSandbox calls. */
+        private int openSandboxReadTimeoutSeconds = 300;
+
+        /** Max retries for OpenSandbox lifecycle GET/POST calls. */
+        private int openSandboxMaxRetries = 3;
 
         @NestedConfigurationProperty private final Snapshot snapshot = new Snapshot();
 
@@ -529,6 +573,111 @@ public class SaasProperties {
 
         public void setE2bSandboxTimeoutSeconds(int e2bSandboxTimeoutSeconds) {
             this.e2bSandboxTimeoutSeconds = e2bSandboxTimeoutSeconds;
+        }
+
+        public String getOpenSandboxApiBaseUrl() {
+            return openSandboxApiBaseUrl;
+        }
+
+        public void setOpenSandboxApiBaseUrl(String openSandboxApiBaseUrl) {
+            this.openSandboxApiBaseUrl = openSandboxApiBaseUrl;
+        }
+
+        public String getOpenSandboxApiKey() {
+            return openSandboxApiKey;
+        }
+
+        public void setOpenSandboxApiKey(String openSandboxApiKey) {
+            this.openSandboxApiKey = openSandboxApiKey;
+        }
+
+        public String getOpenSandboxExecdAccessToken() {
+            return openSandboxExecdAccessToken;
+        }
+
+        public void setOpenSandboxExecdAccessToken(String openSandboxExecdAccessToken) {
+            this.openSandboxExecdAccessToken = openSandboxExecdAccessToken;
+        }
+
+        public String getOpenSandboxImage() {
+            return openSandboxImage;
+        }
+
+        public void setOpenSandboxImage(String openSandboxImage) {
+            this.openSandboxImage = openSandboxImage;
+        }
+
+        public String getOpenSandboxCpuLimit() {
+            return openSandboxCpuLimit;
+        }
+
+        public void setOpenSandboxCpuLimit(String openSandboxCpuLimit) {
+            this.openSandboxCpuLimit = openSandboxCpuLimit;
+        }
+
+        public String getOpenSandboxMemoryLimit() {
+            return openSandboxMemoryLimit;
+        }
+
+        public void setOpenSandboxMemoryLimit(String openSandboxMemoryLimit) {
+            this.openSandboxMemoryLimit = openSandboxMemoryLimit;
+        }
+
+        public int getOpenSandboxSandboxTimeoutSeconds() {
+            return openSandboxSandboxTimeoutSeconds;
+        }
+
+        public void setOpenSandboxSandboxTimeoutSeconds(int openSandboxSandboxTimeoutSeconds) {
+            this.openSandboxSandboxTimeoutSeconds = openSandboxSandboxTimeoutSeconds;
+        }
+
+        public int getOpenSandboxWaitTimeoutSeconds() {
+            return openSandboxWaitTimeoutSeconds;
+        }
+
+        public void setOpenSandboxWaitTimeoutSeconds(int openSandboxWaitTimeoutSeconds) {
+            this.openSandboxWaitTimeoutSeconds = openSandboxWaitTimeoutSeconds;
+        }
+
+        public int getOpenSandboxExecdPort() {
+            return openSandboxExecdPort;
+        }
+
+        public void setOpenSandboxExecdPort(int openSandboxExecdPort) {
+            this.openSandboxExecdPort = openSandboxExecdPort;
+        }
+
+        public int getOpenSandboxDefaultExecTimeoutSeconds() {
+            return openSandboxDefaultExecTimeoutSeconds;
+        }
+
+        public void setOpenSandboxDefaultExecTimeoutSeconds(
+                int openSandboxDefaultExecTimeoutSeconds) {
+            this.openSandboxDefaultExecTimeoutSeconds = openSandboxDefaultExecTimeoutSeconds;
+        }
+
+        public int getOpenSandboxConnectTimeoutSeconds() {
+            return openSandboxConnectTimeoutSeconds;
+        }
+
+        public void setOpenSandboxConnectTimeoutSeconds(int openSandboxConnectTimeoutSeconds) {
+            this.openSandboxConnectTimeoutSeconds = openSandboxConnectTimeoutSeconds;
+        }
+
+        public int getOpenSandboxReadTimeoutSeconds() {
+            return openSandboxReadTimeoutSeconds;
+        }
+
+        public void setOpenSandboxReadTimeoutSeconds(int openSandboxReadTimeoutSeconds) {
+            this.openSandboxReadTimeoutSeconds = openSandboxReadTimeoutSeconds;
+        }
+
+        public int getOpenSandboxMaxRetries() {
+            return openSandboxMaxRetries;
+        }
+
+        public void setOpenSandboxMaxRetries(int openSandboxMaxRetries) {
+            this.openSandboxMaxRetries = openSandboxMaxRetries;
         }
     }
 
