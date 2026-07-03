@@ -20,6 +20,8 @@ import io.agentscope.saas.core.persistence.repo.SandboxRepository;
 import io.agentscope.saas.core.persistence.repo.UserRepository;
 import io.agentscope.saas.core.ratelimit.QuotaExceededException;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -51,6 +53,9 @@ public class SandboxBroker {
     private final SandboxMetrics metrics;
 
     public record ForceEvictResult(SandboxEntity sandbox, String previousStatus, boolean changed) {}
+
+    public record EvictedSandbox(
+            UUID id, String sandboxType, String externalId, UUID orgId, UUID userId) {}
 
     public SandboxBroker(SandboxRepository sandboxRepository, UserRepository userRepository) {
         this(sandboxRepository, userRepository, SandboxMetrics.noop());
@@ -282,15 +287,23 @@ public class SandboxBroker {
      * Finds and marks expired sandboxes as evicted. Called periodically by
      * {@link SandboxEvictionJob}.
      *
-     * @return the number of sandboxes evicted
+     * @return evicted sandbox details needed for provider-owned backend resource cleanup
      */
     @Transactional
-    public int evictExpired() {
+    public List<EvictedSandbox> evictExpiredWithDetails() {
         var expired = sandboxRepository.findExpiredSandboxes(OffsetDateTime.now());
+        List<EvictedSandbox> evicted = new ArrayList<>(expired.size());
         for (SandboxEntity entity : expired) {
             entity.setStatus("evicted");
             entity.setLastUsedAt(OffsetDateTime.now());
             metrics.evict(entity.getSandboxType());
+            evicted.add(
+                    new EvictedSandbox(
+                            entity.getId(),
+                            entity.getSandboxType(),
+                            entity.getExternalId(),
+                            entity.getOrgId(),
+                            entity.getUserId()));
             log.info(
                     "Evicted expired sandbox id={} externalId={} user={} org={}",
                     entity.getId(),
@@ -299,7 +312,19 @@ public class SandboxBroker {
                     entity.getOrgId());
         }
         sandboxRepository.saveAll(expired);
-        return expired.size();
+        return evicted;
+    }
+
+    /**
+     * Finds and marks expired sandboxes as evicted. Called by legacy callers that only need the
+     * count; resource-management callers should use {@link #evictExpiredWithDetails()} so they can
+     * release provider-owned backend resources.
+     *
+     * @return the number of sandboxes evicted
+     */
+    @Transactional
+    public int evictExpired() {
+        return evictExpiredWithDetails().size();
     }
 
     private static String sanitizeReason(String reason) {

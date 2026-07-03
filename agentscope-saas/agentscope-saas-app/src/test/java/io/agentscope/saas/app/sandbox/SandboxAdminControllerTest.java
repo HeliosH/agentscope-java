@@ -26,6 +26,7 @@ import static org.mockito.Mockito.when;
 
 import io.agentscope.saas.core.persistence.entity.SandboxEntity;
 import io.agentscope.saas.core.persistence.repo.SandboxRepository;
+import io.agentscope.saas.sandbox.SandboxBackendTerminator;
 import io.agentscope.saas.sandbox.SandboxBroker;
 import java.time.OffsetDateTime;
 import java.util.List;

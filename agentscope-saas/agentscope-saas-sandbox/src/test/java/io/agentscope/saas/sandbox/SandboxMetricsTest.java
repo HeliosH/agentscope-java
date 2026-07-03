@@ -183,6 +183,7 @@ class SandboxMetricsTest {
         metrics.registerActive("e2b");
         metrics.workspaceProjectionSucceeded("e2b");
         metrics.backendReleaseFailed("e2b");
+        metrics.backendReleaseSucceeded("e2b");
         metrics.recordAcquireStart("e2b", "create", 1);
         metrics.incrementQueueDepth("e2b", "user");
         metrics.decrementQueueDepth("e2b", "user");

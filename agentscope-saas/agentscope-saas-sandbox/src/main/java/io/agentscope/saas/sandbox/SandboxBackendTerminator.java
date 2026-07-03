@@ -13,9 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.saas.app.sandbox;
+package io.agentscope.saas.sandbox;
 
-/** Best-effort backend resource termination for admin recovery workflows. */
+/** Best-effort backend resource termination for quota recovery and idle eviction workflows. */
 public interface SandboxBackendTerminator {
 
     TerminationResult terminate(String sandboxType, String externalId);

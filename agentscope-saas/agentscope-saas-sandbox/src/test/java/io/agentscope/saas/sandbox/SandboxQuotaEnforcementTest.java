@@ -32,6 +32,7 @@ import io.agentscope.saas.core.persistence.repo.SandboxRepository;
 import io.agentscope.saas.core.persistence.repo.UserRepository;
 import io.agentscope.saas.core.ratelimit.QuotaExceededException;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -259,5 +260,31 @@ class SandboxQuotaEnforcementTest {
         assertEquals("active", active.getStatus());
         verify(sandboxRepository, never()).save(any(SandboxEntity.class));
         verify(metrics, never()).forceEvict(anyString());
+    }
+
+    @Test
+    void evictExpiredWithDetailsMarksRowsAndReturnsBackendIds() {
+        UUID sandboxId = UUID.randomUUID();
+        SandboxEntity active = new SandboxEntity();
+        active.setId(sandboxId);
+        active.setOrgId(ORG_ID);
+        active.setUserId(USER_ID);
+        active.setSandboxType("opensandbox");
+        active.setExternalId("os-1");
+        active.setStatus("active");
+        active.setExpiresAt(OffsetDateTime.now().minusSeconds(1));
+        when(sandboxRepository.findExpiredSandboxes(any(OffsetDateTime.class)))
+                .thenReturn(List.of(active));
+        when(sandboxRepository.saveAll(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        var evicted = broker.evictExpiredWithDetails();
+
+        assertEquals(1, evicted.size());
+        assertEquals(sandboxId, evicted.get(0).id());
+        assertEquals("opensandbox", evicted.get(0).sandboxType());
+        assertEquals("os-1", evicted.get(0).externalId());
+        assertEquals("evicted", active.getStatus());
+        verify(sandboxRepository).saveAll(List.of(active));
+        verify(metrics).evict("opensandbox");
     }
 }

@@ -1011,7 +1011,7 @@ public class SaasMetrics {
 
 运行时 Prometheus 指标不带 `org_id`/`user_id`，避免高基数拖垮指标后端；租户级排查走 Admin API、业务表和审计日志。
 
-`/api/admin/sandboxes/{sandboxId}/force-evict` 是资源泄漏恢复接口：只允许 org-admin 操作本 org 记录，将非终态 tracking row 标记为 `evicted` 以释放配额。tracking row 的 `external_id` 优先保存真实 provider sandbox id；接口默认对当前配置的 E2B/Cube backend 做 best-effort terminate，并在响应中返回 `backendTerminationStatus`。配额释放与后端终止结果解耦，后端失败不回滚 tracking row，管理员可根据响应继续重试或交给 infra GC。
+`/api/admin/sandboxes/{sandboxId}/force-evict` 是资源泄漏恢复接口：只允许 org-admin 操作本 org 记录，将非终态 tracking row 标记为 `evicted` 以释放配额。tracking row 的 `external_id` 优先保存真实 provider sandbox id；接口默认对当前配置的 E2B/Cube/OpenSandbox backend 做 best-effort terminate，并在响应中返回 `backendTerminationStatus`。配额释放与后端终止结果解耦，后端失败不回滚 tracking row，管理员可根据响应继续重试或交给 infra GC。定时 idle eviction 也复用同一 terminator，在 tracking row 过期后主动释放 provider 后端资源。
 
 ### 12.3 Grafana Dashboard
 

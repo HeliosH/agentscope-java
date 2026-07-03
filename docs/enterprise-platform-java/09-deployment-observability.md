@@ -107,7 +107,7 @@ saas.channel.messages            Counter channel_type,direction (planned)
 ```
 
 已实现的 sandbox 指标刻意不带 `org_id`/`user_id`，避免高基数标签拖垮指标后端；租户级排查继续通过 `sandboxes` 表、`memory_events` 表和审计日志完成。
-`saas.sandbox.lifecycle.events{type,event}` 当前事件包括：`registered`、`released`、`evicted`、`force_evicted`、`quota_rejected`、tracking failure，以及 release 链路的 `workspace_projection_succeeded`、`workspace_projection_failed`、`state_persist_failed`、`sandbox_stop_failed`、`sandbox_shutdown_failed`、`backend_release_failed`、`acquire_start_failed`。其中 `workspace_projection_succeeded` 只在实际投影文件数大于 0 时计数，`sandbox_stop_failed` 覆盖 stop 阶段的 workspace snapshot 持久化失败。
+`saas.sandbox.lifecycle.events{type,event}` 当前事件包括：`registered`、`released`、`evicted`、`force_evicted`、`quota_rejected`、tracking failure，以及 release 链路的 `workspace_projection_succeeded`、`workspace_projection_failed`、`state_persist_failed`、`sandbox_stop_failed`、`sandbox_shutdown_failed`、`backend_released`、`backend_release_failed`、`acquire_start_failed`。其中 `workspace_projection_succeeded` 只在实际投影文件数大于 0 时计数，`sandbox_stop_failed` 覆盖 stop 阶段的 workspace snapshot 持久化失败。
 `saas.sandbox.acquire.duration{type,source}` 记录 acquire+start 的端到端等待，`source=create|resume|external|unknown`，覆盖 execution guard、state store、provider create/resume、workspace setup/restore。
 `saas.sandbox.request.queue_depth{type,scope}`、`saas.sandbox.execution.active{type,scope}`、`saas.sandbox.queue.wait.duration{type,scope,outcome}` 和 `saas.sandbox.queue.timeouts{type,scope}` 来自 execution guard；默认同一 sandbox isolation slot 最多等待 60 秒，超过后返回忙碌错误并计入 timeout。
 `saas.sandbox.pool.size{type,status}` 和 `saas.sandbox.pool.expired_active{type}` 由 eviction job 周期性刷新，直接反映 tracking table 中的资源池状态；`expired_active > 0` 应作为资源泄漏/回收延迟告警信号。
@@ -131,7 +131,9 @@ Sandbox Pool Overview / Request Latency(p50/p95/p99) / Token Usage by Org / Chan
 ### 4.5 运维查询
 
 `GET /api/admin/sandboxes` 已提供 org-admin 级 sandbox inventory，支持 `userId`、`status`、`sandboxType`、`expiredOnly`、`limit` 过滤。该接口只从 JWT 读取 org scope，不能通过参数跨租户查询，适合巡检 active/expired tracking row 和资源泄漏。`externalId` 优先记录真实 provider sandbox id（E2B/Cube/Daytona 的 `sandboxId`、Docker 的 `containerId`），拿不到时才回退到 session id。
-`POST /api/admin/sandboxes/{sandboxId}/force-evict` 提供人工恢复通道：仅能操作 JWT 所属 org 的 sandbox tracking row，将非终态记录标记为 `evicted` 并释放配额压力，同时记录 `force_evicted` lifecycle metric。请求默认 `terminateBackend=true`，会按当前配置的 E2B/Cube provider 对 `externalId` 做 best-effort 后端终止；响应里的 `backendTerminationStatus` 明确区分 `succeeded`、`failed`、`unsupported`、`no_external_id`、`skipped`。tracking row 状态变更与后端终止结果解耦，后端失败不会回滚配额释放。
+`POST /api/admin/sandboxes/{sandboxId}/force-evict` 提供人工恢复通道：仅能操作 JWT 所属 org 的 sandbox tracking row，将非终态记录标记为 `evicted` 并释放配额压力，同时记录 `force_evicted` lifecycle metric。请求默认 `terminateBackend=true`，会按当前配置的 E2B/Cube/OpenSandbox provider 对 `externalId` 做 best-effort 后端终止；响应里的 `backendTerminationStatus` 明确区分 `succeeded`、`failed`、`unsupported`、`no_external_id`、`skipped`。tracking row 状态变更与后端终止结果解耦，后端失败不会回滚配额释放。
+
+定时 idle eviction 使用同一套 backend terminator：过期 tracking row 会先标记为 `evicted` 释放配额，然后 best-effort 删除 provider 后端资源；成功记录 `backend_released`，失败记录 `backend_release_failed`。这样 E2B/Cube/OpenSandbox 这类外部运行时不会只靠人工 force-evict 或后置 infra GC 回收。
 
 ### 4.6 健康检查
 ```java

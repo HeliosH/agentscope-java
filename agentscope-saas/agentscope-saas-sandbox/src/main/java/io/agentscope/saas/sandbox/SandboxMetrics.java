@@ -107,6 +107,10 @@ public class SandboxMetrics {
         incrementLifecycle(sandboxType, "backend_release_failed");
     }
 
+    public void backendReleaseSucceeded(String sandboxType) {
+        incrementLifecycle(sandboxType, "backend_released");
+    }
+
     public void recordAcquireStart(String sandboxType, String source, long durationNanos) {
         if (registry == null || durationNanos < 0) {
             return;

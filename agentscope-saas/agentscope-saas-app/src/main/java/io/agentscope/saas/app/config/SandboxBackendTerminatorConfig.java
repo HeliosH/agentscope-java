@@ -21,7 +21,7 @@ import io.agentscope.extensions.sandbox.e2b.E2bSandboxClientOptions;
 import io.agentscope.extensions.sandbox.e2b.E2bSandboxTerminator;
 import io.agentscope.extensions.sandbox.opensandbox.OpenSandboxClientOptions;
 import io.agentscope.extensions.sandbox.opensandbox.OpenSandboxTerminator;
-import io.agentscope.saas.app.sandbox.SandboxBackendTerminator;
+import io.agentscope.saas.sandbox.SandboxBackendTerminator;
 import java.util.Locale;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
