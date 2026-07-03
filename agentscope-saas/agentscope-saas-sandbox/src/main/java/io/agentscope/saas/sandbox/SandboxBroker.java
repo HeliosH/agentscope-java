@@ -222,6 +222,8 @@ public class SandboxBroker {
                                 entity.setStatus("evicted");
                                 entity.setLastUsedAt(now);
                                 entity.setExpiresAt(now);
+                                entity.setBackendReleaseStatus("pending");
+                                entity.setBackendReleaseError(null);
                                 sandboxRepository.save(entity);
                                 metrics.forceEvict(entity.getSandboxType());
                                 log.warn(
@@ -296,6 +298,8 @@ public class SandboxBroker {
         for (SandboxEntity entity : expired) {
             entity.setStatus("evicted");
             entity.setLastUsedAt(OffsetDateTime.now());
+            entity.setBackendReleaseStatus("pending");
+            entity.setBackendReleaseError(null);
             metrics.evict(entity.getSandboxType());
             evicted.add(
                     new EvictedSandbox(
@@ -327,6 +331,33 @@ public class SandboxBroker {
         return evictExpiredWithDetails().size();
     }
 
+    /** Records the provider backend release result for an already-known sandbox tracking row. */
+    @Transactional
+    public void recordBackendRelease(
+            UUID sandboxId, SandboxBackendTerminator.TerminationResult result) {
+        if (sandboxId == null || result == null) {
+            return;
+        }
+        sandboxRepository
+                .findById(sandboxId)
+                .ifPresent(
+                        entity -> {
+                            entity.setBackendReleaseStatus(result.status());
+                            if (result.attempted()) {
+                                entity.setBackendReleaseAttempts(
+                                        entity.getBackendReleaseAttempts() + 1);
+                            }
+                            if (result.succeeded()) {
+                                entity.setBackendReleasedAt(OffsetDateTime.now());
+                                entity.setBackendReleaseError(null);
+                            } else {
+                                entity.setBackendReleaseError(
+                                        sanitizeBackendReleaseMessage(result.message()));
+                            }
+                            sandboxRepository.save(entity);
+                        });
+    }
+
     private static String sanitizeReason(String reason) {
         if (reason == null || reason.isBlank()) {
             return "unspecified";
@@ -336,5 +367,16 @@ public class SandboxBroker {
             return normalized;
         }
         return normalized.substring(0, 256);
+    }
+
+    private static String sanitizeBackendReleaseMessage(String message) {
+        if (message == null || message.isBlank()) {
+            return null;
+        }
+        String normalized = message.trim().replaceAll("\\s+", " ");
+        if (normalized.length() <= 2000) {
+            return normalized;
+        }
+        return normalized.substring(0, 2000);
     }
 }

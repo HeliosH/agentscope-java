@@ -9,7 +9,7 @@ groups:
           service: agentscope-saas
         annotations:
           summary: "Expired active sandbox tracking rows detected"
-          description: "Sandbox type {{ $labels.type }} has {{ $value }} active tracking row(s) past their lease. Check /api/admin/sandboxes?expiredOnly=true and backend release logs."
+          description: "Sandbox type {{ $labels.type }} has {{ $value }} active tracking row(s) past their lease. Check SandboxReconciliationJob, /api/admin/sandboxes?expiredOnly=true, and backend release logs."
 
       - alert: SaasSandboxReleaseFailures
         expr: sum by (type, event) (increase(saas_sandbox_lifecycle_events_total{event=~"tracking_release_failed|backend_release_failed|sandbox_shutdown_failed"}[10m])) > 0
@@ -19,7 +19,7 @@ groups:
           service: agentscope-saas
         annotations:
           summary: "Sandbox release failure"
-          description: "Sandbox type {{ $labels.type }} reported {{ $labels.event }} {{ $value }} time(s) in 10m. Runtime resources may leak until garbage collection catches up."
+          description: "Sandbox type {{ $labels.type }} reported {{ $labels.event }} {{ $value }} time(s) in 10m. Runtime resources may leak until reconciliation succeeds; inspect backend_release_status/backend_release_error in /api/admin/sandboxes."
 
       - alert: SaasSandboxPersistenceFailures
         expr: sum by (type, event) (increase(saas_sandbox_lifecycle_events_total{event=~"workspace_projection_failed|state_persist_failed|sandbox_stop_failed"}[10m])) > 0

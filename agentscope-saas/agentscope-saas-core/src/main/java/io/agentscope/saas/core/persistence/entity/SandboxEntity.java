@@ -66,6 +66,18 @@ public class SandboxEntity {
     @Column(name = "expires_at")
     private OffsetDateTime expiresAt;
 
+    @Column(name = "backend_release_status")
+    private String backendReleaseStatus;
+
+    @Column(name = "backend_release_attempts")
+    private int backendReleaseAttempts;
+
+    @Column(name = "backend_released_at")
+    private OffsetDateTime backendReleasedAt;
+
+    @Column(name = "backend_release_error", length = 2000)
+    private String backendReleaseError;
+
     public UUID getId() {
         return id;
     }
@@ -148,5 +160,37 @@ public class SandboxEntity {
 
     public void setExpiresAt(OffsetDateTime expiresAt) {
         this.expiresAt = expiresAt;
+    }
+
+    public String getBackendReleaseStatus() {
+        return backendReleaseStatus;
+    }
+
+    public void setBackendReleaseStatus(String backendReleaseStatus) {
+        this.backendReleaseStatus = backendReleaseStatus;
+    }
+
+    public int getBackendReleaseAttempts() {
+        return backendReleaseAttempts;
+    }
+
+    public void setBackendReleaseAttempts(int backendReleaseAttempts) {
+        this.backendReleaseAttempts = backendReleaseAttempts;
+    }
+
+    public OffsetDateTime getBackendReleasedAt() {
+        return backendReleasedAt;
+    }
+
+    public void setBackendReleasedAt(OffsetDateTime backendReleasedAt) {
+        this.backendReleasedAt = backendReleasedAt;
+    }
+
+    public String getBackendReleaseError() {
+        return backendReleaseError;
+    }
+
+    public void setBackendReleaseError(String backendReleaseError) {
+        this.backendReleaseError = backendReleaseError;
     }
 }

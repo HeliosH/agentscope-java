@@ -101,6 +101,7 @@ public class SandboxEvictionJob {
         try {
             SandboxBackendTerminator.TerminationResult result =
                     terminator.terminate(sandbox.sandboxType(), sandbox.externalId());
+            broker.recordBackendRelease(sandbox.id(), result);
             if (result.attempted() && result.succeeded()) {
                 metrics.backendReleaseSucceeded(sandbox.sandboxType());
                 log.debug(
@@ -129,6 +130,10 @@ public class SandboxEvictionJob {
                         result.message());
             }
         } catch (Exception e) {
+            broker.recordBackendRelease(
+                    sandbox.id(),
+                    SandboxBackendTerminator.TerminationResult.failed(
+                            e.getMessage() != null ? e.getMessage() : e.getClass().getName()));
             metrics.backendReleaseFailed(sandbox.sandboxType());
             log.warn(
                     "Expired sandbox backend termination threw id={} type={} externalId={}: {}",

@@ -1,0 +1,63 @@
+name: Enterprise Runtime Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: "Runtime backend to validate against an already-running SaaS app"
+        required: true
+        default: "e2b"
+        type: choice
+        options:
+          - e2b
+          - opensandbox
+      base_url:
+        description: "Base URL of the running SaaS app"
+        required: true
+        default: "http://localhost:18080"
+      opensandbox_api_base_url:
+        description: "Optional OpenSandbox API base URL for direct provider lifecycle validation"
+        required: false
+        default: ""
+      opensandbox_image:
+        description: "OpenSandbox image for direct provider lifecycle validation"
+        required: false
+        default: "ubuntu:latest"
+
+jobs:
+  runtime-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate E2B application runtime
+        if: inputs.backend == 'e2b'
+        shell: bash
+        env:
+          BASE: ${{ inputs.base_url }}
+          E2B_LIFECYCLE_TIMEOUT: "240"
+        run: |
+          chmod +x agentscope-saas/agentscope-saas-app/scripts/e2b-runtime-lifecycle.sh
+          agentscope-saas/agentscope-saas-app/scripts/e2b-runtime-lifecycle.sh
+
+      - name: Validate OpenSandbox application runtime
+        if: inputs.backend == 'opensandbox'
+        shell: bash
+        env:
+          BASE: ${{ inputs.base_url }}
+          SANDBOX_SMOKE_TIMEOUT: "240"
+        run: |
+          chmod +x agentscope-saas/agentscope-saas-app/scripts/opensandbox-enterprise-smoke.sh
+          agentscope-saas/agentscope-saas-app/scripts/opensandbox-enterprise-smoke.sh
+
+      - name: Validate OpenSandbox provider lifecycle
+        if: inputs.backend == 'opensandbox' && inputs.opensandbox_api_base_url != ''
+        shell: bash
+        env:
+          OPENSANDBOX_API_BASE_URL: ${{ inputs.opensandbox_api_base_url }}
+          OPENSANDBOX_IMAGE: ${{ inputs.opensandbox_image }}
+          OPENSANDBOX_API_KEY: ${{ secrets.OPENSANDBOX_API_KEY }}
+        run: |
+          chmod +x agentscope-saas/agentscope-saas-app/scripts/opensandbox-runtime-lifecycle.sh
+          agentscope-saas/agentscope-saas-app/scripts/opensandbox-runtime-lifecycle.sh

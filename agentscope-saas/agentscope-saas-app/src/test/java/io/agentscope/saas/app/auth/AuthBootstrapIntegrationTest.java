@@ -17,6 +17,7 @@ package io.agentscope.saas.app.auth;
 
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 
+import java.time.Duration;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -44,7 +45,11 @@ class AuthBootstrapIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        webClient = WebTestClient.bindToServer().baseUrl("http://localhost:" + port).build();
+        webClient =
+                WebTestClient.bindToServer()
+                        .responseTimeout(Duration.ofSeconds(30))
+                        .baseUrl("http://localhost:" + port)
+                        .build();
     }
 
     @Test

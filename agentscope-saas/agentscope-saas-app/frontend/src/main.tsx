@@ -12,6 +12,7 @@ import AgentSessionsPage from './pages/AgentSessionsPage';
 import AgentSessionDetailPage from './pages/AgentSessionDetailPage';
 import AgentSettingsPage from './pages/AgentSettingsPage';
 import AdminSandboxesPage from './pages/AdminSandboxesPage';
+import AdminMemoryEventsPage from './pages/AdminMemoryEventsPage';
 import AppShell from './components/AppShell';
 import AgentLayout from './components/AgentLayout';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -29,6 +30,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <Route path="/agents" element={<AgentsHubPage />} />
             <Route path="/agents/new" element={<AgentCreatePage />} />
             <Route path="/admin/sandboxes" element={<AdminSandboxesPage />} />
+            <Route path="/admin/memory-events" element={<AdminMemoryEventsPage />} />
 
             <Route path="/agents/:id" element={<AgentLayout />}>
               <Route index element={<Navigate to="chat" replace />} />

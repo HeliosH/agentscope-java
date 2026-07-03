@@ -69,6 +69,11 @@ saas:
     execution-guard-max-wait-seconds: ${SAAS_SANDBOX_GUARD_MAX_WAIT_SECONDS:60}
     execution-guard-lease-ttl-seconds: ${SAAS_SANDBOX_GUARD_LEASE_TTL_SECONDS:1800}
     execution-guard-retry-interval-millis: ${SAAS_SANDBOX_GUARD_RETRY_INTERVAL_MS:500}
+    reconciliation-enabled: ${SAAS_SANDBOX_RECONCILIATION_ENABLED:true}
+    reconciliation-fixed-delay-seconds: ${SAAS_SANDBOX_RECONCILIATION_FIXED_DELAY:300}
+    reconciliation-batch-size: ${SAAS_SANDBOX_RECONCILIATION_BATCH_SIZE:100}
+    reconciliation-active-grace-seconds: ${SAAS_SANDBOX_RECONCILIATION_ACTIVE_GRACE_SECONDS:120}
+    backend-release-max-attempts: ${SAAS_SANDBOX_BACKEND_RELEASE_MAX_ATTEMPTS:5}
     cube-api-url: ${SAAS_SANDBOX_CUBE_API_URL:${CUBE_API_URL:http://localhost:8080}}
     cube-api-key: ${SAAS_SANDBOX_CUBE_API_KEY:${CUBE_API_KEY:}}
     cube-template-id: ${SAAS_SANDBOX_CUBE_TEMPLATE_ID:${CUBE_TEMPLATE_ID:}}

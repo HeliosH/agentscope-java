@@ -75,6 +75,10 @@ public class SandboxAdminController {
             OffsetDateTime createdAt,
             OffsetDateTime lastUsedAt,
             OffsetDateTime expiresAt,
+            String backendReleaseStatus,
+            int backendReleaseAttempts,
+            OffsetDateTime backendReleasedAt,
+            String backendReleaseError,
             boolean expired) {}
 
     public record ForceEvictRequest(String reason, Boolean terminateBackend) {
@@ -150,6 +154,8 @@ public class SandboxAdminController {
                                                                     terminateBackend(
                                                                             result,
                                                                             terminateBackend);
+                                                    broker.recordBackendRelease(
+                                                            result.sandbox().getId(), termination);
                                                     return ResponseEntity.ok(
                                                             toActionView(result, termination));
                                                 })
@@ -177,6 +183,10 @@ public class SandboxAdminController {
                 entity.getCreatedAt(),
                 entity.getLastUsedAt(),
                 expiresAt,
+                entity.getBackendReleaseStatus(),
+                entity.getBackendReleaseAttempts(),
+                entity.getBackendReleasedAt(),
+                entity.getBackendReleaseError(),
                 expired);
     }
 

@@ -174,6 +174,21 @@ public class SaasProperties {
         /** Redis execution guard retry interval in milliseconds. */
         private int executionGuardRetryIntervalMillis = 500;
 
+        /** Enables system reconciliation of leaked sandbox tracking/backend resources. */
+        private boolean reconciliationEnabled = true;
+
+        /** Fixed delay between reconciliation scans in seconds. */
+        private long reconciliationFixedDelaySeconds = 300L;
+
+        /** Maximum number of sandbox rows reconciled per scan. */
+        private int reconciliationBatchSize = 100;
+
+        /** Additional grace before an expired active row is system-evicted. */
+        private long reconciliationActiveGraceSeconds = 120L;
+
+        /** Maximum provider backend release attempts before leaving the row for review. */
+        private int backendReleaseMaxAttempts = 5;
+
         // --- Cube-specific fields ---
 
         /** Cube API base URL (e.g. {@code http://cube-api.internal:8080}). Required when type=cube. */
@@ -477,6 +492,46 @@ public class SaasProperties {
 
         public void setExecutionGuardRetryIntervalMillis(int executionGuardRetryIntervalMillis) {
             this.executionGuardRetryIntervalMillis = executionGuardRetryIntervalMillis;
+        }
+
+        public boolean isReconciliationEnabled() {
+            return reconciliationEnabled;
+        }
+
+        public void setReconciliationEnabled(boolean reconciliationEnabled) {
+            this.reconciliationEnabled = reconciliationEnabled;
+        }
+
+        public long getReconciliationFixedDelaySeconds() {
+            return reconciliationFixedDelaySeconds;
+        }
+
+        public void setReconciliationFixedDelaySeconds(long reconciliationFixedDelaySeconds) {
+            this.reconciliationFixedDelaySeconds = reconciliationFixedDelaySeconds;
+        }
+
+        public int getReconciliationBatchSize() {
+            return reconciliationBatchSize;
+        }
+
+        public void setReconciliationBatchSize(int reconciliationBatchSize) {
+            this.reconciliationBatchSize = reconciliationBatchSize;
+        }
+
+        public long getReconciliationActiveGraceSeconds() {
+            return reconciliationActiveGraceSeconds;
+        }
+
+        public void setReconciliationActiveGraceSeconds(long reconciliationActiveGraceSeconds) {
+            this.reconciliationActiveGraceSeconds = reconciliationActiveGraceSeconds;
+        }
+
+        public int getBackendReleaseMaxAttempts() {
+            return backendReleaseMaxAttempts;
+        }
+
+        public void setBackendReleaseMaxAttempts(int backendReleaseMaxAttempts) {
+            this.backendReleaseMaxAttempts = backendReleaseMaxAttempts;
         }
 
         public String getCubeApiUrl() {

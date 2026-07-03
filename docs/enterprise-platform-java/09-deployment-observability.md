@@ -135,6 +135,20 @@ Sandbox Pool Overview / Request Latency(p50/p95/p99) / Token Usage by Org / Chan
 
 定时 idle eviction 使用同一套 backend terminator：过期 tracking row 会先标记为 `evicted` 释放配额，然后 best-effort 删除 provider 后端资源；成功记录 `backend_released`，失败记录 `backend_release_failed`。这样 E2B/Cube/OpenSandbox 这类外部运行时不会只靠人工 force-evict 或后置 infra GC 回收。
 
+系统级 `SandboxReconciliationJob` 是资源泄漏兜底巡检：它使用 `adminDataSource` 绕过 RLS 做跨租户扫描，避免普通租户上下文下的定时任务漏扫。巡检会把已过期但仍为 `active` 的 tracking row 标记为 `evicted`，并对 `evicted/released` 且仍有 `external_id` 的记录重试后端删除。后端释放状态持久化在 `sandboxes.backend_release_status`、`backend_release_attempts`、`backend_released_at`、`backend_release_error`，用于 Admin 页面、SQL 运维和失败重试。关键配置：
+
+```
+SAAS_SANDBOX_RECONCILIATION_ENABLED=true
+SAAS_SANDBOX_RECONCILIATION_FIXED_DELAY=300
+SAAS_SANDBOX_RECONCILIATION_BATCH_SIZE=100
+SAAS_SANDBOX_RECONCILIATION_ACTIVE_GRACE_SECONDS=120
+SAAS_SANDBOX_BACKEND_RELEASE_MAX_ATTEMPTS=5
+```
+
+管理前端已提供两个运维入口：`/admin/sandboxes` 查看 tracking row、后端释放状态、失败原因并执行 force-evict；`/admin/memory-events` 查看 `memory_events` 的 pending/failed/synced 状态、重试次数和错误原因。两者都只允许 org-admin 查看本 org 数据。
+
+运行时验证 gate 使用 `.github/workflows/enterprise-runtime-gate.yml`：E2B 分支运行 `scripts/e2b-runtime-lifecycle.sh`，覆盖网页登录、发起任务、沙箱执行、HITL、snapshot restore、release projection 下载和删除/移动 reconciliation；OpenSandbox 分支运行 `scripts/opensandbox-enterprise-smoke.sh`，并可选运行 provider lifecycle 直连验证。当前策略要求 E2B gate 通过即可推进，不强制 CubeSandbox 验证。
+
 ### 4.6 健康检查
 ```java
 @Scheduled(fixedRate = 30_000)

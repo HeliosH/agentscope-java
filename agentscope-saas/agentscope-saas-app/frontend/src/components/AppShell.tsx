@@ -13,7 +13,7 @@ export default function AppShell() {
   const { me } = useOutletContext<ShellContext>();
   const [menuOpen, setMenuOpen] = useState(false);
   const admin = me?.role === 'admin';
-  const adminActive = location.pathname.startsWith('/admin/');
+  const adminPath = location.pathname;
 
   function handleLogout() {
     logout();
@@ -52,22 +52,20 @@ export default function AppShell() {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             {admin && (
-              <button
-                type="button"
-                onClick={() => navigate('/admin/sandboxes')}
-                style={{
-                  background: adminActive ? '#0f172a' : '#ffffff',
-                  color: adminActive ? '#ffffff' : '#334155',
-                  border: `1px solid ${adminActive ? '#0f172a' : '#e2e8f0'}`,
-                  borderRadius: 9,
-                  padding: '8px 12px',
-                  fontSize: '0.85rem',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                }}
-              >
-                Sandboxes
-              </button>
+              <>
+                <AdminNavButton
+                  active={adminPath.startsWith('/admin/sandboxes')}
+                  onClick={() => navigate('/admin/sandboxes')}
+                >
+                  Sandboxes
+                </AdminNavButton>
+                <AdminNavButton
+                  active={adminPath.startsWith('/admin/memory-events')}
+                  onClick={() => navigate('/admin/memory-events')}
+                >
+                  Memory
+                </AdminNavButton>
+              </>
             )}
             <div style={{ position: 'relative' }}>
               <button
@@ -121,5 +119,34 @@ export default function AppShell() {
         </div>
       </div>
     </div>
+  );
+}
+
+function AdminNavButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        background: active ? '#0f172a' : '#ffffff',
+        color: active ? '#ffffff' : '#334155',
+        border: `1px solid ${active ? '#0f172a' : '#e2e8f0'}`,
+        borderRadius: 9,
+        padding: '8px 12px',
+        fontSize: '0.85rem',
+        fontWeight: 600,
+        cursor: 'pointer',
+      }}
+    >
+      {children}
+    </button>
   );
 }
