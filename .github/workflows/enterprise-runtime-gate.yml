@@ -3,16 +3,8 @@ name: Enterprise Runtime Gate
 on:
   workflow_dispatch:
     inputs:
-      backend:
-        description: "Runtime backend to validate against an already-running SaaS app"
-        required: true
-        default: "e2b"
-        type: choice
-        options:
-          - e2b
-          - opensandbox
       base_url:
-        description: "Base URL of the running SaaS app"
+        description: "Base URL of the running SaaS app configured with SAAS_SANDBOX_TYPE=opensandbox"
         required: true
         default: "http://localhost:18080"
       opensandbox_api_base_url:
@@ -31,28 +23,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate E2B application runtime
-        if: inputs.backend == 'e2b'
-        shell: bash
-        env:
-          BASE: ${{ inputs.base_url }}
-          E2B_LIFECYCLE_TIMEOUT: "240"
-        run: |
-          chmod +x agentscope-saas/agentscope-saas-app/scripts/e2b-runtime-lifecycle.sh
-          agentscope-saas/agentscope-saas-app/scripts/e2b-runtime-lifecycle.sh
-
       - name: Validate OpenSandbox application runtime
-        if: inputs.backend == 'opensandbox'
         shell: bash
         env:
           BASE: ${{ inputs.base_url }}
           SANDBOX_SMOKE_TIMEOUT: "240"
+          SANDBOX_SMOKE_BACKEND_RELEASE_TIMEOUT: "90"
+          SANDBOX_SMOKE_ADMIN_EMAIL: ${{ vars.SANDBOX_SMOKE_ADMIN_EMAIL }}
+          SANDBOX_SMOKE_ADMIN_PASSWORD: ${{ secrets.SANDBOX_SMOKE_ADMIN_PASSWORD }}
         run: |
           chmod +x agentscope-saas/agentscope-saas-app/scripts/opensandbox-enterprise-smoke.sh
           agentscope-saas/agentscope-saas-app/scripts/opensandbox-enterprise-smoke.sh
 
       - name: Validate OpenSandbox provider lifecycle
-        if: inputs.backend == 'opensandbox' && inputs.opensandbox_api_base_url != ''
+        if: inputs.opensandbox_api_base_url != ''
         shell: bash
         env:
           OPENSANDBOX_API_BASE_URL: ${{ inputs.opensandbox_api_base_url }}

@@ -82,16 +82,22 @@ public class AgentWorkspaceController {
     private static final Logger log = LoggerFactory.getLogger(AgentWorkspaceController.class);
     private static final int MAX_FILE_SIZE = 512 * 1024;
     private static final RuntimeContext FS_RC = RuntimeContext.empty();
+    private static final String TEXT_PLAIN = "text/plain; charset=utf-8";
 
     private final HarnessAgent agent;
     private final AgentRepository agentRepository;
     private final TenantResolver tenantResolver;
+    private final FileCatalogService fileCatalogService;
 
     public AgentWorkspaceController(
-            HarnessAgent agent, AgentRepository agentRepository, TenantResolver tenantResolver) {
+            HarnessAgent agent,
+            AgentRepository agentRepository,
+            TenantResolver tenantResolver,
+            FileCatalogService fileCatalogService) {
         this.agent = agent;
         this.agentRepository = agentRepository;
         this.tenantResolver = tenantResolver;
+        this.fileCatalogService = fileCatalogService;
     }
 
     // -----------------------------------------------------------------
@@ -175,18 +181,25 @@ public class AgentWorkspaceController {
         return Mono.fromCallable(
                         () -> {
                             AbstractFilesystem fs = resolveFilesystem(rc, agentId);
+                            TenantContext tenant = TenantContext.from(rc);
+                            List<FileCatalogService.CatalogFileSummary> catalogFiles =
+                                    fileCatalogService.listActiveFiles(tenant);
                             if (recursive) {
                                 GlobResult gr = fs.glob(FS_RC, "**/*", "/");
                                 if (!gr.isSuccess() || gr.matches() == null) {
-                                    return List.<FileNode>of();
+                                    return buildTreeFromGlob(
+                                            mergeCatalogFileInfos(List.of(), catalogFiles, true));
                                 }
-                                return buildTreeFromGlob(gr.matches());
+                                return buildTreeFromGlob(
+                                        mergeCatalogFileInfos(gr.matches(), catalogFiles, true));
                             }
                             LsResult ls = fs.ls(FS_RC, "/");
                             if (!ls.isSuccess() || ls.entries() == null) {
-                                return List.<FileNode>of();
+                                return flattenShallow(
+                                        mergeCatalogFileInfos(List.of(), catalogFiles, false));
                             }
-                            return flattenShallow(ls.entries());
+                            return flattenShallow(
+                                    mergeCatalogFileInfos(ls.entries(), catalogFiles, false));
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -200,15 +213,15 @@ public class AgentWorkspaceController {
         return Mono.fromCallable(
                         () -> {
                             AbstractFilesystem fs = resolveFilesystem(rc, agentId);
+                            TenantContext tenant = TenantContext.from(rc);
                             String abs = toAbsFsPath(path);
+                            String rel = toRelFsPath(path);
                             if (!fs.exists(FS_RC, abs)) {
-                                throw new ResponseStatusException(
-                                        HttpStatus.NOT_FOUND, "File not found: " + path);
+                                return readStoredTextOr404(tenant, rel, path);
                             }
                             ReadResult rr = fs.read(FS_RC, abs, 0, Integer.MAX_VALUE);
                             if (!rr.isSuccess() || rr.fileData() == null) {
-                                throw new ResponseStatusException(
-                                        HttpStatus.NOT_FOUND, "File not found: " + path);
+                                return readStoredTextOr404(tenant, rel, path);
                             }
                             String content = rr.fileData().content();
                             String encoding = rr.fileData().encoding();
@@ -246,28 +259,38 @@ public class AgentWorkspaceController {
         return Mono.fromCallable(
                         () -> {
                             AbstractFilesystem fs = resolveFilesystem(rc, agentId);
+                            TenantContext tenant = TenantContext.from(rc);
                             String abs = toAbsFsPath(path);
+                            String rel = toRelFsPath(path);
                             List<FileDownloadResponse> results =
                                     fs.downloadFiles(FS_RC, List.of(abs));
                             FileDownloadResponse result =
                                     results == null || results.isEmpty() ? null : results.get(0);
                             if (result == null || !result.isSuccess() || result.content() == null) {
-                                throw new ResponseStatusException(
-                                        HttpStatus.NOT_FOUND,
-                                        result != null && result.error() != null
-                                                ? result.error()
-                                                : "File not found: " + path);
+                                return fileCatalogService
+                                        .readCurrentFile(tenant, rel)
+                                        .map(stored -> downloadResponse(abs, stored.content()))
+                                        .orElseThrow(
+                                                () ->
+                                                        new ResponseStatusException(
+                                                                HttpStatus.NOT_FOUND,
+                                                                result != null
+                                                                                && result.error()
+                                                                                        != null
+                                                                        ? result.error()
+                                                                        : "File not found: "
+                                                                                + path));
                             }
-                            String leaf = abs;
-                            int slash = abs.lastIndexOf('/');
-                            if (slash >= 0 && slash < abs.length() - 1) {
-                                leaf = abs.substring(slash + 1);
-                            }
-                            HttpHeaders headers = new HttpHeaders();
-                            headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
-                            headers.setContentDispositionFormData("attachment", leaf);
-                            headers.setContentLength(result.content().length);
-                            return new ResponseEntity<>(result.content(), headers, HttpStatus.OK);
+                            fileCatalogService.recordWorkspaceFile(
+                                    tenant,
+                                    agentUuid(agentId),
+                                    sessionUuid(rc),
+                                    rel,
+                                    result.content(),
+                                    MediaType.APPLICATION_OCTET_STREAM_VALUE,
+                                    FileCatalogService.SOURCE_WORKSPACE_DOWNLOAD,
+                                    Map.of("api", "workspace.download"));
+                            return downloadResponse(abs, result.content());
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -282,6 +305,7 @@ public class AgentWorkspaceController {
         return Mono.fromCallable(
                         () -> {
                             AbstractFilesystem fs = resolveFilesystem(rc, agentId);
+                            TenantContext tenant = TenantContext.from(rc);
                             String abs = toAbsFsPath(path);
                             String rel = toRelFsPath(path);
                             if (isExistingDirectory(fs, abs)) {
@@ -300,6 +324,15 @@ public class AgentWorkspaceController {
                                         HttpStatus.INTERNAL_SERVER_ERROR,
                                         "Failed to write file: " + err);
                             }
+                            fileCatalogService.recordWorkspaceFile(
+                                    tenant,
+                                    agentUuid(agentId),
+                                    sessionUuid(rc),
+                                    rel,
+                                    bytes,
+                                    TEXT_PLAIN,
+                                    FileCatalogService.SOURCE_WORKSPACE_WRITE,
+                                    Map.of("api", "workspace.write", "existed", existed));
                             return new FileNode(
                                     basename(rel), rel, "file", (long) bytes.length, null);
                         })
@@ -323,6 +356,7 @@ public class AgentWorkspaceController {
                                                 + " inside the directory instead.");
                             }
                             AbstractFilesystem fs = resolveFilesystem(rc, agentId);
+                            TenantContext tenant = TenantContext.from(rc);
                             String abs = toAbsFsPath(path);
                             String rel = toRelFsPath(path);
                             if (fs.exists(FS_RC, abs)
@@ -338,6 +372,15 @@ public class AgentWorkspaceController {
                                         HttpStatus.INTERNAL_SERVER_ERROR,
                                         "Failed to create file: " + err);
                             }
+                            fileCatalogService.recordWorkspaceFile(
+                                    tenant,
+                                    agentUuid(agentId),
+                                    sessionUuid(rc),
+                                    rel,
+                                    new byte[0],
+                                    TEXT_PLAIN,
+                                    FileCatalogService.SOURCE_WORKSPACE_CREATE,
+                                    Map.of("api", "workspace.create"));
                             return new FileNode(basename(rel), rel, "file", 0L, null);
                         })
                 .subscribeOn(Schedulers.boundedElastic());
@@ -356,8 +399,10 @@ public class AgentWorkspaceController {
                                         HttpStatus.BAD_REQUEST, "from and to are required");
                             }
                             AbstractFilesystem fs = resolveFilesystem(rc, agentId);
+                            TenantContext tenant = TenantContext.from(rc);
                             String absFrom = toAbsFsPath(req.from());
                             String absTo = toAbsFsPath(req.to());
+                            String relFrom = toRelFsPath(req.from());
                             if (!fs.exists(FS_RC, absFrom)) {
                                 throw new ResponseStatusException(
                                         HttpStatus.NOT_FOUND, "Source not found: " + req.from());
@@ -375,6 +420,8 @@ public class AgentWorkspaceController {
                                         "Move failed: " + wr.error());
                             }
                             String relTo = toRelFsPath(req.to());
+                            fileCatalogService.moveFile(
+                                    tenant, agentUuid(agentId), sessionUuid(rc), relFrom, relTo);
                             return new FileNode(basename(relTo), relTo, "file", null, null);
                         })
                 .subscribeOn(Schedulers.boundedElastic());
@@ -390,7 +437,9 @@ public class AgentWorkspaceController {
         return Mono.fromRunnable(
                         () -> {
                             AbstractFilesystem fs = resolveFilesystem(rc, agentId);
+                            TenantContext tenant = TenantContext.from(rc);
                             String abs = toAbsFsPath(path);
+                            String rel = toRelFsPath(path);
                             String absDir = abs.endsWith("/") ? abs : abs + "/";
                             if (!fs.exists(FS_RC, abs) && !fs.exists(FS_RC, absDir)) {
                                 throw new ResponseStatusException(
@@ -402,9 +451,43 @@ public class AgentWorkspaceController {
                                         HttpStatus.INTERNAL_SERVER_ERROR,
                                         "Delete failed: " + wr.error());
                             }
+                            fileCatalogService.markDeleted(tenant, rel);
                         })
                 .subscribeOn(Schedulers.boundedElastic())
                 .then();
+    }
+
+    private String readStoredTextOr404(TenantContext tenant, String relPath, String requestedPath) {
+        FileCatalogService.StoredFile stored =
+                fileCatalogService
+                        .readCurrentFile(tenant, relPath)
+                        .orElseThrow(
+                                () ->
+                                        new ResponseStatusException(
+                                                HttpStatus.NOT_FOUND,
+                                                "File not found: " + requestedPath));
+        byte[] content = stored.content() != null ? stored.content() : new byte[0];
+        if (!isProbablyText(stored.contentType(), relPath)) {
+            return "(binary file: " + content.length + " bytes; not editable)";
+        }
+        if (content.length > MAX_FILE_SIZE) {
+            return "(file too large to display: " + content.length + " bytes)";
+        }
+        return stored.text();
+    }
+
+    private static ResponseEntity<byte[]> downloadResponse(String absPath, byte[] content) {
+        byte[] bytes = content != null ? content : new byte[0];
+        String leaf = absPath;
+        int slash = absPath.lastIndexOf('/');
+        if (slash >= 0 && slash < absPath.length() - 1) {
+            leaf = absPath.substring(slash + 1);
+        }
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+        headers.setContentDispositionFormData("attachment", leaf);
+        headers.setContentLength(bytes.length);
+        return new ResponseEntity<>(bytes, headers, HttpStatus.OK);
     }
 
     // -----------------------------------------------------------------
@@ -458,6 +541,26 @@ public class AgentWorkspaceController {
             return UUID.fromString(value);
         } catch (Exception e) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "invalid tenant " + name);
+        }
+    }
+
+    private static UUID agentUuid(String agentId) {
+        try {
+            return UUID.fromString(agentId);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent not found: " + agentId);
+        }
+    }
+
+    private static UUID sessionUuid(RuntimeContext rc) {
+        String sessionId = rc != null ? rc.getSessionId() : null;
+        if (sessionId == null || sessionId.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(sessionId);
+        } catch (IllegalArgumentException e) {
+            return null;
         }
     }
 
@@ -539,6 +642,33 @@ public class AgentWorkspaceController {
         return p;
     }
 
+    private static boolean isProbablyText(String contentType, String path) {
+        String ct = contentType != null ? contentType.toLowerCase() : "";
+        if (ct.startsWith("text/")
+                || ct.contains("json")
+                || ct.contains("xml")
+                || ct.contains("yaml")
+                || ct.contains("javascript")
+                || ct.contains("typescript")) {
+            return true;
+        }
+        String p = path != null ? path.toLowerCase() : "";
+        return p.endsWith(".txt")
+                || p.endsWith(".md")
+                || p.endsWith(".json")
+                || p.endsWith(".yaml")
+                || p.endsWith(".yml")
+                || p.endsWith(".xml")
+                || p.endsWith(".csv")
+                || p.endsWith(".log")
+                || p.endsWith(".java")
+                || p.endsWith(".js")
+                || p.endsWith(".ts")
+                || p.endsWith(".py")
+                || p.endsWith(".sh")
+                || p.endsWith(".sql");
+    }
+
     private static int countLs(
             AbstractFilesystem fs, String dirAbsPath, boolean dirOnly, String suffix) {
         LsResult ls = fs.ls(FS_RC, dirAbsPath);
@@ -597,6 +727,43 @@ public class AgentWorkspaceController {
         List<FileNode> roots = rootChildren.getOrDefault("", new ArrayList<>());
         sortNodes(roots);
         return roots;
+    }
+
+    private static List<FileInfo> mergeCatalogFileInfos(
+            List<FileInfo> workspaceFiles,
+            List<FileCatalogService.CatalogFileSummary> catalogFiles,
+            boolean recursive) {
+        Map<String, FileInfo> seen = new LinkedHashMap<>();
+        if (workspaceFiles != null) {
+            for (FileInfo fi : workspaceFiles) {
+                String rel = relPath(fi.path());
+                if (!rel.isEmpty()) {
+                    seen.putIfAbsent(rel, fi);
+                }
+            }
+        }
+        if (catalogFiles != null) {
+            for (FileCatalogService.CatalogFileSummary catalogFile : catalogFiles) {
+                String rel = relPath(catalogFile.logicalPath());
+                if (rel.isEmpty()) {
+                    continue;
+                }
+                if (recursive) {
+                    seen.putIfAbsent(
+                            rel, FileInfo.ofFile("/" + rel, catalogFile.sizeBytes(), null));
+                    continue;
+                }
+                int slash = rel.indexOf('/');
+                if (slash > 0) {
+                    String rootDir = rel.substring(0, slash);
+                    seen.putIfAbsent(rootDir, FileInfo.ofDir("/" + rootDir, null));
+                } else {
+                    seen.putIfAbsent(
+                            rel, FileInfo.ofFile("/" + rel, catalogFile.sizeBytes(), null));
+                }
+            }
+        }
+        return new ArrayList<>(seen.values());
     }
 
     private static void ensureDirChain(

@@ -17,6 +17,7 @@ package io.agentscope.saas.sandbox;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -200,6 +201,29 @@ class SandboxQuotaEnforcementTest {
 
         assertEquals("old", released.getExternalId());
         verify(sandboxRepository, never()).save(eq(released));
+    }
+
+    @Test
+    void releaseMarksProviderBackendReleasePending() {
+        UUID sandboxId = UUID.randomUUID();
+        SandboxEntity active = new SandboxEntity();
+        active.setId(sandboxId);
+        active.setSandboxType("opensandbox");
+        active.setExternalId("provider-1");
+        active.setStatus("active");
+        active.setBackendReleaseStatus("failed");
+        active.setBackendReleaseError("previous failure");
+        when(sandboxRepository.findById(sandboxId)).thenReturn(Optional.of(active));
+        when(sandboxRepository.save(any(SandboxEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        broker.release(sandboxId);
+
+        assertEquals("released", active.getStatus());
+        assertEquals("pending", active.getBackendReleaseStatus());
+        assertNull(active.getBackendReleaseError());
+        verify(sandboxRepository).save(active);
+        verify(metrics).release("opensandbox");
     }
 
     @Test

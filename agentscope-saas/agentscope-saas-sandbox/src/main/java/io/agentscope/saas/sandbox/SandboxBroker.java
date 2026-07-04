@@ -192,6 +192,10 @@ public class SandboxBroker {
                             }
                             entity.setStatus("released");
                             entity.setLastUsedAt(OffsetDateTime.now());
+                            if (hasExternalId(entity.getExternalId())) {
+                                entity.setBackendReleaseStatus("pending");
+                                entity.setBackendReleaseError(null);
+                            }
                             sandboxRepository.save(entity);
                             metrics.release(entity.getSandboxType());
                             log.debug(
@@ -367,6 +371,10 @@ public class SandboxBroker {
             return normalized;
         }
         return normalized.substring(0, 256);
+    }
+
+    private static boolean hasExternalId(String externalId) {
+        return externalId != null && !externalId.isBlank();
     }
 
     private static String sanitizeBackendReleaseMessage(String message) {

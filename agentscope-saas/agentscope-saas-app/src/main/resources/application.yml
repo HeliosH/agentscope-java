@@ -57,6 +57,18 @@ saas:
     enabled: ${SAAS_REDIS_ENABLED:true}
     uri: ${SAAS_REDIS_URI:redis://localhost:6379}
     key-prefix: ${SAAS_REDIS_PREFIX:agentscope:saas:}
+  file-store:
+    enabled: ${SAAS_FILE_STORE_ENABLED:true}
+    # pg = local/dev BYTEA fallback; minio = production object storage.
+    backend: ${SAAS_FILE_STORE_BACKEND:pg}
+    table: ${SAAS_FILE_STORE_TABLE:file_object_blobs}
+    object-key-prefix: ${SAAS_FILE_STORE_KEY_PREFIX:files/}
+    minio:
+      endpoint: ${SAAS_FILE_STORE_MINIO_ENDPOINT:${SAAS_SANDBOX_MINIO_ENDPOINT:http://localhost:9000}}
+      access-key: ${SAAS_FILE_STORE_MINIO_ACCESS_KEY:${SAAS_SANDBOX_MINIO_ACCESS_KEY:minioadmin}}
+      secret-key: ${SAAS_FILE_STORE_MINIO_SECRET_KEY:${SAAS_SANDBOX_MINIO_SECRET_KEY:minioadmin}}
+      bucket: ${SAAS_FILE_STORE_MINIO_BUCKET:${SAAS_SANDBOX_MINIO_BUCKET:agentscope-saas}}
+      region: ${SAAS_FILE_STORE_MINIO_REGION:${SAAS_SANDBOX_MINIO_REGION:}}
   sandbox:
     enabled: ${SAAS_SANDBOX_ENABLED:false}
     type: ${SAAS_SANDBOX_TYPE:cube}
@@ -91,7 +103,7 @@ saas:
     e2b-domain: ${SAAS_SANDBOX_E2B_DOMAIN:}
     e2b-sandbox-timeout-seconds: ${SAAS_SANDBOX_E2B_TIMEOUT:300}
     # --- OpenSandbox (Alibaba OpenSandbox lifecycle API + execd). Used when type=opensandbox. ---
-    open-sandbox-api-base-url: ${SAAS_SANDBOX_OPENSANDBOX_API_BASE_URL:http://localhost:8080/v1}
+    open-sandbox-api-base-url: ${SAAS_SANDBOX_OPENSANDBOX_API_BASE_URL:http://localhost:8080}
     open-sandbox-api-key: ${SAAS_SANDBOX_OPENSANDBOX_API_KEY:}
     open-sandbox-execd-access-token: ${SAAS_SANDBOX_OPENSANDBOX_EXECD_ACCESS_TOKEN:}
     open-sandbox-image: ${SAAS_SANDBOX_OPENSANDBOX_IMAGE:}

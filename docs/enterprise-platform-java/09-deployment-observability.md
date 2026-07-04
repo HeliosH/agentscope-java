@@ -147,7 +147,7 @@ SAAS_SANDBOX_BACKEND_RELEASE_MAX_ATTEMPTS=5
 
 管理前端已提供两个运维入口：`/admin/sandboxes` 查看 tracking row、后端释放状态、失败原因并执行 force-evict；`/admin/memory-events` 查看 `memory_events` 的 pending/failed/synced 状态、重试次数和错误原因。两者都只允许 org-admin 查看本 org 数据。
 
-运行时验证 gate 使用 `.github/workflows/enterprise-runtime-gate.yml`：E2B 分支运行 `scripts/e2b-runtime-lifecycle.sh`，覆盖网页登录、发起任务、沙箱执行、HITL、snapshot restore、release projection 下载和删除/移动 reconciliation；OpenSandbox 分支运行 `scripts/opensandbox-enterprise-smoke.sh`，并可选运行 provider lifecycle 直连验证。当前策略要求 E2B gate 通过即可推进，不强制 CubeSandbox 验证。
+运行时验证 gate 使用 `.github/workflows/enterprise-runtime-gate.yml`：当前发布策略只验证 OpenSandbox，不再要求 E2B。OpenSandbox app-level gate 运行 `scripts/opensandbox-enterprise-smoke.sh`，覆盖网页登录、创建 agent、发起任务、HITL、沙箱执行、SSE 返回、release projection 下载，以及当前 agent 的 sandbox tracking row 进入非 active + backend release 终态；被测应用建议将 `SAAS_SANDBOX_RECONCILIATION_FIXED_DELAY` 临时降到 5-10 秒，避免默认 300 秒巡检间隔拖慢 gate。backend release 状态检查需要 org-admin token，脚本默认使用本地 seed 的 `admin@demo.local/password`，生产 gate 应通过 `SANDBOX_SMOKE_ADMIN_EMAIL` 和 `SANDBOX_SMOKE_ADMIN_PASSWORD` 覆盖。如提供 `opensandbox_api_base_url`，还会运行 `scripts/opensandbox-runtime-lifecycle.sh` 直连验证 provider 的 create / Running / execd / delete 生命周期。CubeSandbox 和 E2B 保留为可切换后端，但不作为当前必须通过的 gate。
 
 ### 4.6 健康检查
 ```java

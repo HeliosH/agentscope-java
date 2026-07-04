@@ -26,6 +26,7 @@ public class SaasProperties {
 
     @NestedConfigurationProperty private final Model model = new Model();
     @NestedConfigurationProperty private final Redis redis = new Redis();
+    @NestedConfigurationProperty private final FileStore fileStore = new FileStore();
     @NestedConfigurationProperty private final Sandbox sandbox = new Sandbox();
     @NestedConfigurationProperty private final RateLimit rateLimit = new RateLimit();
     @NestedConfigurationProperty private final Agent agent = new Agent();
@@ -37,6 +38,10 @@ public class SaasProperties {
 
     public Redis getRedis() {
         return redis;
+    }
+
+    public FileStore getFileStore() {
+        return fileStore;
     }
 
     public Sandbox getSandbox() {
@@ -130,6 +135,107 @@ public class SaasProperties {
 
         public void setKeyPrefix(String keyPrefix) {
             this.keyPrefix = keyPrefix;
+        }
+    }
+
+    /** Durable object storage for user/workspace files. */
+    public static class FileStore {
+        /** Whether to catalog workspace file writes/downloads into durable file metadata tables. */
+        private boolean enabled = true;
+
+        /** Object backend: {@code pg} for local fallback or {@code minio} for production. */
+        private String backend = "pg";
+
+        /** PostgreSQL/H2 BYTEA fallback table used when backend=pg. */
+        private String table = "file_object_blobs";
+
+        /** Prefix used when generating object keys. */
+        private String objectKeyPrefix = "files/";
+
+        @NestedConfigurationProperty private final Minio minio = new Minio();
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getBackend() {
+            return backend;
+        }
+
+        public void setBackend(String backend) {
+            this.backend = backend;
+        }
+
+        public String getTable() {
+            return table;
+        }
+
+        public void setTable(String table) {
+            this.table = table;
+        }
+
+        public String getObjectKeyPrefix() {
+            return objectKeyPrefix;
+        }
+
+        public void setObjectKeyPrefix(String objectKeyPrefix) {
+            this.objectKeyPrefix = objectKeyPrefix;
+        }
+
+        public Minio getMinio() {
+            return minio;
+        }
+
+        public static class Minio {
+            private String endpoint = "http://localhost:9000";
+            private String accessKey = "minioadmin";
+            private String secretKey = "minioadmin";
+            private String bucket = "agentscope-saas";
+            private String region;
+
+            public String getEndpoint() {
+                return endpoint;
+            }
+
+            public void setEndpoint(String endpoint) {
+                this.endpoint = endpoint;
+            }
+
+            public String getAccessKey() {
+                return accessKey;
+            }
+
+            public void setAccessKey(String accessKey) {
+                this.accessKey = accessKey;
+            }
+
+            public String getSecretKey() {
+                return secretKey;
+            }
+
+            public void setSecretKey(String secretKey) {
+                this.secretKey = secretKey;
+            }
+
+            public String getBucket() {
+                return bucket;
+            }
+
+            public void setBucket(String bucket) {
+                this.bucket = bucket;
+            }
+
+            public String getRegion() {
+                return region;
+            }
+
+            public void setRegion(String region) {
+                this.region = region;
+            }
         }
     }
 

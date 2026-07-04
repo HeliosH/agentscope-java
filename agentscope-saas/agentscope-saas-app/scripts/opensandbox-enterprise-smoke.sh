@@ -22,6 +22,8 @@ if [ -z "${SANDBOX_SMOKE_COMMAND:-}" ]; then
 fi
 export SANDBOX_SMOKE_COMMAND
 export SANDBOX_SMOKE_TIMEOUT="${SANDBOX_SMOKE_TIMEOUT:-180}"
+export SANDBOX_SMOKE_SANDBOX_TYPE="${SANDBOX_SMOKE_SANDBOX_TYPE:-opensandbox}"
+export SANDBOX_SMOKE_BACKEND_RELEASE_TIMEOUT="${SANDBOX_SMOKE_BACKEND_RELEASE_TIMEOUT:-90}"
 
 echo "=== OpenSandbox enterprise application smoke ==="
 echo "  base=${BASE:-http://localhost:18080}"

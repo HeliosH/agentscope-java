@@ -7,13 +7,13 @@
 #   - For local Docker runtime, start OpenSandbox server separately with a reviewed security posture.
 #
 # Useful environment:
-#   OPENSANDBOX_API_BASE_URL=http://localhost:18081/v1
+#   OPENSANDBOX_API_BASE_URL=http://127.0.0.1:18081
 #   OPENSANDBOX_API_KEY=...
 #   OPENSANDBOX_IMAGE=ubuntu:latest
 #   OPENSANDBOX_COMMAND='mkdir -p /workspace && printf "%s\n" opensandbox-smoke-ok > /workspace/report.txt && cat /workspace/report.txt'
 set -uo pipefail
 
-API_BASE_URL="${OPENSANDBOX_API_BASE_URL:-http://localhost:18081/v1}"
+API_BASE_URL="${OPENSANDBOX_API_BASE_URL:-http://127.0.0.1:18081}"
 API_KEY="${OPENSANDBOX_API_KEY:-}"
 IMAGE="${OPENSANDBOX_IMAGE:-ubuntu:latest}"
 CPU_LIMIT="${OPENSANDBOX_CPU_LIMIT:-1}"

@@ -22,7 +22,7 @@ import okhttp3.OkHttpClient;
 /** Options for {@link OpenSandboxClient}. */
 public class OpenSandboxClientOptions extends SandboxClientOptions {
 
-    public static final String DEFAULT_API_BASE_URL = "http://localhost:8080/v1";
+    public static final String DEFAULT_API_BASE_URL = "http://localhost:8080";
     public static final String DEFAULT_WORKSPACE_ROOT = "/workspace";
     public static final int DEFAULT_EXECD_PORT = 44772;
 

@@ -23,17 +23,24 @@ MARKER="${SANDBOX_SMOKE_MARKER:-${CUBE_SMOKE_MARKER:-sandbox-smoke-ok}}"
 FILE_PATH="${SANDBOX_SMOKE_FILE:-${CUBE_SMOKE_FILE:-generated/report.txt}}"
 COMMAND="${SANDBOX_SMOKE_COMMAND:-${CUBE_SMOKE_COMMAND:-mkdir -p generated && printf '%s\n' $MARKER > $FILE_PATH && cat $FILE_PATH}}"
 TIMEOUT="${SANDBOX_SMOKE_TIMEOUT:-${CUBE_SMOKE_TIMEOUT:-120}}"
+BACKEND_RELEASE_TIMEOUT="${SANDBOX_SMOKE_BACKEND_RELEASE_TIMEOUT:-${CUBE_SMOKE_BACKEND_RELEASE_TIMEOUT:-0}}"
+BACKEND_RELEASE_POLL_SECONDS="${SANDBOX_SMOKE_BACKEND_RELEASE_POLL_SECONDS:-2}"
+SANDBOX_TYPE_FILTER="${SANDBOX_SMOKE_SANDBOX_TYPE:-}"
+ADMIN_EMAIL="${SANDBOX_SMOKE_ADMIN_EMAIL:-${CUBE_SMOKE_ADMIN_EMAIL:-admin@demo.local}}"
+ADMIN_PASSWORD="${SANDBOX_SMOKE_ADMIN_PASSWORD:-${CUBE_SMOKE_ADMIN_PASSWORD:-password}}"
 TMPDIR="${TMPDIR:-/tmp}"
 RUN_ID="$(date +%s)-$$"
 SSE1="$TMPDIR/cube-smoke-1-$RUN_ID.sse"
 SSE2="$TMPDIR/cube-smoke-2-$RUN_ID.sse"
 CONFIRM_JSON="$TMPDIR/cube-smoke-confirm-$RUN_ID.json"
 DOWNLOAD_FILE="$TMPDIR/cube-smoke-download-$RUN_ID.txt"
+SANDBOX_LIST_JSON="$TMPDIR/cube-smoke-sandboxes-$RUN_ID.json"
 
 PASS=0
 FAIL=0
 AGID=""
 TOK=""
+ADMIN_TOK=""
 
 ok() {
   echo "  OK  $1"
@@ -49,13 +56,117 @@ json_get() {
   python3 -c 'import json,sys; print(json.load(sys.stdin).get(sys.argv[1], ""))' "$1"
 }
 
+resolve_admin_token() {
+  if [ -n "$ADMIN_TOK" ]; then
+    return 0
+  fi
+  if [ -z "$ADMIN_EMAIL" ] || [ -z "$ADMIN_PASSWORD" ]; then
+    return 1
+  fi
+  local admin_body
+  admin_body="$(EMAIL="$ADMIN_EMAIL" PASSWORD="$ADMIN_PASSWORD" python3 - <<'PY'
+import json
+import os
+print(json.dumps({"email": os.environ["EMAIL"], "password": os.environ["PASSWORD"]}))
+PY
+)"
+  local admin_json
+  admin_json="$(curl -fsS -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' -d "$admin_body" 2>/dev/null)"
+  if [ $? -ne 0 ] || [ -z "$admin_json" ]; then
+    return 1
+  fi
+  ADMIN_TOK="$(printf '%s' "$admin_json" | json_get token)"
+  local admin_role
+  admin_role="$(printf '%s' "$admin_json" | json_get role)"
+  [ -n "$ADMIN_TOK" ] && [ "$admin_role" = "admin" ]
+}
+
 cleanup() {
   if [ -n "$TOK" ] && [ -n "$AGID" ]; then
     curl -s -o /dev/null -X DELETE "$BASE/api/agents/$AGID" -H "Authorization: Bearer $TOK" || true
   fi
-  rm -f "$SSE1" "$SSE2" "$CONFIRM_JSON" "$DOWNLOAD_FILE"
+  rm -f "$SSE1" "$SSE2" "$CONFIRM_JSON" "$DOWNLOAD_FILE" "$SANDBOX_LIST_JSON"
 }
 trap cleanup EXIT
+
+wait_backend_release() {
+  if [ "$BACKEND_RELEASE_TIMEOUT" -le 0 ]; then
+    return 0
+  fi
+  local deadline
+  deadline="$(($(date +%s) + BACKEND_RELEASE_TIMEOUT))"
+  if ! resolve_admin_token; then
+    bad "admin sandbox inventory token unavailable"
+    return 1
+  fi
+  local admin_url
+  admin_url="$BASE/api/admin/sandboxes?limit=100"
+  if [ -n "$SANDBOX_TYPE_FILTER" ]; then
+    admin_url="$admin_url&sandboxType=$SANDBOX_TYPE_FILTER"
+  fi
+
+  while :; do
+    if curl -fsS -o "$SANDBOX_LIST_JSON" "$admin_url" -H "Authorization: Bearer $ADMIN_TOK" 2>/dev/null; then
+      PY_OUTPUT="$(AGID="$AGID" python3 - "$SANDBOX_LIST_JSON" <<'PY'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+agent_id = os.environ["AGID"]
+terminal = {"succeeded", "unsupported", "no_external_id", "skipped"}
+with open(path, encoding="utf-8") as fh:
+    rows = json.load(fh)
+rows = [row for row in rows if row.get("agentId") == agent_id]
+if not rows:
+    print("no sandbox tracking rows for agent")
+    sys.exit(2)
+active = [row for row in rows if row.get("status") == "active"]
+failed = [row for row in rows if row.get("backendReleaseStatus") == "failed"]
+pending = [
+    row for row in rows
+    if row.get("externalId")
+    and row.get("backendReleaseStatus") not in terminal
+]
+if active:
+    print(f"{len(active)} active sandbox tracking row(s)")
+    sys.exit(2)
+if failed:
+    first = failed[0]
+    print(
+        "backend release failed for "
+        + str(first.get("id"))
+        + ": "
+        + str(first.get("backendReleaseError") or "")
+    )
+    sys.exit(1)
+if pending:
+    statuses = sorted({str(row.get("backendReleaseStatus") or "<empty>") for row in pending})
+    print("backend release pending: " + ", ".join(statuses))
+    sys.exit(2)
+print(f"{len(rows)} sandbox tracking row(s) released with terminal backend release")
+PY
+)"
+      PY_RC=$?
+      if [ "$PY_RC" -eq 0 ]; then
+        ok "$PY_OUTPUT"
+        return 0
+      fi
+      if [ "$PY_RC" -eq 1 ]; then
+        bad "$PY_OUTPUT"
+        return 1
+      fi
+    else
+      PY_OUTPUT="admin sandbox inventory unavailable"
+    fi
+
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      bad "backend release did not reach terminal status: $PY_OUTPUT"
+      return 1
+    fi
+    sleep "$BACKEND_RELEASE_POLL_SECONDS"
+  done
+}
 
 echo "=== Sandbox enterprise smoke ==="
 echo "  base=$BASE"
@@ -236,6 +347,8 @@ else
     sed -n '1,20p' "$DOWNLOAD_FILE"
   fi
 fi
+
+wait_backend_release || true
 
 echo ""
 echo "=== RESULT: PASS=$PASS FAIL=$FAIL ==="
