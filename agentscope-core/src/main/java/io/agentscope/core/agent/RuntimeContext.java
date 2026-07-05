@@ -291,6 +291,9 @@ public class RuntimeContext {
         }
 
         public Builder put(String key, Object value) {
+            if (key == null || value == null) {
+                return this;
+            }
             if (this.stringExtras == null) {
                 this.stringExtras = new ConcurrentHashMap<>();
             }

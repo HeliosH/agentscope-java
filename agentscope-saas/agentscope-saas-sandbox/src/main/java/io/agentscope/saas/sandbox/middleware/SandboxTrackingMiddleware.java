@@ -26,6 +26,7 @@ import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.sandbox.SandboxBroker;
 import io.agentscope.saas.sandbox.SandboxExternalIds;
 import io.agentscope.saas.sandbox.SandboxMetrics;
+import io.agentscope.saas.sandbox.SandboxRuntimeAttributes;
 import io.agentscope.saas.sandbox.SandboxTrackingContext;
 import java.time.OffsetDateTime;
 import java.util.UUID;
@@ -91,6 +92,7 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
 
         UUID orgId = UUID.fromString(tc.orgId());
         UUID userId = UUID.fromString(tc.userId());
+        UUID agentId = parseOptionalUuid(ctx.get(SandboxRuntimeAttributes.ATTR_AGENT_ID));
         String sessionId = ctx.getSessionId();
         String externalId = SandboxExternalIds.fromRuntimeContext(ctx).orElse(sessionId);
         AtomicReference<UUID> trackingId = new AtomicReference<>();
@@ -106,6 +108,7 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
                                     broker.registerActive(
                                             orgId,
                                             userId,
+                                            agentId,
                                             sessionId,
                                             sandboxType,
                                             externalId,
@@ -204,6 +207,22 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
             return true;
         } catch (IllegalArgumentException e) {
             return false;
+        }
+    }
+
+    private UUID parseOptionalUuid(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String s = value.toString();
+        if (s.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(s.trim());
+        } catch (IllegalArgumentException e) {
+            log.warn("Ignoring invalid sandbox tracking agent id: {}", s);
+            return null;
         }
     }
 

@@ -36,6 +36,7 @@ import io.agentscope.saas.core.ratelimit.QuotaExceededException;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.sandbox.SandboxBroker;
 import io.agentscope.saas.sandbox.SandboxMetrics;
+import io.agentscope.saas.sandbox.SandboxRuntimeAttributes;
 import io.agentscope.saas.sandbox.SandboxTrackingContext;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.OffsetDateTime;
@@ -55,6 +56,7 @@ class SandboxTrackingMiddlewareTest {
 
     private static final UUID ORG_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
     private static final UUID USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000002");
+    private static final UUID AGENT_ID = UUID.fromString("00000000-0000-0000-0000-000000000003");
 
     @Mock private SandboxBroker broker;
     @Mock private Agent agent;
@@ -76,6 +78,7 @@ class SandboxTrackingMiddlewareTest {
         doThrow(new QuotaExceededException("Sandbox quota exceeded"))
                 .when(broker)
                 .registerActive(
+                        any(UUID.class),
                         any(UUID.class),
                         any(UUID.class),
                         anyString(),
@@ -105,6 +108,7 @@ class SandboxTrackingMiddlewareTest {
         when(broker.registerActive(
                         any(UUID.class),
                         any(UUID.class),
+                        any(UUID.class),
                         anyString(),
                         anyString(),
                         anyString(),
@@ -127,6 +131,7 @@ class SandboxTrackingMiddlewareTest {
         AgentInput input = new AgentInput(Collections.emptyList());
         UUID sandboxId = UUID.randomUUID();
         when(broker.registerActive(
+                        any(UUID.class),
                         any(UUID.class),
                         any(UUID.class),
                         anyString(),
@@ -163,6 +168,7 @@ class SandboxTrackingMiddlewareTest {
         when(broker.registerActive(
                         any(UUID.class),
                         any(UUID.class),
+                        any(UUID.class),
                         anyString(),
                         anyString(),
                         anyString(),
@@ -181,6 +187,7 @@ class SandboxTrackingMiddlewareTest {
                 .registerActive(
                         eq(ORG_ID),
                         eq(USER_ID),
+                        eq(AGENT_ID),
                         eq("sess-1"),
                         eq("e2b"),
                         eq("provider-sandbox-1"),
@@ -195,6 +202,7 @@ class SandboxTrackingMiddlewareTest {
         return RuntimeContext.builder()
                 .userId(USER_ID.toString())
                 .sessionId("sess-1")
+                .put(SandboxRuntimeAttributes.ATTR_AGENT_ID, AGENT_ID.toString())
                 .put(TenantContext.class, tc)
                 .build();
     }

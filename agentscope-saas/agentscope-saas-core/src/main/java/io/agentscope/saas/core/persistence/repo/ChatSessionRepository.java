@@ -16,10 +16,14 @@
 package io.agentscope.saas.core.persistence.repo;
 
 import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
+import jakarta.persistence.LockModeType;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 /** Repository for {@link ChatSessionEntity}, with org/user-scoped queries. */
 public interface ChatSessionRepository extends JpaRepository<ChatSessionEntity, UUID> {
@@ -34,4 +38,8 @@ public interface ChatSessionRepository extends JpaRepository<ChatSessionEntity, 
 
     Optional<ChatSessionEntity> findFirstByOrgIdAndUserIdAndAgentIdOrderByUpdatedAtDesc(
             UUID orgId, UUID userId, UUID agentId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT s FROM ChatSessionEntity s WHERE s.id = :id")
+    Optional<ChatSessionEntity> lockById(@Param("id") UUID id);
 }

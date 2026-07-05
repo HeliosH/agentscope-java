@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { TurnEntry, turns, resetSession, deleteSession, markRead } from '../api/sessions';
+import { TurnEntry, turnsPage, resetSession, deleteSession, markRead } from '../api/sessions';
 import { useNavigate } from 'react-router-dom';
 import ToolCallBlock from './ToolCallBlock';
 
@@ -31,18 +31,41 @@ const S: Record<string, React.CSSProperties> = {
   err: { color: '#dc2626', fontSize: '0.9rem' },
 };
 
+const PAGE_SIZE = 100;
+
 export default function SessionTranscript({ agentId, sessionKey }: { agentId: string; sessionKey: string }) {
   const [entries, setEntries] = useState<TurnEntry[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [nextAfterSeq, setNextAfterSeq] = useState<number | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const navigate = useNavigate();
 
   async function reload() {
     setErr(null);
     try {
-      const list = await turns(agentId, sessionKey);
-      setEntries(list);
+      const page = await turnsPage(agentId, sessionKey, null, PAGE_SIZE);
+      setEntries(page.items);
+      setNextAfterSeq(page.nextAfterSeq);
+      setHasMore(page.hasMore);
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : 'Failed');
+    }
+  }
+
+  async function loadMore() {
+    if (!hasMore || loadingMore) return;
+    setLoadingMore(true);
+    setErr(null);
+    try {
+      const page = await turnsPage(agentId, sessionKey, nextAfterSeq, PAGE_SIZE);
+      setEntries(prev => [...prev, ...page.items]);
+      setNextAfterSeq(page.nextAfterSeq);
+      setHasMore(page.hasMore);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Failed');
+    } finally {
+      setLoadingMore(false);
     }
   }
 
@@ -109,6 +132,11 @@ export default function SessionTranscript({ agentId, sessionKey }: { agentId: st
           </div>
         );
       })}
+      {hasMore && (
+        <button style={{ ...S.btn, marginTop: 4 }} onClick={loadMore} disabled={loadingMore}>
+          {loadingMore ? 'Loading…' : 'Load more'}
+        </button>
+      )}
     </div>
   );
 }

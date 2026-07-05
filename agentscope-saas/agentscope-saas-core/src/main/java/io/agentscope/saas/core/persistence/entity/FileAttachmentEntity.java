@@ -24,10 +24,10 @@ import java.util.UUID;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
-/** A single chat message (user or assistant) within a {@link ChatSessionEntity}. */
+/** Links uploaded/generated files to conversations, messages, or background tasks. */
 @Entity
-@Table(name = "chat_messages")
-public class ChatMessageEntity {
+@Table(name = "file_attachments")
+public class FileAttachmentEntity {
 
     @Id
     @Column(name = "id")
@@ -39,35 +39,30 @@ public class ChatMessageEntity {
     @Column(name = "user_id", nullable = false)
     private UUID userId;
 
-    @Column(name = "session_id", nullable = false)
-    private UUID sessionId;
-
-    @Column(name = "agent_id", nullable = false)
+    @Column(name = "agent_id")
     private UUID agentId;
 
-    @Column(name = "seq", nullable = false)
-    private Long seq;
+    @Column(name = "session_id")
+    private UUID sessionId;
 
-    @Column(name = "role", nullable = false)
-    private String role;
+    @Column(name = "message_id")
+    private UUID messageId;
 
-    @JdbcTypeCode(SqlTypes.JSON)
-    @Column(name = "content_json", nullable = false)
-    private String contentJson;
+    @Column(name = "task_id")
+    private UUID taskId;
 
-    @Column(name = "parent_id")
-    private UUID parentId;
+    @Column(name = "file_id", nullable = false)
+    private UUID fileId;
 
-    @Column(name = "tool_name")
-    private String toolName;
+    @Column(name = "file_version_id", nullable = false)
+    private UUID fileVersionId;
 
-    @JdbcTypeCode(SqlTypes.JSON)
-    @Column(name = "tool_input")
-    private String toolInput;
+    @Column(name = "kind", nullable = false)
+    private String kind;
 
     @JdbcTypeCode(SqlTypes.JSON)
-    @Column(name = "tool_result")
-    private String toolResult;
+    @Column(name = "metadata", nullable = false)
+    private String metadata;
 
     @Column(name = "created_at", insertable = false, updatable = false)
     private OffsetDateTime createdAt;
@@ -96,14 +91,6 @@ public class ChatMessageEntity {
         this.userId = userId;
     }
 
-    public UUID getSessionId() {
-        return sessionId;
-    }
-
-    public void setSessionId(UUID sessionId) {
-        this.sessionId = sessionId;
-    }
-
     public UUID getAgentId() {
         return agentId;
     }
@@ -112,60 +99,60 @@ public class ChatMessageEntity {
         this.agentId = agentId;
     }
 
-    public Long getSeq() {
-        return seq;
+    public UUID getSessionId() {
+        return sessionId;
     }
 
-    public void setSeq(Long seq) {
-        this.seq = seq;
+    public void setSessionId(UUID sessionId) {
+        this.sessionId = sessionId;
     }
 
-    public String getRole() {
-        return role;
+    public UUID getMessageId() {
+        return messageId;
     }
 
-    public void setRole(String role) {
-        this.role = role;
+    public void setMessageId(UUID messageId) {
+        this.messageId = messageId;
     }
 
-    public String getContentJson() {
-        return contentJson;
+    public UUID getTaskId() {
+        return taskId;
     }
 
-    public void setContentJson(String contentJson) {
-        this.contentJson = contentJson;
+    public void setTaskId(UUID taskId) {
+        this.taskId = taskId;
     }
 
-    public UUID getParentId() {
-        return parentId;
+    public UUID getFileId() {
+        return fileId;
     }
 
-    public void setParentId(UUID parentId) {
-        this.parentId = parentId;
+    public void setFileId(UUID fileId) {
+        this.fileId = fileId;
     }
 
-    public String getToolName() {
-        return toolName;
+    public UUID getFileVersionId() {
+        return fileVersionId;
     }
 
-    public void setToolName(String toolName) {
-        this.toolName = toolName;
+    public void setFileVersionId(UUID fileVersionId) {
+        this.fileVersionId = fileVersionId;
     }
 
-    public String getToolInput() {
-        return toolInput;
+    public String getKind() {
+        return kind;
     }
 
-    public void setToolInput(String toolInput) {
-        this.toolInput = toolInput;
+    public void setKind(String kind) {
+        this.kind = kind;
     }
 
-    public String getToolResult() {
-        return toolResult;
+    public String getMetadata() {
+        return metadata;
     }
 
-    public void setToolResult(String toolResult) {
-        this.toolResult = toolResult;
+    public void setMetadata(String metadata) {
+        this.metadata = metadata;
     }
 
     public OffsetDateTime getCreatedAt() {

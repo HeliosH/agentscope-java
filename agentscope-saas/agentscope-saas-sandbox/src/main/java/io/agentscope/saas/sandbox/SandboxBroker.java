@@ -100,6 +100,7 @@ public class SandboxBroker {
      *
      * @param orgId       organization ID
      * @param userId      user ID
+     * @param agentId     the application agent that triggered the sandbox, when known
      * @param sessionId   the session that triggered the sandbox
      * @param sandboxType backend type (docker, cube, etc.)
      * @param externalId  container ID / sandbox ID from the backend
@@ -111,6 +112,7 @@ public class SandboxBroker {
     public UUID registerActive(
             UUID orgId,
             UUID userId,
+            UUID agentId,
             String sessionId,
             String sandboxType,
             String externalId,
@@ -135,6 +137,7 @@ public class SandboxBroker {
         entity.setId(UUID.randomUUID());
         entity.setOrgId(orgId);
         entity.setUserId(userId);
+        entity.setAgentId(agentId);
         entity.setSessionId(sessionId);
         entity.setSandboxType(sandboxType);
         entity.setExternalId(externalId);
@@ -154,10 +157,23 @@ public class SandboxBroker {
         return entity.getId();
     }
 
+    @Transactional
+    public UUID registerActive(
+            UUID orgId,
+            UUID userId,
+            String sessionId,
+            String sandboxType,
+            String externalId,
+            OffsetDateTime expiresAt,
+            int maxSandboxes) {
+        return registerActive(
+                orgId, userId, null, sessionId, sandboxType, externalId, expiresAt, maxSandboxes);
+    }
+
     /**
      * Backwards-compatible registration entry point for callers that have already enforced quota.
-     * New SaaS call paths should prefer {@link #registerActive(UUID, UUID, String, String, String,
-     * OffsetDateTime, int)} so quota check and active-row creation are serialized in one
+     * New SaaS call paths should prefer {@link #registerActive(UUID, UUID, UUID, String, String,
+     * String, OffsetDateTime, int)} so quota check and active-row creation are serialized in one
      * transaction.
      */
     @Transactional
@@ -169,7 +185,14 @@ public class SandboxBroker {
             String externalId,
             OffsetDateTime expiresAt) {
         return registerActive(
-                orgId, userId, sessionId, sandboxType, externalId, expiresAt, Integer.MAX_VALUE);
+                orgId,
+                userId,
+                null,
+                sessionId,
+                sandboxType,
+                externalId,
+                expiresAt,
+                Integer.MAX_VALUE);
     }
 
     /**

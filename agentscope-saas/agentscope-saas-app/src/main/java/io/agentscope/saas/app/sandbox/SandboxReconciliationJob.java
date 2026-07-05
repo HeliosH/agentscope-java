@@ -23,6 +23,7 @@ import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -79,7 +80,9 @@ public class SandboxReconciliationJob {
         this.metrics = metrics != null ? metrics : SandboxMetrics.noop();
     }
 
-    @Scheduled(fixedDelayString = "${saas.sandbox.reconciliation-fixed-delay-seconds:300}000")
+    @Scheduled(
+            fixedDelayString = "${saas.sandbox.reconciliation-fixed-delay-seconds:300}",
+            timeUnit = TimeUnit.SECONDS)
     public void reconcileScheduled() {
         SaasProperties.Sandbox sandbox = properties.getSandbox();
         if (!sandbox.isEnabled() || !sandbox.isReconciliationEnabled()) {

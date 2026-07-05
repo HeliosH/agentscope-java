@@ -26,6 +26,7 @@ import io.agentscope.saas.core.persistence.repo.ChatSessionRepository;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -86,7 +87,8 @@ public class SessionController {
     public record SessionView(
             String id, String agentId, String title, Integer messageCount, String source) {}
 
-    public record MessageView(String id, String role, String contentJson, String createdAt) {}
+    public record MessageView(
+            String id, Long seq, String role, String contentJson, String createdAt) {}
 
     @GetMapping("/api/agents/{agentId}/sessions")
     public Mono<ResponseEntity<List<SessionView>>> list(
@@ -110,7 +112,9 @@ public class SessionController {
     public Mono<ResponseEntity<List<MessageView>>> messages(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable String agentId,
-            @PathVariable String sessionId) {
+            @PathVariable String sessionId,
+            @RequestParam(name = "afterSeq", required = false) Long afterSeq,
+            @RequestParam(name = "limit", defaultValue = "200") int limit) {
         UUID orgId = orgId(jwt);
         UUID userId = userId(jwt);
         UUID agentUuid = parseUuid(agentId);
@@ -120,12 +124,36 @@ public class SessionController {
                             ChatSessionEntity session =
                                     requireSession(orgId, userId, agentUuid, sessionUuid);
                             List<MessageView> views =
-                                    messageRepository
-                                            .findBySessionIdOrderByCreatedAtAsc(session.getId())
-                                            .stream()
+                                    messagePage(session.getId(), afterSeq, limit).items().stream()
                                             .map(SessionController::toMessageView)
                                             .toList();
                             return ResponseEntity.ok(views);
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    @GetMapping("/api/agents/{agentId}/sessions/{sessionId}/messages/page")
+    public Mono<MessagePage> messagesPage(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String agentId,
+            @PathVariable String sessionId,
+            @RequestParam(name = "afterSeq", required = false) Long afterSeq,
+            @RequestParam(name = "limit", defaultValue = "200") int limit) {
+        UUID orgId = orgId(jwt);
+        UUID userId = userId(jwt);
+        UUID agentUuid = parseUuid(agentId);
+        UUID sessionUuid = parseUuid(sessionId);
+        return Mono.fromCallable(
+                        () -> {
+                            ChatSessionEntity session =
+                                    requireSession(orgId, userId, agentUuid, sessionUuid);
+                            EntityPage page = messagePage(session.getId(), afterSeq, limit);
+                            return new MessagePage(
+                                    page.items().stream()
+                                            .map(SessionController::toMessageView)
+                                            .toList(),
+                                    page.nextAfterSeq(),
+                                    page.hasMore());
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -175,7 +203,9 @@ public class SessionController {
     public Mono<List<TurnEntry>> turns(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable String agentId,
-            @PathVariable String sessionKey) {
+            @PathVariable String sessionKey,
+            @RequestParam(name = "afterSeq", required = false) Long afterSeq,
+            @RequestParam(name = "limit", defaultValue = "200") int limit) {
         UUID orgId = orgId(jwt);
         UUID userId = userId(jwt);
         UUID agentUuid = parseUuid(agentId);
@@ -187,13 +217,40 @@ public class SessionController {
                             List<TurnEntry> turns = new ArrayList<>();
                             String prevId = null;
                             for (ChatMessageEntity m :
-                                    messageRepository.findBySessionIdOrderByCreatedAtAsc(
-                                            session.getId())) {
+                                    messagePage(session.getId(), afterSeq, limit).items()) {
                                 TurnEntry t = toTurn(m, prevId);
                                 turns.add(t);
                                 prevId = t.id();
                             }
                             return turns;
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    @GetMapping("/api/agents/{agentId}/sessions/{sessionKey}/turns/page")
+    public Mono<TurnPage> turnsPage(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String agentId,
+            @PathVariable String sessionKey,
+            @RequestParam(name = "afterSeq", required = false) Long afterSeq,
+            @RequestParam(name = "limit", defaultValue = "200") int limit) {
+        UUID orgId = orgId(jwt);
+        UUID userId = userId(jwt);
+        UUID agentUuid = parseUuid(agentId);
+        UUID sessionUuid = parseUuid(sessionKey);
+        return Mono.fromCallable(
+                        () -> {
+                            ChatSessionEntity session =
+                                    requireSession(orgId, userId, agentUuid, sessionUuid);
+                            EntityPage page = messagePage(session.getId(), afterSeq, limit);
+                            List<TurnEntry> turns = new ArrayList<>();
+                            String prevId = null;
+                            for (ChatMessageEntity m : page.items()) {
+                                TurnEntry t = toTurn(m, prevId);
+                                turns.add(t);
+                                prevId = t.id();
+                            }
+                            return new TurnPage(turns, page.nextAfterSeq(), page.hasMore());
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -274,6 +331,18 @@ public class SessionController {
                                         HttpStatus.NOT_FOUND, "Session not found"));
     }
 
+    private EntityPage messagePage(UUID sessionId, Long afterSeq, int limit) {
+        int effectiveLimit = limit <= 0 ? 200 : Math.min(limit, 500);
+        List<ChatMessageEntity> raw =
+                messageRepository.pageAfterSeq(
+                        sessionId, afterSeq, PageRequest.of(0, effectiveLimit + 1));
+        boolean hasMore = raw.size() > effectiveLimit;
+        List<ChatMessageEntity> items =
+                hasMore ? new ArrayList<>(raw.subList(0, effectiveLimit)) : raw;
+        Long nextAfterSeq = items.isEmpty() ? afterSeq : items.get(items.size() - 1).getSeq();
+        return new EntityPage(items, nextAfterSeq, hasMore);
+    }
+
     private static UUID orgId(Jwt jwt) {
         return UUID.fromString(jwt.getClaimAsString("org_id"));
     }
@@ -315,6 +384,7 @@ public class SessionController {
     private static MessageView toMessageView(ChatMessageEntity e) {
         return new MessageView(
                 e.getId().toString(),
+                e.getSeq(),
                 e.getRole(),
                 e.getContentJson(),
                 e.getCreatedAt() == null ? null : e.getCreatedAt().toString());
@@ -355,6 +425,7 @@ public class SessionController {
         String role = m.getRole() == null ? null : m.getRole().toUpperCase();
         return new TurnEntry(
                 m.getId().toString(),
+                m.getSeq(),
                 parentId,
                 role,
                 text,
@@ -381,6 +452,7 @@ public class SessionController {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record TurnEntry(
             String id,
+            Long seq,
             String parentId,
             String role,
             String content,
@@ -394,4 +466,12 @@ public class SessionController {
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record ReadStateResult(String sessionKey, long readAtMs, boolean unread) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record MessagePage(List<MessageView> items, Long nextAfterSeq, boolean hasMore) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record TurnPage(List<TurnEntry> items, Long nextAfterSeq, boolean hasMore) {}
+
+    private record EntityPage(List<ChatMessageEntity> items, Long nextAfterSeq, boolean hasMore) {}
 }

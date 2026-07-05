@@ -245,9 +245,17 @@ public class ChatPersistenceService {
         msg.setUserId(UUID.fromString(tenant.userId()));
         msg.setSessionId(sessionId);
         msg.setAgentId(agentId);
+        msg.setSeq(nextMessageSeq(sessionId));
         msg.setRole(role);
         msg.setContentJson(serializeBlocks(blocks));
         return msg;
+    }
+
+    private long nextMessageSeq(UUID sessionId) {
+        sessionRepository
+                .lockById(sessionId)
+                .orElseThrow(() -> new IllegalStateException("Session not found: " + sessionId));
+        return messageRepository.maxSeq(sessionId) + 1L;
     }
 
     private String serializeBlocks(List<ContentBlock> blocks) {

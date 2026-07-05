@@ -18,12 +18,37 @@ package io.agentscope.saas.core.persistence.repo;
 import io.agentscope.saas.core.persistence.entity.ChatMessageEntity;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 /** Repository for {@link ChatMessageEntity}, with session-scoped queries for history replay. */
 public interface ChatMessageRepository extends JpaRepository<ChatMessageEntity, UUID> {
 
     List<ChatMessageEntity> findBySessionIdOrderByCreatedAtAsc(UUID sessionId);
+
+    List<ChatMessageEntity> findBySessionIdOrderBySeqAsc(UUID sessionId);
+
+    @Query(
+            """
+            SELECT m FROM ChatMessageEntity m
+            WHERE m.sessionId = :sessionId
+              AND (:afterSeq IS NULL OR m.seq > :afterSeq)
+            ORDER BY m.seq ASC
+            """)
+    List<ChatMessageEntity> pageAfterSeq(
+            @Param("sessionId") UUID sessionId,
+            @Param("afterSeq") Long afterSeq,
+            Pageable pageable);
+
+    @Query(
+            """
+            SELECT COALESCE(MAX(m.seq), 0)
+            FROM ChatMessageEntity m
+            WHERE m.sessionId = :sessionId
+            """)
+    long maxSeq(@Param("sessionId") UUID sessionId);
 
     /** Deletes all messages belonging to a session (cascading delete on session removal). */
     void deleteBySessionId(UUID sessionId);

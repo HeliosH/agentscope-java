@@ -1,10 +1,18 @@
 import React, { useEffect, useState } from 'react';
-import { readFile } from '../api/workspace';
+import {
+  downloadCurrentFile,
+  downloadFileVersion,
+  fileVersions,
+  FileVersion,
+  readFile,
+  restoreFileVersion,
+} from '../api/workspace';
 
 interface Props {
   agentId: string;
   path: string | null;
   refreshKey?: number;
+  onChanged?: () => void;
 }
 
 const S: Record<string, React.CSSProperties> = {
@@ -35,6 +43,24 @@ const S: Record<string, React.CSSProperties> = {
   wrapToggleActive: {
     background: '#eef2ff', borderColor: '#c7d2fe', color: '#4338ca',
   },
+  actionBtn: {
+    background: '#ffffff', border: '1px solid #cbd5e1', color: '#475569',
+    borderRadius: 6, padding: '3px 9px', cursor: 'pointer',
+    fontSize: '0.75rem', fontWeight: 500,
+  },
+  versions: {
+    borderTop: '1px solid #e2e8f0', background: '#ffffff', flexShrink: 0,
+    maxHeight: 178, overflowY: 'auto',
+  },
+  versionRow: {
+    display: 'grid', gridTemplateColumns: '72px 88px minmax(120px,1fr) auto auto',
+    alignItems: 'center', gap: 8, padding: '8px 18px',
+    borderBottom: '1px solid #f1f5f9', fontSize: '0.78rem', color: '#64748b',
+  },
+  currentBadge: {
+    background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0',
+    borderRadius: 6, padding: '2px 7px', fontSize: '0.7rem', fontWeight: 700,
+  },
   empty: { padding: 60, color: '#94a3b8', fontSize: '0.95rem', textAlign: 'center' },
   status: { fontSize: '0.82rem', color: '#94a3b8' },
   err: { color: '#dc2626' },
@@ -45,10 +71,30 @@ const S: Record<string, React.CSSProperties> = {
 // extension like LICENSE / Dockerfile / Makefile) is displayed as text.
 const BINARY_EXT = /\.(png|jpe?g|gif|bmp|ico|webp|tiff?|heic|avif|pdf|docx?|xlsx?|pptx?|odt|ods|odp|zip|tar|t?gz|tbz2?|bz2|xz|7z|rar|jar|war|ear|class|exe|dll|so|dylib|a|o|bin|dat|sqlite3?|db|mdb|pyc|pyo|wasm|mp3|mp4|m4a|wav|flac|ogg|opus|aac|avi|mov|mkv|webm|wmv|ttf|otf|woff2?|eot)$/i;
 
-export default function WorkspaceEditor({ agentId, path, refreshKey }: Props) {
+function leaf(path: string): string {
+  const idx = path.lastIndexOf('/');
+  return idx >= 0 ? path.slice(idx + 1) : path;
+}
+
+function saveBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name || 'download';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+export default function WorkspaceEditor({ agentId, path, refreshKey, onChanged }: Props) {
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [versions, setVersions] = useState<FileVersion[]>([]);
+  const [versionErr, setVersionErr] = useState<string | null>(null);
+  const [versionLoading, setVersionLoading] = useState(false);
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
   // Display only — never affects the textarea's value. Default off so what the user
   // sees matches what is on disk; soft-wrap is opt-in.
   const [softWrap, setSoftWrap] = useState(false);
@@ -57,7 +103,7 @@ export default function WorkspaceEditor({ agentId, path, refreshKey }: Props) {
 
   useEffect(() => {
     if (!path) {
-      setContent(''); setErr(null);
+      setContent(''); setErr(null); setVersions([]); setVersionErr(null);
       return;
     }
     if (!viewable) {
@@ -73,6 +119,48 @@ export default function WorkspaceEditor({ agentId, path, refreshKey }: Props) {
       .finally(() => setLoading(false));
   }, [agentId, path, viewable, refreshKey]);
 
+  useEffect(() => {
+    if (!path) return;
+    setVersionLoading(true);
+    setVersionErr(null);
+    fileVersions(agentId, path)
+      .then(setVersions)
+      .catch(e => setVersionErr(e instanceof Error ? e.message : 'Failed to load versions'))
+      .finally(() => setVersionLoading(false));
+  }, [agentId, path, refreshKey]);
+
+  async function handleDownload() {
+    if (!path) return;
+    try {
+      setActionMsg(null);
+      saveBlob(await downloadCurrentFile(agentId, path), leaf(path));
+    } catch (e: unknown) {
+      setActionMsg(e instanceof Error ? e.message : 'Download failed');
+    }
+  }
+
+  async function handleVersionDownload(version: FileVersion) {
+    try {
+      setActionMsg(null);
+      saveBlob(await downloadFileVersion(agentId, version.id), `${leaf(version.logicalPath)}.v${version.versionNo}`);
+    } catch (e: unknown) {
+      setActionMsg(e instanceof Error ? e.message : 'Version download failed');
+    }
+  }
+
+  async function handleRestore(version: FileVersion) {
+    if (!path || version.current) return;
+    if (!confirm(`Restore ${path} to version ${version.versionNo}?`)) return;
+    try {
+      setActionMsg(null);
+      await restoreFileVersion(agentId, version.id, path);
+      onChanged?.();
+      setActionMsg(`Restored v${version.versionNo}`);
+    } catch (e: unknown) {
+      setActionMsg(e instanceof Error ? e.message : 'Restore failed');
+    }
+  }
+
   if (!path) {
     return <div style={S.root}><div style={S.empty}>Select a file from the tree to view.</div></div>;
   }
@@ -82,7 +170,10 @@ export default function WorkspaceEditor({ agentId, path, refreshKey }: Props) {
       <div style={S.bar}>
         <span style={S.pathTxt}>{path}</span>
         <span style={S.readonlyBadge}>read-only</span>
-        {err && <span style={{ ...S.status, ...S.err }}>{err}</span>}
+        {(err || actionMsg) && <span style={{ ...S.status, ...(err ? S.err : {}) }}>{err ?? actionMsg}</span>}
+        <button type="button" style={S.actionBtn} onClick={handleDownload} title="Download current file">
+          Download
+        </button>
         <button
           type="button"
           style={{ ...S.wrapToggle, ...(softWrap ? S.wrapToggleActive : {}) }}
@@ -110,6 +201,33 @@ export default function WorkspaceEditor({ agentId, path, refreshKey }: Props) {
           spellCheck={false}
         />
       )}
+      <div style={S.versions}>
+        <div style={{ ...S.versionRow, fontWeight: 700, color: '#334155' }}>
+          <span>Version</span>
+          <span>Size</span>
+          <span>Source</span>
+          <span />
+          <span />
+        </div>
+        {versionLoading && <div style={{ padding: '10px 18px', color: '#94a3b8', fontSize: '0.78rem' }}>Loading versions…</div>}
+        {versionErr && <div style={{ padding: '10px 18px', color: '#dc2626', fontSize: '0.78rem' }}>{versionErr}</div>}
+        {!versionLoading && !versionErr && versions.length === 0 && (
+          <div style={{ padding: '10px 18px', color: '#94a3b8', fontSize: '0.78rem' }}>No catalog versions.</div>
+        )}
+        {versions.map(v => (
+          <div key={v.id} style={S.versionRow}>
+            <span>{v.current ? <span style={S.currentBadge}>v{v.versionNo}</span> : `v${v.versionNo}`}</span>
+            <span>{v.sizeBytes} B</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.source ?? '-'}</span>
+            <button type="button" style={S.actionBtn} onClick={() => handleVersionDownload(v)}>
+              Download
+            </button>
+            <button type="button" style={S.actionBtn} disabled={v.current} onClick={() => handleRestore(v)}>
+              Restore
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

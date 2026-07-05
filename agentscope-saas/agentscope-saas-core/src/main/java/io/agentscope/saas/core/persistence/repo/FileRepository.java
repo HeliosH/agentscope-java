@@ -31,6 +31,8 @@ public interface FileRepository extends JpaRepository<FileEntity, UUID> {
     Optional<FileEntity> findByOrgIdAndUserIdAndLogicalPath(
             UUID orgId, UUID userId, String logicalPath);
 
+    Optional<FileEntity> findByIdAndOrgIdAndUserId(UUID id, UUID orgId, UUID userId);
+
     List<FileEntity> findByOrgIdAndUserIdAndStatusOrderByLogicalPathAsc(
             UUID orgId, UUID userId, String status);
 

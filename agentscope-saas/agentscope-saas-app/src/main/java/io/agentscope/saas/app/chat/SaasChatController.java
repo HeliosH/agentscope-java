@@ -28,6 +28,7 @@ import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.util.JsonUtils;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
 import io.agentscope.saas.core.persistence.entity.AgentEntity;
 import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
 import io.agentscope.saas.core.persistence.repo.ChatSessionRepository;
@@ -204,6 +205,9 @@ public class SaasChatController {
                 RuntimeContext.builder()
                         .userId(tenant.userId())
                         .sessionId(sessionId)
+                        .put(
+                                WorkspaceProjectionCatalogSink.ATTR_AGENT_ID,
+                                resolved.agentId() != null ? resolved.agentId().toString() : null)
                         .put(TenantContext.class, tenant)
                         .put(TenantContext.ATTR_KEY, tenant)
                         .build();

@@ -18,6 +18,7 @@ package io.agentscope.harness.agent.filesystem.spec;
 import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.filesystem.remote.store.BaseStore;
 import io.agentscope.harness.agent.filesystem.remote.store.NamespaceFactory;
+import io.agentscope.harness.agent.filesystem.sandbox.WorkspaceProjectionSink;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
 import io.agentscope.harness.agent.sandbox.SandboxClientOptions;
 import io.agentscope.harness.agent.sandbox.SandboxContext;
@@ -59,6 +60,8 @@ public abstract class SandboxFilesystemSpec {
     private BaseStore remoteProjectionStore;
 
     private NamespaceFactory remoteProjectionNamespaceFactory;
+
+    private WorkspaceProjectionSink workspaceProjectionSink = WorkspaceProjectionSink.noop();
 
     protected abstract SandboxClient<?> createClient();
 
@@ -135,6 +138,19 @@ public abstract class SandboxFilesystemSpec {
     /** Whether a remote projection backend is configured. */
     public boolean hasRemoteProjection() {
         return remoteProjectionStore != null && remoteProjectionNamespaceFactory != null;
+    }
+
+    /**
+     * Optional release-time projection sink. Use this for secondary durable catalogs/audit trails
+     * that should observe files produced inside the sandbox.
+     */
+    public SandboxFilesystemSpec workspaceProjectionSink(WorkspaceProjectionSink sink) {
+        this.workspaceProjectionSink = sink != null ? sink : WorkspaceProjectionSink.noop();
+        return this;
+    }
+
+    public WorkspaceProjectionSink getWorkspaceProjectionSink() {
+        return workspaceProjectionSink;
     }
 
     public SandboxFilesystemSpec workspaceProjectionEnabled(boolean enabled) {

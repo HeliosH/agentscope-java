@@ -39,6 +39,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -54,6 +55,7 @@ class SandboxQuotaEnforcementTest {
 
     private static final UUID ORG_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
     private static final UUID USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000002");
+    private static final UUID AGENT_ID = UUID.fromString("00000000-0000-0000-0000-000000000003");
 
     @BeforeEach
     void setUp() {
@@ -117,6 +119,7 @@ class SandboxQuotaEnforcementTest {
                 broker.registerActive(
                         ORG_ID,
                         USER_ID,
+                        AGENT_ID,
                         "sess-1",
                         "e2b",
                         "external-1",
@@ -125,7 +128,14 @@ class SandboxQuotaEnforcementTest {
 
         verify(userRepository).lockTenantUser(ORG_ID, USER_ID);
         verify(sandboxRepository).countByOrgIdAndUserIdAndStatus(ORG_ID, USER_ID, "active");
-        verify(sandboxRepository).save(any(SandboxEntity.class));
+        ArgumentCaptor<SandboxEntity> saved = ArgumentCaptor.forClass(SandboxEntity.class);
+        verify(sandboxRepository).save(saved.capture());
+        assertEquals(ORG_ID, saved.getValue().getOrgId());
+        assertEquals(USER_ID, saved.getValue().getUserId());
+        assertEquals(AGENT_ID, saved.getValue().getAgentId());
+        assertEquals("sess-1", saved.getValue().getSessionId());
+        assertEquals("e2b", saved.getValue().getSandboxType());
+        assertEquals("external-1", saved.getValue().getExternalId());
         assertDoesNotThrow(() -> UUID.fromString(id.toString()));
     }
 

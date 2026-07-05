@@ -42,10 +42,13 @@ import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -56,6 +59,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
@@ -81,6 +85,7 @@ public class AgentWorkspaceController {
 
     private static final Logger log = LoggerFactory.getLogger(AgentWorkspaceController.class);
     private static final int MAX_FILE_SIZE = 512 * 1024;
+    private static final int MAX_UPLOAD_SIZE = 32 * 1024 * 1024;
     private static final RuntimeContext FS_RC = RuntimeContext.empty();
     private static final String TEXT_PLAIN = "text/plain; charset=utf-8";
 
@@ -386,6 +391,134 @@ public class AgentWorkspaceController {
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
+    @PostMapping(value = "/file/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    public Mono<UploadedFile> uploadFile(
+            @PathVariable String agentId,
+            @RequestParam(name = "path", required = false) String path,
+            @RequestParam(name = "sessionId", required = false) String sessionId,
+            @RequestParam(name = "messageId", required = false) String messageId,
+            @RequestParam(name = "taskId", required = false) String taskId,
+            @RequestPart("file") Mono<FilePart> filePartMono,
+            @AuthenticationPrincipal Jwt jwt) {
+        RuntimeContext rc = runtimeContext(jwt);
+        return filePartMono.flatMap(
+                file ->
+                        DataBufferUtils.join(file.content())
+                                .map(buffer -> bytesFrom(buffer, file.filename()))
+                                .flatMap(
+                                        bytes ->
+                                                Mono.fromCallable(
+                                                                () ->
+                                                                        uploadFileBytes(
+                                                                                agentId, rc, file,
+                                                                                path, sessionId,
+                                                                                messageId, taskId,
+                                                                                bytes))
+                                                        .subscribeOn(Schedulers.boundedElastic())));
+    }
+
+    @GetMapping("/file/versions")
+    public Mono<List<FileCatalogService.FileVersionSummary>> fileVersions(
+            @PathVariable String agentId,
+            @RequestParam("path") String path,
+            @AuthenticationPrincipal Jwt jwt) {
+        RuntimeContext rc = runtimeContext(jwt);
+        return Mono.fromCallable(
+                        () -> {
+                            resolveFilesystem(rc, agentId);
+                            return fileCatalogService.listVersions(
+                                    TenantContext.from(rc), toRelFsPath(path));
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    @GetMapping("/file/version/{versionId}/download")
+    public Mono<ResponseEntity<byte[]>> downloadVersion(
+            @PathVariable String agentId,
+            @PathVariable String versionId,
+            @AuthenticationPrincipal Jwt jwt) {
+        RuntimeContext rc = runtimeContext(jwt);
+        return Mono.fromCallable(
+                        () -> {
+                            resolveFilesystem(rc, agentId);
+                            UUID id = parseUuid(versionId, "versionId");
+                            FileCatalogService.StoredFile stored =
+                                    fileCatalogService
+                                            .readVersion(TenantContext.from(rc), id)
+                                            .orElseThrow(
+                                                    () ->
+                                                            new ResponseStatusException(
+                                                                    HttpStatus.NOT_FOUND,
+                                                                    "Version not found: "
+                                                                            + versionId));
+                            return downloadResponse(stored.logicalPath(), stored.content());
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    @PostMapping("/file/version/{versionId}/restore")
+    public Mono<FileNode> restoreVersion(
+            @PathVariable String agentId,
+            @PathVariable String versionId,
+            @RequestParam(name = "path", required = false) String path,
+            @AuthenticationPrincipal Jwt jwt) {
+        RuntimeContext rc = runtimeContext(jwt);
+        return Mono.fromCallable(
+                        () -> {
+                            AbstractFilesystem fs = resolveFilesystem(rc, agentId);
+                            TenantContext tenant = TenantContext.from(rc);
+                            UUID id = parseUuid(versionId, "versionId");
+                            FileCatalogService.StoredFile stored =
+                                    fileCatalogService
+                                            .readVersion(tenant, id)
+                                            .orElseThrow(
+                                                    () ->
+                                                            new ResponseStatusException(
+                                                                    HttpStatus.NOT_FOUND,
+                                                                    "Version not found: "
+                                                                            + versionId));
+                            String rel =
+                                    path != null && !path.isBlank()
+                                            ? toRelFsPath(path)
+                                            : toRelFsPath(stored.logicalPath());
+                            List<FileUploadResponse> ur =
+                                    fs.uploadFiles(
+                                            FS_RC, List.of(Map.entry(rel, stored.content())));
+                            if (ur.isEmpty() || !ur.get(0).isSuccess()) {
+                                String err = ur.isEmpty() ? "no response" : ur.get(0).error();
+                                throw new ResponseStatusException(
+                                        HttpStatus.INTERNAL_SERVER_ERROR,
+                                        "Failed to restore file: " + err);
+                            }
+                            FileCatalogService.FileRecord record =
+                                    fileCatalogService
+                                            .recordWorkspaceFile(
+                                                    tenant,
+                                                    agentUuid(agentId),
+                                                    sessionUuid(rc),
+                                                    rel,
+                                                    stored.content(),
+                                                    stored.contentType(),
+                                                    FileCatalogService.SOURCE_WORKSPACE_RESTORE,
+                                                    Map.of("restoredVersionId", versionId))
+                                            .orElseThrow(
+                                                    () ->
+                                                            new ResponseStatusException(
+                                                                    HttpStatus
+                                                                            .INTERNAL_SERVER_ERROR,
+                                                                    "File catalog is not"
+                                                                            + " available"));
+                            return new FileNode(
+                                    basename(record.logicalPath()),
+                                    record.logicalPath(),
+                                    "file",
+                                    record.sizeBytes(),
+                                    null);
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
     @PostMapping("/file/move")
     public Mono<FileNode> moveNode(
             @PathVariable String agentId,
@@ -476,6 +609,121 @@ public class AgentWorkspaceController {
         return stored.text();
     }
 
+    private UploadedFile uploadFileBytes(
+            String agentId,
+            RuntimeContext rc,
+            FilePart file,
+            String requestedPath,
+            String sessionId,
+            String messageId,
+            String taskId,
+            byte[] bytes) {
+        if (bytes.length > MAX_UPLOAD_SIZE) {
+            throw new ResponseStatusException(
+                    HttpStatus.PAYLOAD_TOO_LARGE, "Upload exceeds " + MAX_UPLOAD_SIZE + " bytes");
+        }
+        AbstractFilesystem fs = resolveFilesystem(rc, agentId);
+        TenantContext tenant = TenantContext.from(rc);
+        String rel = uploadTargetPath(requestedPath, file.filename());
+        List<FileUploadResponse> ur = fs.uploadFiles(FS_RC, List.of(Map.entry(rel, bytes)));
+        if (ur.isEmpty() || !ur.get(0).isSuccess()) {
+            String err = ur.isEmpty() ? "no response" : ur.get(0).error();
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR, "Failed to upload file: " + err);
+        }
+        UUID agentUuid = agentUuid(agentId);
+        UUID sessionUuid = parseOptionalUuid(sessionId);
+        UUID messageUuid = parseOptionalUuid(messageId);
+        UUID taskUuid = parseOptionalUuid(taskId);
+        FileCatalogService.FileRecord record =
+                fileCatalogService
+                        .recordWorkspaceFile(
+                                tenant,
+                                agentUuid,
+                                sessionUuid,
+                                rel,
+                                bytes,
+                                contentType(file),
+                                FileCatalogService.SOURCE_WORKSPACE_UPLOAD,
+                                Map.of(
+                                        "api",
+                                        "workspace.upload",
+                                        "filename",
+                                        safeFilename(file.filename())))
+                        .orElseThrow(
+                                () ->
+                                        new ResponseStatusException(
+                                                HttpStatus.INTERNAL_SERVER_ERROR,
+                                                "File catalog is not available"));
+        FileCatalogService.AttachmentRecord attachment =
+                fileCatalogService
+                        .attachFile(
+                                tenant,
+                                agentUuid,
+                                sessionUuid,
+                                messageUuid,
+                                taskUuid,
+                                record,
+                                "workspace_upload",
+                                Map.of("filename", safeFilename(file.filename())))
+                        .orElse(null);
+        return new UploadedFile(
+                record.fileId().toString(),
+                record.versionId().toString(),
+                attachment != null ? attachment.id().toString() : null,
+                record.logicalPath(),
+                record.sizeBytes(),
+                record.sha256());
+    }
+
+    private static byte[] bytesFrom(DataBuffer buffer, String filename) {
+        try {
+            int readable = buffer.readableByteCount();
+            if (readable > MAX_UPLOAD_SIZE) {
+                throw new ResponseStatusException(
+                        HttpStatus.PAYLOAD_TOO_LARGE,
+                        "Upload exceeds " + MAX_UPLOAD_SIZE + " bytes: " + filename);
+            }
+            byte[] bytes = new byte[readable];
+            buffer.read(bytes);
+            return bytes;
+        } finally {
+            DataBufferUtils.release(buffer);
+        }
+    }
+
+    private static String uploadTargetPath(String requestedPath, String filename) {
+        String safeName = safeFilename(filename);
+        if (requestedPath == null || requestedPath.isBlank()) {
+            return toRelFsPath(safeName);
+        }
+        String trimmed = requestedPath.trim();
+        if (trimmed.endsWith("/")) {
+            return toRelFsPath(trimmed + safeName);
+        }
+        return toRelFsPath(trimmed);
+    }
+
+    private static String safeFilename(String filename) {
+        String value = filename == null ? "" : filename.replace('\\', '/').trim();
+        int slash = value.lastIndexOf('/');
+        if (slash >= 0) {
+            value = value.substring(slash + 1);
+        }
+        value = value.replace('\0', '_').trim();
+        if (value.isBlank() || ".".equals(value) || "..".equals(value)) {
+            return "upload.bin";
+        }
+        return value;
+    }
+
+    private static String contentType(FilePart file) {
+        MediaType contentType = file.headers().getContentType();
+        return contentType != null
+                ? contentType.toString()
+                : MediaType.APPLICATION_OCTET_STREAM_VALUE;
+    }
+
     private static ResponseEntity<byte[]> downloadResponse(String absPath, byte[] content) {
         byte[] bytes = content != null ? content : new byte[0];
         String leaf = absPath;
@@ -549,6 +797,25 @@ public class AgentWorkspaceController {
             return UUID.fromString(agentId);
         } catch (Exception e) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent not found: " + agentId);
+        }
+    }
+
+    private static UUID parseUuid(String value, String field) {
+        try {
+            return UUID.fromString(value);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid " + field);
+        }
+    }
+
+    private static UUID parseOptionalUuid(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid UUID: " + value);
         }
     }
 
@@ -852,6 +1119,15 @@ public class AgentWorkspaceController {
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record MoveRequest(String from, String to) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record UploadedFile(
+            String fileId,
+            String versionId,
+            String attachmentId,
+            String path,
+            long sizeBytes,
+            String sha256) {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record WorkspaceSummary(

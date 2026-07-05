@@ -26,6 +26,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.core.persistence.entity.FileEntity;
 import io.agentscope.saas.core.persistence.entity.FileVersionEntity;
+import io.agentscope.saas.core.persistence.repo.FileAttachmentRepository;
 import io.agentscope.saas.core.persistence.repo.FileRepository;
 import io.agentscope.saas.core.persistence.repo.FileVersionRepository;
 import io.agentscope.saas.core.tenant.TenantContext;
@@ -48,6 +49,8 @@ class FileCatalogServiceTest {
 
     private final FileRepository fileRepository = mock(FileRepository.class);
     private final FileVersionRepository fileVersionRepository = mock(FileVersionRepository.class);
+    private final FileAttachmentRepository fileAttachmentRepository =
+            mock(FileAttachmentRepository.class);
     private final FileObjectStore objectStore = mock(FileObjectStore.class);
 
     @SuppressWarnings("unchecked")
@@ -58,6 +61,7 @@ class FileCatalogServiceTest {
             new FileCatalogService(
                     fileRepository,
                     fileVersionRepository,
+                    fileAttachmentRepository,
                     objectStoreProvider,
                     new ObjectMapper(),
                     properties);

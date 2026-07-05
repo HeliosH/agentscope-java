@@ -18,8 +18,10 @@ package io.agentscope.saas.app.workspace;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.saas.app.config.SaasProperties;
+import io.agentscope.saas.core.persistence.entity.FileAttachmentEntity;
 import io.agentscope.saas.core.persistence.entity.FileEntity;
 import io.agentscope.saas.core.persistence.entity.FileVersionEntity;
+import io.agentscope.saas.core.persistence.repo.FileAttachmentRepository;
 import io.agentscope.saas.core.persistence.repo.FileRepository;
 import io.agentscope.saas.core.persistence.repo.FileVersionRepository;
 import io.agentscope.saas.core.tenant.TenantContext;
@@ -57,11 +59,15 @@ public class FileCatalogService {
     public static final String SOURCE_WORKSPACE_WRITE = "workspace_write";
     public static final String SOURCE_WORKSPACE_CREATE = "workspace_create";
     public static final String SOURCE_WORKSPACE_DOWNLOAD = "workspace_download_capture";
+    public static final String SOURCE_WORKSPACE_UPLOAD = "workspace_upload";
     public static final String SOURCE_WORKSPACE_MOVE = "workspace_move";
     public static final String SOURCE_WORKSPACE_DELETE = "workspace_delete";
+    public static final String SOURCE_WORKSPACE_RESTORE = "workspace_restore";
+    public static final String SOURCE_SANDBOX_PROJECTION = "sandbox_projection";
 
     private final FileRepository fileRepository;
     private final FileVersionRepository fileVersionRepository;
+    private final FileAttachmentRepository fileAttachmentRepository;
     private final ObjectProvider<FileObjectStore> objectStoreProvider;
     private final ObjectMapper objectMapper;
     private final SaasProperties properties;
@@ -69,11 +75,13 @@ public class FileCatalogService {
     public FileCatalogService(
             FileRepository fileRepository,
             FileVersionRepository fileVersionRepository,
+            FileAttachmentRepository fileAttachmentRepository,
             ObjectProvider<FileObjectStore> objectStoreProvider,
             ObjectMapper objectMapper,
             SaasProperties properties) {
         this.fileRepository = fileRepository;
         this.fileVersionRepository = fileVersionRepository;
+        this.fileAttachmentRepository = fileAttachmentRepository;
         this.objectStoreProvider = objectStoreProvider;
         this.objectMapper = objectMapper;
         this.properties = properties;
@@ -255,6 +263,146 @@ public class FileCatalogService {
                 });
     }
 
+    @Transactional(readOnly = true)
+    public List<FileVersionSummary> listVersions(TenantContext tenant, String logicalPath) {
+        if (!properties.getFileStore().isEnabled()) {
+            return List.of();
+        }
+        Optional<UUID> orgId = parseUuid(tenant != null ? tenant.orgId() : null);
+        Optional<UUID> userId = parseUuid(tenant != null ? tenant.userId() : null);
+        if (orgId.isEmpty() || userId.isEmpty()) {
+            return List.of();
+        }
+        String path = normalizePath(logicalPath);
+        return withTenantOrg(
+                orgId.get().toString(),
+                () ->
+                        fileRepository
+                                .findByOrgIdAndUserIdAndLogicalPath(orgId.get(), userId.get(), path)
+                                .map(
+                                        file ->
+                                                fileVersionRepository
+                                                        .findByFileIdAndOrgIdAndUserIdOrderByVersionNoDesc(
+                                                                file.getId(),
+                                                                orgId.get(),
+                                                                userId.get())
+                                                        .stream()
+                                                        .map(v -> toVersionSummary(file, v))
+                                                        .toList())
+                                .orElse(List.of()));
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<StoredFile> readVersion(TenantContext tenant, UUID versionId) {
+        if (!properties.getFileStore().isEnabled() || versionId == null) {
+            return Optional.empty();
+        }
+        Optional<UUID> orgId = parseUuid(tenant != null ? tenant.orgId() : null);
+        Optional<UUID> userId = parseUuid(tenant != null ? tenant.userId() : null);
+        FileObjectStore store = objectStoreProvider.getIfAvailable();
+        if (orgId.isEmpty() || userId.isEmpty() || store == null) {
+            return Optional.empty();
+        }
+        return withTenantOrg(
+                orgId.get().toString(),
+                () ->
+                        fileVersionRepository
+                                .findByIdAndOrgIdAndUserId(versionId, orgId.get(), userId.get())
+                                .flatMap(
+                                        version ->
+                                                fileRepository
+                                                        .findByIdAndOrgIdAndUserId(
+                                                                version.getFileId(),
+                                                                orgId.get(),
+                                                                userId.get())
+                                                        .map(
+                                                                file ->
+                                                                        new StoredFile(
+                                                                                file
+                                                                                        .getLogicalPath(),
+                                                                                version
+                                                                                        .getContentType(),
+                                                                                getObject(
+                                                                                        store,
+                                                                                        orgId.get(),
+                                                                                        version
+                                                                                                .getObjectKey()),
+                                                                                version
+                                                                                        .getSizeBytes(),
+                                                                                version
+                                                                                        .getSha256()))));
+    }
+
+    @Transactional
+    public Optional<FileRecord> restoreVersion(
+            TenantContext tenant,
+            UUID agentId,
+            UUID sessionId,
+            UUID versionId,
+            String logicalPath) {
+        Optional<StoredFile> stored = readVersion(tenant, versionId);
+        if (stored.isEmpty()) {
+            return Optional.empty();
+        }
+        String path =
+                logicalPath != null && !logicalPath.isBlank()
+                        ? normalizePath(logicalPath)
+                        : stored.get().logicalPath();
+        return recordWorkspaceFile(
+                tenant,
+                agentId,
+                sessionId,
+                path,
+                stored.get().content(),
+                stored.get().contentType(),
+                SOURCE_WORKSPACE_RESTORE,
+                Map.of("restoredVersionId", versionId.toString()));
+    }
+
+    @Transactional
+    public Optional<AttachmentRecord> attachFile(
+            TenantContext tenant,
+            UUID agentId,
+            UUID sessionId,
+            UUID messageId,
+            UUID taskId,
+            FileRecord record,
+            String kind,
+            Map<String, Object> metadata) {
+        if (!properties.getFileStore().isEnabled() || record == null) {
+            return Optional.empty();
+        }
+        Optional<UUID> orgId = parseUuid(tenant != null ? tenant.orgId() : null);
+        Optional<UUID> userId = parseUuid(tenant != null ? tenant.userId() : null);
+        if (orgId.isEmpty() || userId.isEmpty()) {
+            return Optional.empty();
+        }
+        return withTenantOrg(
+                orgId.get().toString(),
+                () -> {
+                    FileAttachmentEntity attachment = new FileAttachmentEntity();
+                    attachment.setId(UUID.randomUUID());
+                    attachment.setOrgId(orgId.get());
+                    attachment.setUserId(userId.get());
+                    attachment.setAgentId(agentId);
+                    attachment.setSessionId(sessionId);
+                    attachment.setMessageId(messageId);
+                    attachment.setTaskId(taskId);
+                    attachment.setFileId(record.fileId());
+                    attachment.setFileVersionId(record.versionId());
+                    attachment.setKind(kind != null && !kind.isBlank() ? kind : "workspace_file");
+                    attachment.setMetadata(json(metadata));
+                    fileAttachmentRepository.save(attachment);
+                    return Optional.of(
+                            new AttachmentRecord(
+                                    attachment.getId(),
+                                    record.fileId(),
+                                    record.versionId(),
+                                    record.logicalPath(),
+                                    attachment.getKind()));
+                });
+    }
+
     @Transactional
     public void markDeleted(TenantContext tenant, String logicalPath) {
         if (!properties.getFileStore().isEnabled()) {
@@ -427,6 +575,20 @@ public class FileCatalogService {
                 metadata);
     }
 
+    private FileVersionSummary toVersionSummary(FileEntity file, FileVersionEntity version) {
+        return new FileVersionSummary(
+                version.getId(),
+                file.getId(),
+                file.getLogicalPath(),
+                version.getVersionNo() != null ? version.getVersionNo() : 0L,
+                Objects.equals(file.getCurrentVersionId(), version.getId()),
+                version.getSizeBytes() != null ? version.getSizeBytes() : 0L,
+                version.getSha256(),
+                version.getContentType(),
+                version.getSource(),
+                version.getCreatedAt() != null ? version.getCreatedAt().toString() : null);
+    }
+
     private void putObject(
             FileObjectStore store,
             UUID orgId,
@@ -550,4 +712,19 @@ public class FileCatalogService {
     }
 
     public record CatalogFileSummary(String logicalPath, long sizeBytes) {}
+
+    public record FileVersionSummary(
+            UUID id,
+            UUID fileId,
+            String logicalPath,
+            long versionNo,
+            boolean current,
+            long sizeBytes,
+            String sha256,
+            String contentType,
+            String source,
+            String createdAt) {}
+
+    public record AttachmentRecord(
+            UUID id, UUID fileId, UUID fileVersionId, String logicalPath, String kind) {}
 }

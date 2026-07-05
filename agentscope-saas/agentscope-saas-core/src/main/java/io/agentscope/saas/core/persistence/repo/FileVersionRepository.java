@@ -16,6 +16,7 @@
 package io.agentscope.saas.core.persistence.repo;
 
 import io.agentscope.saas.core.persistence.entity.FileVersionEntity;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -27,7 +28,12 @@ public interface FileVersionRepository extends JpaRepository<FileVersionEntity, 
 
     Optional<FileVersionEntity> findByIdAndOrgId(UUID id, UUID orgId);
 
+    Optional<FileVersionEntity> findByIdAndOrgIdAndUserId(UUID id, UUID orgId, UUID userId);
+
     Optional<FileVersionEntity> findFirstByFileIdOrderByVersionNoDesc(UUID fileId);
+
+    List<FileVersionEntity> findByFileIdAndOrgIdAndUserIdOrderByVersionNoDesc(
+            UUID fileId, UUID orgId, UUID userId);
 
     @Query(
             """

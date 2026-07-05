@@ -79,6 +79,8 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
      */
     private volatile RemoteFilesystem remoteFallback;
 
+    private volatile WorkspaceProjectionSink projectionSink = WorkspaceProjectionSink.noop();
+
     public SandboxBackedFilesystem() {
         this.fsId = "sandbox-" + UUID.randomUUID().toString().substring(0, 8);
     }
@@ -90,6 +92,14 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
      */
     public void configureRemoteFallback(RemoteFilesystem fallback) {
         this.remoteFallback = fallback;
+    }
+
+    /**
+     * Wires an optional observer for release-time workspace projection. The sink is invoked only
+     * after the remote projection write/delete has succeeded.
+     */
+    public void configureProjectionSink(WorkspaceProjectionSink sink) {
+        this.projectionSink = sink != null ? sink : WorkspaceProjectionSink.noop();
     }
 
     /** Returns whether a remote projection backend is configured. */
@@ -372,12 +382,11 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                 totalBytes += content.length;
 
                 if (batch.size() >= REMOTE_PROJECTION_BATCH_SIZE) {
-                    fallback.uploadFiles(runtimeContext, batch);
-                    batch.clear();
+                    flushProjectionBatch(runtimeContext, fallback, batch);
                 }
             }
             if (!batch.isEmpty()) {
-                fallback.uploadFiles(runtimeContext, batch);
+                flushProjectionBatch(runtimeContext, fallback, batch);
             }
             int deleted = 0;
             if (completeScan) {
@@ -408,6 +417,7 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
             }
             try {
                 fallback.delete(runtimeContext, previousPath);
+                notifyProjectionDeleted(runtimeContext, previousPath);
                 deleted++;
             } catch (Exception e) {
                 log.warn(
@@ -417,6 +427,34 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
             }
         }
         return deleted;
+    }
+
+    private void flushProjectionBatch(
+            RuntimeContext runtimeContext,
+            RemoteFilesystem fallback,
+            List<Map.Entry<String, byte[]>> batch) {
+        fallback.uploadFiles(runtimeContext, batch);
+        for (Map.Entry<String, byte[]> entry : batch) {
+            notifyProjectionWritten(runtimeContext, entry.getKey(), entry.getValue());
+        }
+        batch.clear();
+    }
+
+    private void notifyProjectionWritten(
+            RuntimeContext runtimeContext, String path, byte[] content) {
+        try {
+            projectionSink.onProjectedFile(runtimeContext, path, content);
+        } catch (Exception e) {
+            log.warn("[sandbox-fs] projection sink failed for {}: {}", path, e.getMessage());
+        }
+    }
+
+    private void notifyProjectionDeleted(RuntimeContext runtimeContext, String path) {
+        try {
+            projectionSink.onDeletedFile(runtimeContext, path);
+        } catch (Exception e) {
+            log.warn("[sandbox-fs] projection sink delete failed for {}: {}", path, e.getMessage());
+        }
     }
 
     private Set<String> readProjectionManifest(

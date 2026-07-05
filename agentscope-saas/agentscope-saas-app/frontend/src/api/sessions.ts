@@ -15,6 +15,7 @@ export interface InboxOptions {
 
 export interface TurnEntry {
   id: string;
+  seq: number | null;
   parentId: string | null;
   role: 'USER' | 'ASSISTANT' | 'TOOL' | string;
   content: string | null;
@@ -22,6 +23,12 @@ export interface TurnEntry {
   toolName: string | null;
   toolInput: string | null;
   toolResult: string | null;
+}
+
+export interface TurnPage {
+  items: TurnEntry[];
+  nextAfterSeq: number | null;
+  hasMore: boolean;
 }
 
 export interface ResetResult {
@@ -49,6 +56,22 @@ export async function inbox(agentId: string, opts: InboxOptions = {}): Promise<I
 export async function turns(agentId: string, sessionKey: string): Promise<TurnEntry[]> {
   const res = await fetch(
     `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionKey)}`,
+  );
+  if (!res.ok) throw new Error('Failed to fetch session turns');
+  return res.json();
+}
+
+export async function turnsPage(
+  agentId: string,
+  sessionKey: string,
+  afterSeq?: number | null,
+  limit = 100,
+): Promise<TurnPage> {
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  if (afterSeq != null) params.set('afterSeq', String(afterSeq));
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionKey)}/turns/page?${params}`,
   );
   if (!res.ok) throw new Error('Failed to fetch session turns');
   return res.json();

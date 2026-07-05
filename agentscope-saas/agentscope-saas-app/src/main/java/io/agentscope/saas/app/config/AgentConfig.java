@@ -35,6 +35,7 @@ import io.agentscope.harness.agent.tools.McpClientRegistry;
 import io.agentscope.saas.app.memory.MemoryLedger;
 import io.agentscope.saas.app.memory.SaasLongTermMemoryMiddleware;
 import io.agentscope.saas.app.org.OrgToolsConfigService;
+import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
 import io.agentscope.saas.core.middleware.RateLimitMiddleware;
 import io.agentscope.saas.core.middleware.TenantContextMiddleware;
 import io.agentscope.saas.core.middleware.UsageMeteringMiddleware;
@@ -81,6 +82,7 @@ public class AgentConfig {
             McpClientRegistry mcpClientRegistry,
             OrgToolsConfigService orgToolsConfigService,
             ObjectProvider<MemoryLedger> memoryLedgerProvider,
+            ObjectProvider<WorkspaceProjectionCatalogSink> workspaceProjectionCatalogSinkProvider,
             ObjectProvider<MemoryConsolidator.ConsolidationSink> consolidationSinkProvider) {
 
         SaasProperties.Agent agentCfg = properties.getAgent();
@@ -134,6 +136,8 @@ public class AgentConfig {
             BaseStore projectionStore = workspaceStoreProvider.getIfAvailable();
             if (projectionStore != null) {
                 sandboxSpec.remoteProjection(projectionStore, AgentConfig::tenantNamespace);
+                sandboxSpec.workspaceProjectionSink(
+                        workspaceProjectionCatalogSinkProvider.getIfAvailable());
                 log.info(
                         "Sandbox remote projection enabled (out-of-call file IO delegates to"
                                 + " BaseStore: {})",
