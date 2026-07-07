@@ -64,6 +64,11 @@ public final class MinioFileObjectStore implements FileObjectStore {
         }
     }
 
+    @Override
+    public void healthCheck() throws Exception {
+        ensureBucket();
+    }
+
     private void ensureBucket() throws Exception {
         boolean exists = client.bucketExists(BucketExistsArgs.builder().bucket(bucket).build());
         if (!exists) {

@@ -22,6 +22,12 @@ START_DOCKER_DEPS="${START_DOCKER_DEPS:-true}"
 START_DOCKER_DAEMON="${START_DOCKER_DAEMON:-true}"
 RUN_SMOKE="${RUN_SMOKE:-false}"
 MAVEN_OFFLINE="${MAVEN_OFFLINE:-true}"
+MAVEN_PREPARE_ARGS=(
+  -DskipTests
+  -Dmaven.javadoc.skip=true
+  -Dmaven.source.skip=true
+  -Djacoco.skip=true
+)
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-90}"
 DOCKER_START_TIMEOUT_SECONDS="${DOCKER_START_TIMEOUT_SECONDS:-120}"
 
@@ -224,12 +230,26 @@ export_app_env() {
 }
 
 maven_cmd() {
-  local cmd=(mvn)
+  local prepare=(mvn)
+  local run=(mvn)
   if [ "$MAVEN_OFFLINE" = "true" ]; then
-    cmd+=("-o")
+    prepare+=("-o")
+    run+=("-o")
   fi
-  cmd+=("-pl" "$APP_MODULE" "spring-boot:run")
-  printf '%q ' "${cmd[@]}"
+  prepare+=("-pl" "$APP_MODULE" "-am" "${MAVEN_PREPARE_ARGS[@]}" "install")
+  run+=("-pl" "$APP_MODULE" "spring-boot:run")
+  printf '%q ' "${prepare[@]}"
+  printf '&& '
+  printf '%q ' "${run[@]}"
+}
+
+prepare_reactor_dependencies() {
+  cd "$REPO_ROOT"
+  if [ "$MAVEN_OFFLINE" = "true" ]; then
+    mvn -o -pl "$APP_MODULE" -am "${MAVEN_PREPARE_ARGS[@]}" install
+  else
+    mvn -pl "$APP_MODULE" -am "${MAVEN_PREPARE_ARGS[@]}" install
+  fi
 }
 
 run_app_foreground() {
@@ -241,6 +261,7 @@ run_app_foreground() {
   echo "  Sandbox: $SAAS_SANDBOX_TYPE ($SAAS_SANDBOX_OPENSANDBOX_API_BASE_URL)"
   echo
   cd "$REPO_ROOT"
+  prepare_reactor_dependencies
   if [ "$MAVEN_OFFLINE" = "true" ]; then
     exec mvn -o -pl "$APP_MODULE" spring-boot:run
   else
@@ -260,6 +281,7 @@ run_smoke_mode() {
 
   echo "Starting app for smoke validation..."
   cd "$REPO_ROOT"
+  prepare_reactor_dependencies
   if [ "$MAVEN_OFFLINE" = "true" ]; then
     mvn -o -pl "$APP_MODULE" spring-boot:run &
   else

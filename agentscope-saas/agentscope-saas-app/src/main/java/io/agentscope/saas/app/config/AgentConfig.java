@@ -34,6 +34,8 @@ import io.agentscope.harness.agent.skill.curator.SkillCuratorConfig;
 import io.agentscope.harness.agent.tools.McpClientRegistry;
 import io.agentscope.saas.app.memory.MemoryLedger;
 import io.agentscope.saas.app.memory.SaasLongTermMemoryMiddleware;
+import io.agentscope.saas.app.observability.AgentRunMetrics;
+import io.agentscope.saas.app.observability.AgentTelemetryMiddleware;
 import io.agentscope.saas.app.org.OrgToolsConfigService;
 import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
 import io.agentscope.saas.core.middleware.RateLimitMiddleware;
@@ -83,7 +85,8 @@ public class AgentConfig {
             OrgToolsConfigService orgToolsConfigService,
             ObjectProvider<MemoryLedger> memoryLedgerProvider,
             ObjectProvider<WorkspaceProjectionCatalogSink> workspaceProjectionCatalogSinkProvider,
-            ObjectProvider<MemoryConsolidator.ConsolidationSink> consolidationSinkProvider) {
+            ObjectProvider<MemoryConsolidator.ConsolidationSink> consolidationSinkProvider,
+            ObjectProvider<AgentRunMetrics> agentRunMetricsProvider) {
 
         SaasProperties.Agent agentCfg = properties.getAgent();
         SaasProperties.RateLimit rl = properties.getRateLimit();
@@ -104,6 +107,11 @@ public class AgentConfig {
                         .stateStore(agentStateStore)
                         .defaultSessionId("default")
                         .middleware(new TenantContextMiddleware())
+                        .middleware(
+                                new AgentTelemetryMiddleware(
+                                        chatModel.getModelName(),
+                                        agentRunMetricsProvider.getIfAvailable(
+                                                AgentRunMetrics::noop)))
                         .middleware(
                                 new RateLimitMiddleware(
                                         rateLimiter, rl.getMaxRequests(), rl.getWindowSeconds()))

@@ -31,6 +31,7 @@ public class SaasProperties {
     @NestedConfigurationProperty private final RateLimit rateLimit = new RateLimit();
     @NestedConfigurationProperty private final Agent agent = new Agent();
     @NestedConfigurationProperty private final Ltm ltm = new Ltm();
+    @NestedConfigurationProperty private final Degradation degradation = new Degradation();
 
     public Model getModel() {
         return model;
@@ -58,6 +59,10 @@ public class SaasProperties {
 
     public Ltm getLtm() {
         return ltm;
+    }
+
+    public Degradation getDegradation() {
+        return degradation;
     }
 
     /** Model gateway / provider selection. */
@@ -1125,6 +1130,60 @@ public class SaasProperties {
 
         public void setReplayStaleSeconds(long replayStaleSeconds) {
             this.replayStaleSeconds = replayStaleSeconds;
+        }
+    }
+
+    /**
+     * Runtime degradation policy. The default {@code warn} mode records dependency status and
+     * exposes admin diagnostics without blocking local smoke tests. Production deployments can set
+     * {@code chat-policy=block} to fail closed when required runtime dependencies are unhealthy.
+     */
+    public static class Degradation {
+        /** Master switch for dependency probes and policy decisions. */
+        private boolean enabled = true;
+
+        /** One of: warn, block. Block prevents new chat runs when critical dependencies degrade. */
+        private String chatPolicy = "warn";
+
+        /** Seconds to cache probe results so every chat request does not hit infrastructure. */
+        private int healthCacheTtlSeconds = 15;
+
+        /**
+         * Optional OpenSandbox health path appended to open-sandbox-api-base-url. Empty means
+         * provider health is treated as unknown and never blocks by itself.
+         */
+        private String openSandboxHealthPath = "";
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getChatPolicy() {
+            return chatPolicy;
+        }
+
+        public void setChatPolicy(String chatPolicy) {
+            this.chatPolicy = chatPolicy;
+        }
+
+        public int getHealthCacheTtlSeconds() {
+            return healthCacheTtlSeconds;
+        }
+
+        public void setHealthCacheTtlSeconds(int healthCacheTtlSeconds) {
+            this.healthCacheTtlSeconds = healthCacheTtlSeconds;
+        }
+
+        public String getOpenSandboxHealthPath() {
+            return openSandboxHealthPath;
+        }
+
+        public void setOpenSandboxHealthPath(String openSandboxHealthPath) {
+            this.openSandboxHealthPath = openSandboxHealthPath;
         }
     }
 }

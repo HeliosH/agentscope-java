@@ -28,6 +28,9 @@ import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.util.JsonUtils;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.saas.app.config.SaasProperties;
+import io.agentscope.saas.app.degradation.DegradationManager;
+import io.agentscope.saas.app.observability.AgentRunMetrics;
 import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
 import io.agentscope.saas.core.persistence.entity.AgentEntity;
 import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
@@ -38,6 +41,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
@@ -82,17 +86,29 @@ public class SaasChatController {
     private final TenantResolver tenantResolver;
     private final ChatPersistenceService persistence;
     private final ChatSessionRepository sessionRepository;
+    private final DegradationManager degradationManager;
+    private final AgentRunMetrics metrics;
+    private final String sandboxType;
     private final AguiEventEncoder encoder = new AguiEventEncoder();
 
     public SaasChatController(
             HarnessAgent agent,
             TenantResolver tenantResolver,
             ChatPersistenceService persistence,
-            ChatSessionRepository sessionRepository) {
+            ChatSessionRepository sessionRepository,
+            DegradationManager degradationManager,
+            AgentRunMetrics metrics,
+            SaasProperties properties) {
         this.agent = agent;
         this.tenantResolver = tenantResolver;
         this.persistence = persistence;
         this.sessionRepository = sessionRepository;
+        this.degradationManager = degradationManager;
+        this.metrics = metrics != null ? metrics : AgentRunMetrics.noop();
+        this.sandboxType =
+                properties != null && properties.getSandbox() != null
+                        ? properties.getSandbox().getType()
+                        : "unknown";
     }
 
     /**
@@ -151,6 +167,10 @@ public class SaasChatController {
         Map<String, Object> claims = jwt != null ? jwt.getClaims() : Map.of();
         TenantContext tenant = tenantResolver.resolve(claims);
         boolean persistable = isPersistable(tenant);
+        DegradationManager.Decision decision = degradationManager.evaluateChat();
+        if (!decision.allowed()) {
+            return degradationBlockedStream(request, decision, persistable);
+        }
 
         if (persistable) {
             return streamingWithPersistence(tenant, agentId, request);
@@ -200,6 +220,8 @@ public class SaasChatController {
         String runId = UUID.randomUUID().toString();
         AguiEventConverter converter = new AguiEventConverter(threadId, runId);
         AssistantContentAccumulator accumulator = new AssistantContentAccumulator();
+        long startedNanos = System.nanoTime();
+        AtomicReference<String> streamOutcome = new AtomicReference<>("success");
 
         RuntimeContext ctx =
                 RuntimeContext.builder()
@@ -259,6 +281,7 @@ public class SaasChatController {
                 .map(this::toSse)
                 .onErrorResume(
                         error -> {
+                            streamOutcome.set("error");
                             log.warn("Chat stream error: {}", error.toString());
                             Map<String, Object> payload = new HashMap<>();
                             payload.put("message", errorMessage(error));
@@ -268,9 +291,40 @@ public class SaasChatController {
                         })
                 .doOnCancel(
                         () -> {
+                            streamOutcome.set("cancel");
                             log.debug("Client cancelled chat stream; interrupting agent");
                             agent.interrupt();
+                        })
+                .doFinally(
+                        signal -> {
+                            if ("cancel".equalsIgnoreCase(signal.name())) {
+                                streamOutcome.set("cancel");
+                            }
+                            metrics.recordChatStream(
+                                    streamOutcome.get(),
+                                    persist,
+                                    sandboxType,
+                                    System.nanoTime() - startedNanos);
                         });
+    }
+
+    private Flux<ServerSentEvent<String>> degradationBlockedStream(
+            ChatRequest request, DegradationManager.Decision decision, boolean persistable) {
+        long startedNanos = System.nanoTime();
+        String threadId =
+                request != null && request.sessionId() != null && !request.sessionId().isBlank()
+                        ? request.sessionId()
+                        : UUID.randomUUID().toString();
+        String runId = UUID.randomUUID().toString();
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("code", "RUNTIME_DEGRADED");
+        payload.put("message", decision.message());
+        payload.put("action", decision.action());
+        payload.put("dependencies", decision.dependencies());
+        AguiEvent errorEvent = new AguiEvent.Custom(threadId, runId, "error", payload);
+        metrics.recordChatStream(
+                "blocked", persistable, sandboxType, System.nanoTime() - startedNanos);
+        return Flux.just(toSse(errorEvent));
     }
 
     private ServerSentEvent<String> toSse(AguiEvent event) {

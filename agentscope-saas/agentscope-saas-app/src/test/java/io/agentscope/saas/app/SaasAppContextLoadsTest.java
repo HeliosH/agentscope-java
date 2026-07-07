@@ -15,10 +15,14 @@
  */
 package io.agentscope.saas.app;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import io.agentscope.saas.app.marketplace.MarketplaceRegistry;
 import io.agentscope.saas.app.marketplace.MarketplacesController;
+import io.agentscope.saas.app.observability.AgentRunMetrics;
 import io.agentscope.saas.app.tools.AgentToolsController;
 import io.agentscope.saas.core.persistence.repo.MarketplaceRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -39,9 +43,17 @@ class SaasAppContextLoadsTest {
     @Autowired MarketplaceRegistry marketplaceRegistry;
     @Autowired MarketplacesController marketplacesController;
     @Autowired AgentToolsController agentToolsController;
+    @Autowired AgentRunMetrics agentRunMetrics;
+    @Autowired MeterRegistry meterRegistry;
 
     @Test
     void contextLoads() {
-        // Beans resolve + the H2 V8 migration applied; nothing else to assert.
+        assertThat(marketplaceRepository).isNotNull();
+        assertThat(marketplaceRegistry).isNotNull();
+        assertThat(marketplacesController).isNotNull();
+        assertThat(agentToolsController).isNotNull();
+        assertThat(agentRunMetrics).isNotNull();
+        assertThat(meterRegistry.find("saas.agent.chat.stream.duration").timer()).isNotNull();
+        assertThat(meterRegistry.find("saas.llm.model.calls").counter()).isNotNull();
     }
 }

@@ -92,4 +92,12 @@ public final class PgFileObjectStore implements FileObjectStore {
             }
         }
     }
+
+    @Override
+    public void healthCheck() throws Exception {
+        try (Connection conn = dataSource.getConnection();
+                PreparedStatement ps = conn.prepareStatement("SELECT 1")) {
+            ps.execute();
+        }
+    }
 }

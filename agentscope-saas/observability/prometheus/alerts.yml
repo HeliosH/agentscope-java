@@ -80,3 +80,45 @@ groups:
         annotations:
           summary: "Sandbox active pool is high"
           description: "Sandbox type {{ $labels.type }} has {{ $value }} active tracking row(s) for 15m. Tune this threshold to the deployment capacity."
+
+  - name: agentscope-saas-agent
+    rules:
+      - alert: SaasAgentRunErrors
+        expr: sum by (model) (increase(saas_agent_run_duration_seconds_count{outcome="error"}[10m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: agentscope-saas
+        annotations:
+          summary: "Agent run errors detected"
+          description: "Model {{ $labels.model }} reported {{ $value }} failed agent run(s) in 10m. Check chat stream errors, model gateway reachability, sandbox provider errors, and persistence logs."
+
+      - alert: SaasChatRuntimeBlocked
+        expr: sum by (sandbox_type) (increase(saas_agent_chat_stream_duration_seconds_count{outcome="blocked"}[10m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: agentscope-saas
+        annotations:
+          summary: "Chat runs blocked by degradation policy"
+          description: "Sandbox type {{ $labels.sandbox_type }} had {{ $value }} chat stream(s) blocked by runtime degradation policy in 10m. Inspect /api/admin/degradation and dependency health."
+
+      - alert: SaasRuntimeDependencyDegraded
+        expr: sum by (component, action) (increase(saas_degradation_events_total{status!="healthy"}[10m])) > 0
+        for: 2m
+        labels:
+          severity: warning
+          service: agentscope-saas
+        annotations:
+          summary: "Runtime dependency degraded"
+          description: "Component {{ $labels.component }} reported degradation action {{ $labels.action }} {{ $value }} time(s) in 10m. Check /api/admin/degradation for current status."
+
+      - alert: SaasLlmTokenUsageSpike
+        expr: sum by (model) (increase(saas_llm_token_usage_total{type="total"}[1h])) > 1000000
+        for: 10m
+        labels:
+          severity: warning
+          service: agentscope-saas
+        annotations:
+          summary: "LLM token usage spike"
+          description: "Model {{ $labels.model }} consumed {{ $value }} tokens in 1h. Tune this threshold to tenant quotas and investigate runaway sessions."

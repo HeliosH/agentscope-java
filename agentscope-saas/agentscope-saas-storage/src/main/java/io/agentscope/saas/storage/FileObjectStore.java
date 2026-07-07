@@ -28,4 +28,11 @@ public interface FileObjectStore {
 
     /** Reads an immutable file object after the caller has already passed metadata authorization. */
     byte[] get(UUID orgId, String objectKey) throws Exception;
+
+    /**
+     * Checks whether the backend is reachable enough to accept durable file writes. Implementations
+     * keep this lightweight and side-effect free where possible; MinIO/S3 checks bucket reachability,
+     * while the PG fallback checks database connectivity.
+     */
+    default void healthCheck() throws Exception {}
 }

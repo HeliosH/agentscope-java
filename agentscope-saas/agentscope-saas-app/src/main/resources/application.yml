@@ -150,6 +150,13 @@ saas:
     replay-batch-size: ${SAAS_LTM_REPLAY_BATCH_SIZE:50}
     replay-max-attempts: ${SAAS_LTM_REPLAY_MAX_ATTEMPTS:10}
     replay-stale-seconds: ${SAAS_LTM_REPLAY_STALE_SECONDS:300}
+  degradation:
+    enabled: ${SAAS_DEGRADATION_ENABLED:true}
+    # warn = expose/metric only; block = fail closed for new chat runs when critical deps degrade.
+    chat-policy: ${SAAS_DEGRADATION_CHAT_POLICY:warn}
+    health-cache-ttl-seconds: ${SAAS_DEGRADATION_HEALTH_CACHE_TTL_SECONDS:15}
+    # Optional, for deployments exposing an OpenSandbox health endpoint (for example /health).
+    open-sandbox-health-path: ${SAAS_DEGRADATION_OPENSANDBOX_HEALTH_PATH:}
   security:
     jwt:
       secret: ${SAAS_JWT_SECRET:change-me-saas-dev-secret-please-override-in-prod-0123456789}
@@ -163,7 +170,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: always

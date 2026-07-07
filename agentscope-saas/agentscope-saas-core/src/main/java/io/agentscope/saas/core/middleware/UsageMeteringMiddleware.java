@@ -21,6 +21,7 @@ import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.ModelCallEndEvent;
 import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.MiddlewareBase;
+import io.agentscope.core.model.ChatUsage;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.usage.UsageService;
 import java.util.concurrent.atomic.AtomicLong;
@@ -30,8 +31,8 @@ import reactor.core.publisher.Flux;
 /**
  * Third link in the SaaS middleware chain. Meters resource usage per agent run (metering only — no
  * billing). It counts model calls during the run and, on completion, records a usage metric for the
- * tenant. Token-accurate accounting is wired in a later phase via {@code ChatUsage}; Phase 1 records
- * a model-invocation count which is sufficient to validate the metering path end-to-end.
+ * tenant. It records both model-call counts and token usage when the model provider returns
+ * {@link ChatUsage}; writes are best-effort through {@link UsageService}.
  */
 public class UsageMeteringMiddleware implements MiddlewareBase {
 
@@ -49,19 +50,37 @@ public class UsageMeteringMiddleware implements MiddlewareBase {
             Function<AgentInput, Flux<AgentEvent>> next) {
         TenantContext tc = TenantContext.from(ctx);
         AtomicLong modelCalls = new AtomicLong(0);
+        AtomicLong inputTokens = new AtomicLong(0);
+        AtomicLong outputTokens = new AtomicLong(0);
+        AtomicLong totalTokens = new AtomicLong(0);
         return next.apply(input)
                 .doOnNext(
                         event -> {
-                            if (event instanceof ModelCallEndEvent) {
+                            if (event instanceof ModelCallEndEvent modelCallEnd) {
                                 modelCalls.incrementAndGet();
+                                ChatUsage usage = modelCallEnd.getUsage();
+                                if (usage != null) {
+                                    inputTokens.addAndGet(Math.max(0, usage.getInputTokens()));
+                                    outputTokens.addAndGet(Math.max(0, usage.getOutputTokens()));
+                                    totalTokens.addAndGet(Math.max(0, usage.getTotalTokens()));
+                                }
                             }
                         })
                 .doFinally(
                         signal -> {
-                            long calls = modelCalls.get();
-                            if (calls > 0 && tc != null) {
-                                usageService.record(tc, "model_calls", calls, null);
+                            if (tc == null) {
+                                return;
                             }
+                            recordPositive(tc, "model_calls", modelCalls.get());
+                            recordPositive(tc, "tokens_input", inputTokens.get());
+                            recordPositive(tc, "tokens_output", outputTokens.get());
+                            recordPositive(tc, "tokens_total", totalTokens.get());
                         });
+    }
+
+    private void recordPositive(TenantContext tenant, String metric, long value) {
+        if (value > 0) {
+            usageService.record(tenant, metric, value, null);
+        }
     }
 }
