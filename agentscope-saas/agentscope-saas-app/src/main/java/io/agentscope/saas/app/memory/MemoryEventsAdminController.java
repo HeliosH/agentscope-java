@@ -15,6 +15,7 @@
  */
 package io.agentscope.saas.app.memory;
 
+import io.agentscope.saas.app.admin.AdminSecurity;
 import io.agentscope.saas.core.persistence.entity.MemoryEventEntity;
 import io.agentscope.saas.core.persistence.repo.MemoryEventRepository;
 import java.time.OffsetDateTime;
@@ -42,7 +43,6 @@ import reactor.core.scheduler.Schedulers;
 @RequestMapping("/api/admin/memory-events")
 public class MemoryEventsAdminController {
 
-    private static final String ADMIN_ROLE = "admin";
     private static final int DEFAULT_LIMIT = 100;
     private static final int MAX_LIMIT = 500;
 
@@ -118,13 +118,7 @@ public class MemoryEventsAdminController {
     }
 
     private static void requireAdmin(Jwt jwt) {
-        if (jwt == null) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "unauthenticated");
-        }
-        String role = jwt.getClaimAsString("role");
-        if (!ADMIN_ROLE.equals(role)) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "admin role required");
-        }
+        AdminSecurity.requireOrgAdmin(jwt);
     }
 
     private static UUID parseRequiredUuid(String name, String value) {

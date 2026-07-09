@@ -62,7 +62,7 @@ export default function AdminMemoryEventsPage() {
     synced: rows.filter(r => r.syncStatus === 'synced').length,
   }), [rows]);
 
-  if (me?.role !== 'admin') {
+  if (me?.role !== 'admin' && me?.role !== 'platform_admin') {
     return <Navigate to="/agents" replace />;
   }
 

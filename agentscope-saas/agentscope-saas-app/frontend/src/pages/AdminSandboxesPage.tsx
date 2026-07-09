@@ -95,7 +95,7 @@ export default function AdminSandboxesPage() {
     return { active, expired, released };
   }, [rows]);
 
-  if (me?.role !== 'admin') {
+  if (me?.role !== 'admin' && me?.role !== 'platform_admin') {
     return <Navigate to="/agents" replace />;
   }
 

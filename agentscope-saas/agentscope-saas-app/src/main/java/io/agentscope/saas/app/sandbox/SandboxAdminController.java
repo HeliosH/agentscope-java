@@ -15,13 +15,17 @@
  */
 package io.agentscope.saas.app.sandbox;
 
+import io.agentscope.saas.app.admin.AdminSecurity;
+import io.agentscope.saas.app.admin.AuditService;
 import io.agentscope.saas.core.persistence.entity.SandboxEntity;
 import io.agentscope.saas.core.persistence.repo.SandboxRepository;
 import io.agentscope.saas.sandbox.SandboxBackendTerminator;
 import io.agentscope.saas.sandbox.SandboxBroker;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -46,21 +50,31 @@ import reactor.core.scheduler.Schedulers;
 @RequestMapping("/api/admin/sandboxes")
 public class SandboxAdminController {
 
-    private static final String ADMIN_ROLE = "admin";
     private static final int DEFAULT_LIMIT = 100;
     private static final int MAX_LIMIT = 500;
 
     private final SandboxRepository repository;
     private final SandboxBroker broker;
     private final SandboxBackendTerminator terminator;
+    private final AuditService audit;
 
     public SandboxAdminController(
             SandboxRepository repository,
             SandboxBroker broker,
             SandboxBackendTerminator terminator) {
+        this(repository, broker, terminator, null);
+    }
+
+    @Autowired
+    public SandboxAdminController(
+            SandboxRepository repository,
+            SandboxBroker broker,
+            SandboxBackendTerminator terminator,
+            AuditService audit) {
         this.repository = repository;
         this.broker = broker;
         this.terminator = terminator != null ? terminator : SandboxBackendTerminator.unsupported();
+        this.audit = audit;
     }
 
     public record SandboxView(
@@ -156,6 +170,13 @@ public class SandboxAdminController {
                                                                             terminateBackend);
                                                     broker.recordBackendRelease(
                                                             result.sandbox().getId(), termination);
+                                                    recordAudit(
+                                                            jwt,
+                                                            orgId,
+                                                            result,
+                                                            reason,
+                                                            terminateBackend,
+                                                            termination);
                                                     return ResponseEntity.ok(
                                                             toActionView(result, termination));
                                                 })
@@ -165,6 +186,39 @@ public class SandboxAdminController {
                                                                 HttpStatus.NOT_FOUND,
                                                                 "sandbox not found")))
                 .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private void recordAudit(
+            Jwt jwt,
+            UUID orgId,
+            SandboxBroker.ForceEvictResult result,
+            String reason,
+            boolean terminateBackend,
+            SandboxBackendTerminator.TerminationResult termination) {
+        if (audit == null) {
+            return;
+        }
+        SandboxEntity sandbox = result.sandbox();
+        audit.record(
+                orgId,
+                AdminSecurity.actorId(jwt),
+                "admin.sandbox.force_evict",
+                "sandbox:" + sandbox.getId(),
+                Map.of(
+                        "sandboxType",
+                        value(sandbox.getSandboxType()),
+                        "externalId",
+                        value(sandbox.getExternalId()),
+                        "previousStatus",
+                        value(result.previousStatus()),
+                        "status",
+                        value(sandbox.getStatus()),
+                        "reason",
+                        value(reason),
+                        "terminateBackend",
+                        terminateBackend,
+                        "backendTerminationStatus",
+                        value(termination.status())));
     }
 
     private static SandboxView toView(SandboxEntity entity, OffsetDateTime now) {
@@ -217,13 +271,7 @@ public class SandboxAdminController {
     }
 
     private static void requireAdmin(Jwt jwt) {
-        if (jwt == null) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "unauthenticated");
-        }
-        String role = jwt.getClaimAsString("role");
-        if (!ADMIN_ROLE.equals(role)) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "admin role required");
-        }
+        AdminSecurity.requireOrgAdmin(jwt);
     }
 
     private static UUID parseRequiredUuid(String name, String value) {
@@ -248,6 +296,10 @@ public class SandboxAdminController {
 
     private static String normalize(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private static String value(String value) {
+        return value == null ? "" : value;
     }
 
     private static int boundLimit(Integer limit) {

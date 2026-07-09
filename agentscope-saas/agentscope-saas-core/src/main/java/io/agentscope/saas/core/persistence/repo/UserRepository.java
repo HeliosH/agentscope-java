@@ -17,8 +17,10 @@ package io.agentscope.saas.core.persistence.repo;
 
 import io.agentscope.saas.core.persistence.entity.UserEntity;
 import jakarta.persistence.LockModeType;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
@@ -30,6 +32,12 @@ public interface UserRepository extends JpaRepository<UserEntity, UUID> {
     Optional<UserEntity> findByEmail(String email);
 
     Optional<UserEntity> findByIdpSubject(String idpSubject);
+
+    List<UserEntity> findByOrgIdOrderByCreatedAtDesc(UUID orgId, Pageable pageable);
+
+    Optional<UserEntity> findByOrgIdAndId(UUID orgId, UUID id);
+
+    long countByOrgIdAndRole(UUID orgId, String role);
 
     /**
      * Locks the tenant/user row as the quota serialization point for operations that create

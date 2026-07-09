@@ -13,6 +13,9 @@ import AgentSessionDetailPage from './pages/AgentSessionDetailPage';
 import AgentSettingsPage from './pages/AgentSettingsPage';
 import AdminSandboxesPage from './pages/AdminSandboxesPage';
 import AdminMemoryEventsPage from './pages/AdminMemoryEventsPage';
+import AdminUsersPage from './pages/AdminUsersPage';
+import AdminUsagePage from './pages/AdminUsagePage';
+import AdminAuditPage from './pages/AdminAuditPage';
 import AppShell from './components/AppShell';
 import AgentLayout from './components/AgentLayout';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -29,8 +32,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <Route path="/" element={<Navigate to="/agents" replace />} />
             <Route path="/agents" element={<AgentsHubPage />} />
             <Route path="/agents/new" element={<AgentCreatePage />} />
+            <Route path="/admin/users" element={<AdminUsersPage />} />
+            <Route path="/admin/usage" element={<AdminUsagePage />} />
             <Route path="/admin/sandboxes" element={<AdminSandboxesPage />} />
             <Route path="/admin/memory-events" element={<AdminMemoryEventsPage />} />
+            <Route path="/admin/audit" element={<AdminAuditPage />} />
 
             <Route path="/agents/:id" element={<AgentLayout />}>
               <Route index element={<Navigate to="chat" replace />} />

@@ -12,7 +12,7 @@ export default function AppShell() {
   const location = useLocation();
   const { me } = useOutletContext<ShellContext>();
   const [menuOpen, setMenuOpen] = useState(false);
-  const admin = me?.role === 'admin';
+  const admin = me?.role === 'admin' || me?.role === 'platform_admin';
   const adminPath = location.pathname;
 
   function handleLogout() {
@@ -54,6 +54,18 @@ export default function AppShell() {
             {admin && (
               <>
                 <AdminNavButton
+                  active={adminPath.startsWith('/admin/users')}
+                  onClick={() => navigate('/admin/users')}
+                >
+                  Users
+                </AdminNavButton>
+                <AdminNavButton
+                  active={adminPath.startsWith('/admin/usage')}
+                  onClick={() => navigate('/admin/usage')}
+                >
+                  Usage
+                </AdminNavButton>
+                <AdminNavButton
                   active={adminPath.startsWith('/admin/sandboxes')}
                   onClick={() => navigate('/admin/sandboxes')}
                 >
@@ -64,6 +76,12 @@ export default function AppShell() {
                   onClick={() => navigate('/admin/memory-events')}
                 >
                   Memory
+                </AdminNavButton>
+                <AdminNavButton
+                  active={adminPath.startsWith('/admin/audit')}
+                  onClick={() => navigate('/admin/audit')}
+                >
+                  Audit
                 </AdminNavButton>
               </>
             )}

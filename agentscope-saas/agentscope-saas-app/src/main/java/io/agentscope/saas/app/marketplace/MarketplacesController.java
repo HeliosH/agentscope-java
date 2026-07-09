@@ -18,6 +18,8 @@ package io.agentscope.saas.app.marketplace;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.agentscope.saas.app.admin.AdminSecurity;
+import io.agentscope.saas.app.admin.AuditService;
 import io.agentscope.saas.core.persistence.entity.MarketplaceEntity;
 import io.agentscope.saas.core.persistence.repo.MarketplaceRepository;
 import java.time.OffsetDateTime;
@@ -61,11 +63,12 @@ import reactor.core.scheduler.Schedulers;
  * agentscope.json} file with the per-tenant DB table.
  *
  * <p><b>Authorization</b>: write endpoints (create / update / delete / connection-test) are gated
- * to the {@code admin} JWT role — a marketplace config carries git/nacos connection credentials, so
- * changing the org's marketplaces is an admin action (mirrors {@code OrgToolsConfigController} for
- * MCP). Read endpoints (list marketplaces, browse skills) and per-agent install remain available
- * to every org member: a member still browses marketplaces and installs skills into their own
- * workspace (install reads the {@link MarketplaceRegistry} bean directly, not these endpoints).
+ * to org admins and platform admins — a marketplace config carries git/nacos connection
+ * credentials, so changing the org's marketplaces is an admin action (mirrors {@code
+ * OrgToolsConfigController} for MCP). Read endpoints (list marketplaces, browse skills) and
+ * per-agent install remain available to every org member: a member still browses marketplaces and
+ * installs skills into their own workspace (install reads the {@link MarketplaceRegistry} bean
+ * directly, not these endpoints).
  */
 @RestController
 @RequestMapping("/api/marketplaces")
@@ -79,20 +82,20 @@ public class MarketplacesController {
 
     private static final Set<String> SUPPORTED_TYPES = Set.of("git", "nacos");
 
-    /** JWT role value permitted to manage org marketplaces (write endpoints). */
-    private static final String ADMIN_ROLE = "admin";
-
     private final MarketplaceRepository repository;
     private final MarketplaceRegistry registry;
     private final ObjectMapper objectMapper;
+    private final AuditService audit;
 
     public MarketplacesController(
             MarketplaceRepository repository,
             MarketplaceRegistry registry,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            AuditService audit) {
         this.repository = repository;
         this.registry = registry;
         this.objectMapper = objectMapper;
+        this.audit = audit;
     }
 
     // -----------------------------------------------------------------
@@ -131,6 +134,12 @@ public class MarketplacesController {
                             }
                             MarketplaceEntity entity = newEntity(orgId, id, req);
                             entity = repository.save(entity);
+                            audit.record(
+                                    orgId,
+                                    AdminSecurity.actorId(jwt),
+                                    "admin.marketplace.create",
+                                    "marketplace:" + id,
+                                    Map.of("id", id, "type", entity.getType()));
                             return toSummary(id, registry.toConfigEntry(entity));
                         })
                 .subscribeOn(Schedulers.boundedElastic());
@@ -169,6 +178,12 @@ public class MarketplacesController {
                             entity.setUpdatedAt(OffsetDateTime.now());
                             entity = repository.save(entity);
                             registry.evict(orgId, id);
+                            audit.record(
+                                    orgId,
+                                    AdminSecurity.actorId(jwt),
+                                    "admin.marketplace.update",
+                                    "marketplace:" + id,
+                                    Map.of("id", id, "type", entity.getType()));
                             return toSummary(id, registry.toConfigEntry(entity));
                         })
                 .subscribeOn(Schedulers.boundedElastic());
@@ -189,6 +204,12 @@ public class MarketplacesController {
                                         HttpStatus.NOT_FOUND, "Marketplace not found: " + id);
                             }
                             registry.evict(orgId, id);
+                            audit.record(
+                                    orgId,
+                                    AdminSecurity.actorId(jwt),
+                                    "admin.marketplace.delete",
+                                    "marketplace:" + id,
+                                    Map.of("id", id));
                         })
                 .subscribeOn(Schedulers.boundedElastic())
                 .then();
@@ -440,22 +461,16 @@ public class MarketplacesController {
     }
 
     private static UUID orgId(Jwt jwt) {
-        return UUID.fromString(jwt.getClaimAsString("org_id"));
+        return AdminSecurity.orgId(jwt);
     }
 
     /**
-     * Rejects non-admin callers from write endpoints with 403 (401 when unauthenticated). Marketplace
-     * config carries connection credentials, so managing the org's marketplaces is an admin action —
-     * mirrors {@code OrgToolsConfigController.requireAdmin}.
+     * Rejects non-admin callers from write endpoints with 403 (401 when unauthenticated).
+     * Marketplace config carries connection credentials, so managing the org's marketplaces is an
+     * admin action — mirrors {@code OrgToolsConfigController.requireAdmin}.
      */
     private static void requireAdmin(Jwt jwt) {
-        if (jwt == null) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "unauthenticated");
-        }
-        String role = jwt.getClaimAsString("role");
-        if (!ADMIN_ROLE.equals(role)) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "admin role required");
-        }
+        AdminSecurity.requireOrgAdmin(jwt);
     }
 
     // -----------------------------------------------------------------

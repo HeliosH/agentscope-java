@@ -15,7 +15,7 @@
  */
 package io.agentscope.saas.app.degradation;
 
-import org.springframework.http.HttpStatus;
+import io.agentscope.saas.app.admin.AdminSecurity;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -23,7 +23,6 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
@@ -31,8 +30,6 @@ import reactor.core.scheduler.Schedulers;
 @RestController
 @RequestMapping("/api/admin/degradation")
 public class DegradationAdminController {
-
-    private static final String ADMIN_ROLE = "admin";
 
     private final DegradationManager degradationManager;
 
@@ -50,12 +47,6 @@ public class DegradationAdminController {
     }
 
     private static void requireAdmin(Jwt jwt) {
-        if (jwt == null) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "unauthenticated");
-        }
-        String role = jwt.getClaimAsString("role");
-        if (!ADMIN_ROLE.equals(role)) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "admin role required");
-        }
+        AdminSecurity.requireOrgAdmin(jwt);
     }
 }
