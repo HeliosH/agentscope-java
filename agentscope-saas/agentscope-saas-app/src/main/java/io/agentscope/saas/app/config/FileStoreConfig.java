@@ -15,6 +15,8 @@
  */
 package io.agentscope.saas.app.config;
 
+import io.agentscope.saas.app.workspace.ClamAvFileContentScanner;
+import io.agentscope.saas.app.workspace.FileContentScanner;
 import io.agentscope.saas.storage.FileObjectStore;
 import io.agentscope.saas.storage.MinioFileObjectStoreFactory;
 import io.agentscope.saas.storage.PgFileObjectStore;
@@ -57,5 +59,16 @@ public class FileStoreConfig {
         }
         log.info("Using PostgreSQL/H2-backed file object store table={}", cfg.getTable());
         return new PgFileObjectStore(dataSource, cfg.getTable());
+    }
+
+    @Bean
+    public FileContentScanner fileContentScanner(SaasProperties properties) {
+        SaasProperties.FileStore.Antivirus cfg = properties.getFileStore().getAntivirus();
+        if (!cfg.isEnabled()) {
+            return FileContentScanner.noop();
+        }
+        log.info("ClamAV upload scanning enabled at {}:{}", cfg.getHost(), cfg.getPort());
+        return new ClamAvFileContentScanner(
+                cfg.getHost(), cfg.getPort(), cfg.getTimeoutSeconds(), cfg.isFailClosed());
     }
 }

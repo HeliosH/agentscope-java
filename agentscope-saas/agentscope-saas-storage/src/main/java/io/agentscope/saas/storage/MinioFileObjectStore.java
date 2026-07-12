@@ -20,6 +20,7 @@ import io.minio.GetObjectArgs;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
+import io.minio.RemoveObjectArgs;
 import java.io.ByteArrayInputStream;
 import java.util.Objects;
 import java.util.UUID;
@@ -62,6 +63,11 @@ public final class MinioFileObjectStore implements FileObjectStore {
                         GetObjectArgs.builder().bucket(bucket).object(objectKey).build())) {
             return in.readAllBytes();
         }
+    }
+
+    @Override
+    public void delete(UUID orgId, String objectKey) throws Exception {
+        client.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(objectKey).build());
     }
 
     @Override

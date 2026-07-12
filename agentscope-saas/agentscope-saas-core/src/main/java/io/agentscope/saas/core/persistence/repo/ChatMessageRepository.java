@@ -44,6 +44,18 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessageEntity, 
 
     @Query(
             """
+            SELECT m FROM ChatMessageEntity m
+            WHERE m.sessionId = :sessionId
+              AND (:beforeSeq IS NULL OR m.seq < :beforeSeq)
+            ORDER BY m.seq DESC
+            """)
+    List<ChatMessageEntity> pageBeforeSeq(
+            @Param("sessionId") UUID sessionId,
+            @Param("beforeSeq") Long beforeSeq,
+            Pageable pageable);
+
+    @Query(
+            """
             SELECT COALESCE(MAX(m.seq), 0)
             FROM ChatMessageEntity m
             WHERE m.sessionId = :sessionId

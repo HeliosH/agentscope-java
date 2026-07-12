@@ -52,7 +52,7 @@ usage() {
 Usage: $(basename "$0") [--smoke] [--no-docker] [--port PORT]
 
 Options:
-  --smoke      Start the app, run opensandbox-enterprise-smoke.sh, then stop.
+  --smoke      Start the app, run the full OpenSandbox enterprise release gate, then stop.
   --no-docker  Do not start local Docker dependency containers.
   --port PORT  App HTTP port. Default: 18080.
   -h, --help   Show this help.
@@ -293,7 +293,7 @@ run_smoke_mode() {
   BASE="$BASE_URL" \
   SANDBOX_SMOKE_BACKEND_RELEASE_TIMEOUT="${SANDBOX_SMOKE_BACKEND_RELEASE_TIMEOUT:-120}" \
   SANDBOX_SMOKE_TIMEOUT="${SANDBOX_SMOKE_TIMEOUT:-180}" \
-    "$SCRIPT_DIR/opensandbox-enterprise-smoke.sh"
+    "$SCRIPT_DIR/opensandbox-enterprise-gate.sh"
 }
 
 require_command bash

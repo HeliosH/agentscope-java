@@ -1,4 +1,4 @@
-# AgentScope Enterprise SaaS Platform (Phase 1 Foundation)
+# AgentScope Enterprise SaaS Platform
 
 A multi-tenant, enterprise AI assistant platform built on **agentscope-java** (`HarnessAgent`),
 implementing Phase 1 of the technical plan in
@@ -16,9 +16,13 @@ This module delivers a **runnable, verifiable foundation**:
   with the frontend plan in `11-frontend-migration.md`.
 - **Persistence** — PostgreSQL schema via Flyway (org / user / tier_policies / agents /
   chat_sessions / usage_records / audit_logs), all tenant-scoped by `org_id`.
+- **Long sessions** — PostgreSQL message sequence/cursor history plus bounded model-context
+  compaction; the web console restores the latest window and loads older turns on demand.
+- **Files** — PostgreSQL metadata and immutable versions, MinIO bytes, per-user/per-org quotas,
+  bounded multipart staging, optional internal ClamAV scanning, and retryable retention cleanup.
 - **Session state** — Redis (Valkey) backed `RedisAgentStateStore` in production; in-memory locally.
-- **Sandbox-ready** — `IsolationScope.USER` sandbox isolation can be enabled via
-  `saas.sandbox.enabled=true` (Docker) in a later phase.
+- **Sandbox runtime** — switchable Docker, OpenSandbox, CubeSandbox, and E2B backends with
+  per-user isolation, durable snapshots, TTL eviction, and backend-release reconciliation.
 
 ## Quick start — zero-dependency smoke test
 
@@ -27,7 +31,7 @@ needed.
 
 ```bash
 # from the repo root
-mvn -pl agentscope-examples/agents/agentscope-saas -am spring-boot:run \
+mvn -pl agentscope-saas/agentscope-saas-app -am spring-boot:run \
   -Dspring-boot.run.profiles=local
 ```
 
@@ -42,10 +46,15 @@ TOKEN=$(curl -s -X POST localhost:8080/api/auth/login \
 # 2) Who am I (tenant claims)
 curl -s localhost:8080/api/auth/me -H "Authorization: Bearer $TOKEN"
 
-# 3) Stream a chat over AG-UI SSE
-curl -N -X POST localhost:8080/api/chat/stream \
+# 3) Create a private agent
+AGENT_ID=$(curl -s -X POST localhost:8080/api/agents \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"agentId":"default","sessionId":"s1","message":"hello"}'
+  -d '{"name":"Local assistant"}' | sed -E 's/.*"id":"([^"]+)".*/\1/')
+
+# 4) Stream an agent-scoped chat over AG-UI SSE
+curl -N -X POST "localhost:8080/api/agents/$AGENT_ID/chat/stream" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"message":"hello"}'
 ```
 
 You should see a sequence of AG-UI events: `RUN_STARTED`, `TEXT_MESSAGE_START`, several
@@ -69,16 +78,16 @@ export SAAS_JWT_SECRET=<32+ char secret>
 # Optional enterprise SSO (validate IdP-issued tokens):
 # export SAAS_OIDC_ISSUER_URI=https://<idp>/realms/<realm>
 
-mvn -pl agentscope-examples/agents/agentscope-saas -am spring-boot:run
+mvn -pl agentscope-saas/agentscope-saas-app -am spring-boot:run
 ```
 
 ## Building with the console UI
 
-The minimal AG-UI console (login + streaming chat) under `frontend/` is built into the app's static
-resources with the `frontend` Maven profile (requires Node, downloaded automatically):
+The React console under `frontend/` is built into the app's static resources with the `frontend`
+Maven profile (requires Node, downloaded automatically):
 
 ```bash
-mvn -pl agentscope-examples/agents/agentscope-saas -am package -Pfrontend
+mvn -pl agentscope-saas/agentscope-saas-app -am package -Pfrontend
 ```
 
 Then open `http://localhost:8080/` after starting the app.
@@ -89,14 +98,19 @@ Then open `http://localhost:8080/` after starting the app.
 |--------|------|------|---------|
 | POST | `/api/auth/login` | public | Local login → JWT |
 | GET  | `/api/auth/me` | bearer | Current tenant claims |
-| POST | `/api/chat/stream` | bearer | AG-UI SSE streaming chat |
 | GET  | `/api/agents` | bearer | List org-scoped agents |
 | POST | `/api/agents` | bearer | Create an agent |
-| GET  | `/api/sessions` | bearer | List the user's chat sessions |
+| POST | `/api/agents/{agentId}/chat/stream` | bearer | Agent-scoped AG-UI SSE chat |
+| GET  | `/api/agents/{agentId}/sessions/inbox` | bearer | User session inbox |
+| GET  | `/api/agents/{agentId}/sessions/{sessionKey}/turns/window` | bearer | Latest history window / backward pagination |
+| POST | `/api/agents/{agentId}/workspace/file/upload` | bearer | Multipart workspace upload |
 | GET  | `/actuator/health` | public | Health check |
 
-## What's deferred to later phases
+## Production file and conversation controls
 
-Channel adapters (DingTalk/Feishu/…), skill marketplace, Admin dashboard, pgvector memory, full
-Row-Level Security, CubeSandbox, token-accurate metering, and the full console (frontend plan
-F2–F5). See [`10-roadmap.md`](../../../docs/enterprise-platform-java/10-roadmap.md).
+The main controls are environment driven. `SAAS_AGENT_COMPACTION_*` tunes context compaction;
+`SAAS_FILE_STORE_MAX_FILE_BYTES`, `SAAS_FILE_STORE_MAX_USER_BYTES`, and
+`SAAS_FILE_STORE_MAX_ORG_BYTES` set storage limits. Enable the internally deployed malware scanner
+with `SAAS_FILE_STORE_ANTIVIRUS_ENABLED=true` and its host/port settings. Deleted files are retained
+for `SAAS_FILE_STORE_DELETED_RETENTION_DAYS` before the retryable GC job removes unreferenced
+objects.

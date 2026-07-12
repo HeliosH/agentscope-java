@@ -39,6 +39,14 @@ const button: React.CSSProperties = {
   fontSize: '0.82rem', fontWeight: 600,
 };
 
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  const amount = value / 1024 ** index;
+  return `${amount >= 10 || index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
+}
+
 export default function AgentWorkspacePage() {
   const { agentId } = useOutletContext<{ agentId: string }>();
   const [selected, setSelected] = useState<string | null>(null);
@@ -74,6 +82,7 @@ export default function AgentWorkspacePage() {
       const uploaded = await uploadFile(agentId, file, uploadPath || undefined);
       setSelected(uploaded.path);
       setRefreshKey(k => k + 1);
+      setSummary(await fetchSummary(agentId));
     } catch (e: unknown) {
       setUploadErr(e instanceof Error ? e.message : 'Upload failed');
     } finally {
@@ -123,6 +132,14 @@ export default function AgentWorkspacePage() {
         >
           {uploading ? 'Uploading…' : 'Upload'}
         </button>
+        {summary && (
+          <span
+            style={{ color: '#64748b', fontSize: '0.75rem', whiteSpace: 'nowrap' }}
+            title={`Organization: ${formatBytes(summary.orgFileBytes)} / ${formatBytes(summary.orgFileLimitBytes)}; max file: ${formatBytes(summary.maxFileBytes)}`}
+          >
+            {formatBytes(summary.userFileBytes)} / {formatBytes(summary.userFileLimitBytes)}
+          </span>
+        )}
       </div>
       {uploadErr && (
         <div style={hint}>

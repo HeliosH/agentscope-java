@@ -94,6 +94,17 @@ public final class PgFileObjectStore implements FileObjectStore {
     }
 
     @Override
+    public void delete(UUID orgId, String objectKey) throws Exception {
+        String sql = "DELETE FROM " + table + " WHERE org_id = ? AND object_key = ?";
+        try (Connection conn = dataSource.getConnection();
+                PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, orgId);
+            ps.setString(2, objectKey);
+            ps.executeUpdate();
+        }
+    }
+
+    @Override
     public void healthCheck() throws Exception {
         try (Connection conn = dataSource.getConnection();
                 PreparedStatement ps = conn.prepareStatement("SELECT 1")) {

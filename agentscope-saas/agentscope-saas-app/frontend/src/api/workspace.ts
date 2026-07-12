@@ -15,6 +15,11 @@ export interface WorkspaceSummary {
   skillCount: number;
   subagentCount: number;
   dailyMemoryCount: number;
+  userFileBytes: number;
+  userFileLimitBytes: number;
+  orgFileBytes: number;
+  orgFileLimitBytes: number;
+  maxFileBytes: number;
 }
 
 export interface UploadedFile {

@@ -42,4 +42,23 @@ public interface FileVersionRepository extends JpaRepository<FileVersionEntity, 
             WHERE v.fileId = :fileId
             """)
     long maxVersionNo(@Param("fileId") UUID fileId);
+
+    @Query(
+            """
+            SELECT COALESCE(SUM(v.sizeBytes), 0)
+            FROM FileEntity f JOIN FileVersionEntity v ON v.id = f.currentVersionId
+            WHERE f.orgId = :orgId
+              AND f.userId = :userId
+              AND f.status = 'active'
+            """)
+    long currentUsageByUser(@Param("orgId") UUID orgId, @Param("userId") UUID userId);
+
+    @Query(
+            """
+            SELECT COALESCE(SUM(v.sizeBytes), 0)
+            FROM FileEntity f JOIN FileVersionEntity v ON v.id = f.currentVersionId
+            WHERE f.orgId = :orgId
+              AND f.status = 'active'
+            """)
+    long currentUsageByOrg(@Param("orgId") UUID orgId);
 }

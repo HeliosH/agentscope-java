@@ -42,8 +42,6 @@ import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.core.io.buffer.DataBuffer;
-import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -85,7 +83,6 @@ public class AgentWorkspaceController {
 
     private static final Logger log = LoggerFactory.getLogger(AgentWorkspaceController.class);
     private static final int MAX_FILE_SIZE = 512 * 1024;
-    private static final int MAX_UPLOAD_SIZE = 32 * 1024 * 1024;
     private static final RuntimeContext FS_RC = RuntimeContext.empty();
     private static final String TEXT_PLAIN = "text/plain; charset=utf-8";
 
@@ -93,16 +90,19 @@ public class AgentWorkspaceController {
     private final AgentRepository agentRepository;
     private final TenantResolver tenantResolver;
     private final FileCatalogService fileCatalogService;
+    private final FileUploadStagingService uploadStagingService;
 
     public AgentWorkspaceController(
             HarnessAgent agent,
             AgentRepository agentRepository,
             TenantResolver tenantResolver,
-            FileCatalogService fileCatalogService) {
+            FileCatalogService fileCatalogService,
+            FileUploadStagingService uploadStagingService) {
         this.agent = agent;
         this.agentRepository = agentRepository;
         this.tenantResolver = tenantResolver;
         this.fileCatalogService = fileCatalogService;
+        this.uploadStagingService = uploadStagingService;
     }
 
     // -----------------------------------------------------------------
@@ -121,6 +121,8 @@ public class AgentWorkspaceController {
                             int skillCount = countLs(fs, "/skills", true, null);
                             int subagentCount = countLs(fs, "/subagents", false, ".md");
                             int dailyMemoryCount = countLs(fs, "/memory", false, ".md");
+                            FileCatalogService.FileQuotaUsage quota =
+                                    fileCatalogService.currentUsage(TenantContext.from(rc));
                             boolean exists =
                                     agentsMdExists
                                             || memoryMdExists
@@ -134,7 +136,12 @@ public class AgentWorkspaceController {
                                     memoryMdExists,
                                     skillCount,
                                     subagentCount,
-                                    dailyMemoryCount);
+                                    dailyMemoryCount,
+                                    quota.userBytes(),
+                                    quota.userLimitBytes(),
+                                    quota.orgBytes(),
+                                    quota.orgLimitBytes(),
+                                    quota.maxFileBytes());
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -321,15 +328,7 @@ public class AgentWorkspaceController {
                             String content =
                                     req != null && req.content() != null ? req.content() : "";
                             byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
-                            List<FileUploadResponse> ur =
-                                    fs.uploadFiles(FS_RC, List.of(Map.entry(rel, bytes)));
-                            if (ur.isEmpty() || !ur.get(0).isSuccess()) {
-                                String err = ur.isEmpty() ? "no response" : ur.get(0).error();
-                                throw new ResponseStatusException(
-                                        HttpStatus.INTERNAL_SERVER_ERROR,
-                                        "Failed to write file: " + err);
-                            }
-                            fileCatalogService.recordWorkspaceFile(
+                            fileCatalogService.recordWorkspaceFileWithWrite(
                                     tenant,
                                     agentUuid(agentId),
                                     sessionUuid(rc),
@@ -337,7 +336,8 @@ public class AgentWorkspaceController {
                                     bytes,
                                     TEXT_PLAIN,
                                     FileCatalogService.SOURCE_WORKSPACE_WRITE,
-                                    Map.of("api", "workspace.write", "existed", existed));
+                                    Map.of("api", "workspace.write", "existed", existed),
+                                    () -> uploadToWorkspace(fs, rel, bytes, "write file"));
                             return new FileNode(
                                     basename(rel), rel, "file", (long) bytes.length, null);
                         })
@@ -369,15 +369,7 @@ public class AgentWorkspaceController {
                                 throw new ResponseStatusException(
                                         HttpStatus.CONFLICT, "Already exists: " + path);
                             }
-                            List<FileUploadResponse> ur =
-                                    fs.uploadFiles(FS_RC, List.of(Map.entry(rel, new byte[0])));
-                            if (ur.isEmpty() || !ur.get(0).isSuccess()) {
-                                String err = ur.isEmpty() ? "no response" : ur.get(0).error();
-                                throw new ResponseStatusException(
-                                        HttpStatus.INTERNAL_SERVER_ERROR,
-                                        "Failed to create file: " + err);
-                            }
-                            fileCatalogService.recordWorkspaceFile(
+                            fileCatalogService.recordWorkspaceFileWithWrite(
                                     tenant,
                                     agentUuid(agentId),
                                     sessionUuid(rc),
@@ -385,7 +377,8 @@ public class AgentWorkspaceController {
                                     new byte[0],
                                     TEXT_PLAIN,
                                     FileCatalogService.SOURCE_WORKSPACE_CREATE,
-                                    Map.of("api", "workspace.create"));
+                                    Map.of("api", "workspace.create"),
+                                    () -> uploadToWorkspace(fs, rel, new byte[0], "create file"));
                             return new FileNode(basename(rel), rel, "file", 0L, null);
                         })
                 .subscribeOn(Schedulers.boundedElastic());
@@ -404,18 +397,23 @@ public class AgentWorkspaceController {
         RuntimeContext rc = runtimeContext(jwt);
         return filePartMono.flatMap(
                 file ->
-                        DataBufferUtils.join(file.content())
-                                .map(buffer -> bytesFrom(buffer, file.filename()))
+                        uploadStagingService
+                                .stage(file)
                                 .flatMap(
-                                        bytes ->
-                                                Mono.fromCallable(
-                                                                () ->
-                                                                        uploadFileBytes(
-                                                                                agentId, rc, file,
-                                                                                path, sessionId,
-                                                                                messageId, taskId,
-                                                                                bytes))
-                                                        .subscribeOn(Schedulers.boundedElastic())));
+                                        staged -> {
+                                            Mono<UploadedFile> uploaded =
+                                                    Mono.fromCallable(
+                                                                    () ->
+                                                                            uploadFileBytes(
+                                                                                    agentId, rc,
+                                                                                    staged, path,
+                                                                                    sessionId,
+                                                                                    messageId,
+                                                                                    taskId))
+                                                            .subscribeOn(
+                                                                    Schedulers.boundedElastic());
+                                            return uploaded.doFinally(ignored -> staged.close());
+                                        }));
     }
 
     @GetMapping("/file/versions")
@@ -482,18 +480,9 @@ public class AgentWorkspaceController {
                                     path != null && !path.isBlank()
                                             ? toRelFsPath(path)
                                             : toRelFsPath(stored.logicalPath());
-                            List<FileUploadResponse> ur =
-                                    fs.uploadFiles(
-                                            FS_RC, List.of(Map.entry(rel, stored.content())));
-                            if (ur.isEmpty() || !ur.get(0).isSuccess()) {
-                                String err = ur.isEmpty() ? "no response" : ur.get(0).error();
-                                throw new ResponseStatusException(
-                                        HttpStatus.INTERNAL_SERVER_ERROR,
-                                        "Failed to restore file: " + err);
-                            }
                             FileCatalogService.FileRecord record =
                                     fileCatalogService
-                                            .recordWorkspaceFile(
+                                            .recordWorkspaceFileWithWrite(
                                                     tenant,
                                                     agentUuid(agentId),
                                                     sessionUuid(rc),
@@ -501,7 +490,13 @@ public class AgentWorkspaceController {
                                                     stored.content(),
                                                     stored.contentType(),
                                                     FileCatalogService.SOURCE_WORKSPACE_RESTORE,
-                                                    Map.of("restoredVersionId", versionId))
+                                                    Map.of("restoredVersionId", versionId),
+                                                    () ->
+                                                            uploadToWorkspace(
+                                                                    fs,
+                                                                    rel,
+                                                                    stored.content(),
+                                                                    "restore file"))
                                             .orElseThrow(
                                                     () ->
                                                             new ResponseStatusException(
@@ -612,44 +607,32 @@ public class AgentWorkspaceController {
     private UploadedFile uploadFileBytes(
             String agentId,
             RuntimeContext rc,
-            FilePart file,
+            FileUploadStagingService.StagedUpload staged,
             String requestedPath,
             String sessionId,
             String messageId,
-            String taskId,
-            byte[] bytes) {
-        if (bytes.length > MAX_UPLOAD_SIZE) {
-            throw new ResponseStatusException(
-                    HttpStatus.PAYLOAD_TOO_LARGE, "Upload exceeds " + MAX_UPLOAD_SIZE + " bytes");
-        }
+            String taskId)
+            throws java.io.IOException {
+        byte[] bytes = staged.readAllBytes();
         AbstractFilesystem fs = resolveFilesystem(rc, agentId);
         TenantContext tenant = TenantContext.from(rc);
-        String rel = uploadTargetPath(requestedPath, file.filename());
-        List<FileUploadResponse> ur = fs.uploadFiles(FS_RC, List.of(Map.entry(rel, bytes)));
-        if (ur.isEmpty() || !ur.get(0).isSuccess()) {
-            String err = ur.isEmpty() ? "no response" : ur.get(0).error();
-            throw new ResponseStatusException(
-                    HttpStatus.INTERNAL_SERVER_ERROR, "Failed to upload file: " + err);
-        }
+        String rel = uploadTargetPath(requestedPath, staged.filename());
         UUID agentUuid = agentUuid(agentId);
         UUID sessionUuid = parseOptionalUuid(sessionId);
         UUID messageUuid = parseOptionalUuid(messageId);
         UUID taskUuid = parseOptionalUuid(taskId);
         FileCatalogService.FileRecord record =
                 fileCatalogService
-                        .recordWorkspaceFile(
+                        .recordWorkspaceFileWithWrite(
                                 tenant,
                                 agentUuid,
                                 sessionUuid,
                                 rel,
                                 bytes,
-                                contentType(file),
+                                staged.contentType(),
                                 FileCatalogService.SOURCE_WORKSPACE_UPLOAD,
-                                Map.of(
-                                        "api",
-                                        "workspace.upload",
-                                        "filename",
-                                        safeFilename(file.filename())))
+                                Map.of("api", "workspace.upload", "filename", staged.filename()),
+                                () -> uploadToWorkspace(fs, rel, bytes, "upload file"))
                         .orElseThrow(
                                 () ->
                                         new ResponseStatusException(
@@ -665,7 +648,7 @@ public class AgentWorkspaceController {
                                 taskUuid,
                                 record,
                                 "workspace_upload",
-                                Map.of("filename", safeFilename(file.filename())))
+                                Map.of("filename", staged.filename()))
                         .orElse(null);
         return new UploadedFile(
                 record.fileId().toString(),
@@ -676,19 +659,14 @@ public class AgentWorkspaceController {
                 record.sha256());
     }
 
-    private static byte[] bytesFrom(DataBuffer buffer, String filename) {
-        try {
-            int readable = buffer.readableByteCount();
-            if (readable > MAX_UPLOAD_SIZE) {
-                throw new ResponseStatusException(
-                        HttpStatus.PAYLOAD_TOO_LARGE,
-                        "Upload exceeds " + MAX_UPLOAD_SIZE + " bytes: " + filename);
-            }
-            byte[] bytes = new byte[readable];
-            buffer.read(bytes);
-            return bytes;
-        } finally {
-            DataBufferUtils.release(buffer);
+    private static void uploadToWorkspace(
+            AbstractFilesystem fs, String relativePath, byte[] content, String operation) {
+        List<FileUploadResponse> responses =
+                fs.uploadFiles(FS_RC, List.of(Map.entry(relativePath, content)));
+        if (responses.isEmpty() || !responses.get(0).isSuccess()) {
+            String error = responses.isEmpty() ? "no response" : responses.get(0).error();
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR, "Failed to " + operation + ": " + error);
         }
     }
 
@@ -715,13 +693,6 @@ public class AgentWorkspaceController {
             return "upload.bin";
         }
         return value;
-    }
-
-    private static String contentType(FilePart file) {
-        MediaType contentType = file.headers().getContentType();
-        return contentType != null
-                ? contentType.toString()
-                : MediaType.APPLICATION_OCTET_STREAM_VALUE;
     }
 
     private static ResponseEntity<byte[]> downloadResponse(String absPath, byte[] content) {
@@ -1137,7 +1108,12 @@ public class AgentWorkspaceController {
             boolean memoryMdExists,
             int skillCount,
             int subagentCount,
-            int dailyMemoryCount) {}
+            int dailyMemoryCount,
+            long userFileBytes,
+            long userFileLimitBytes,
+            long orgFileBytes,
+            long orgFileLimitBytes,
+            long maxFileBytes) {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record MemoryView(String memoryMd, List<DailyMemoryFile> dailyFiles) {}

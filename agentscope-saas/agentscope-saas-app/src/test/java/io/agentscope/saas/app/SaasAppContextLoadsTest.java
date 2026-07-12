@@ -17,6 +17,7 @@ package io.agentscope.saas.app;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.saas.app.marketplace.MarketplaceRegistry;
 import io.agentscope.saas.app.marketplace.MarketplacesController;
 import io.agentscope.saas.app.observability.AgentRunMetrics;
@@ -45,6 +46,7 @@ class SaasAppContextLoadsTest {
     @Autowired AgentToolsController agentToolsController;
     @Autowired AgentRunMetrics agentRunMetrics;
     @Autowired MeterRegistry meterRegistry;
+    @Autowired HarnessAgent harnessAgent;
 
     @Test
     void contextLoads() {
@@ -55,5 +57,6 @@ class SaasAppContextLoadsTest {
         assertThat(agentRunMetrics).isNotNull();
         assertThat(meterRegistry.find("saas.agent.chat.stream.duration").timer()).isNotNull();
         assertThat(meterRegistry.find("saas.llm.model.calls").counter()).isNotNull();
+        assertThat(harnessAgent.getCompactionHook()).isNotNull();
     }
 }

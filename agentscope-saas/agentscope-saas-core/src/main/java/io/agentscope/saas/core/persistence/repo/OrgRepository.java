@@ -16,12 +16,20 @@
 package io.agentscope.saas.core.persistence.repo;
 
 import io.agentscope.saas.core.persistence.entity.OrgEntity;
+import jakarta.persistence.LockModeType;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 /** Repository for {@link OrgEntity}. */
 public interface OrgRepository extends JpaRepository<OrgEntity, UUID> {
 
     Optional<OrgEntity> findBySlug(String slug);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT o FROM OrgEntity o WHERE o.id = :orgId")
+    Optional<OrgEntity> lockTenantOrg(@Param("orgId") UUID orgId);
 }

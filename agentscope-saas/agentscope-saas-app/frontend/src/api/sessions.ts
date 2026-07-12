@@ -31,6 +31,12 @@ export interface TurnPage {
   hasMore: boolean;
 }
 
+export interface TurnWindow {
+  items: TurnEntry[];
+  nextBeforeSeq: number | null;
+  hasMore: boolean;
+}
+
 export interface ResetResult {
   sessionKey: string;
   reset: boolean;
@@ -72,6 +78,22 @@ export async function turnsPage(
   if (afterSeq != null) params.set('afterSeq', String(afterSeq));
   const res = await fetch(
     `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionKey)}/turns/page?${params}`,
+  );
+  if (!res.ok) throw new Error('Failed to fetch session turns');
+  return res.json();
+}
+
+export async function turnsWindow(
+  agentId: string,
+  sessionKey: string,
+  beforeSeq?: number | null,
+  limit = 100,
+): Promise<TurnWindow> {
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  if (beforeSeq != null) params.set('beforeSeq', String(beforeSeq));
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionKey)}/turns/window?${params}`,
   );
   if (!res.ok) throw new Error('Failed to fetch session turns');
   return res.json();

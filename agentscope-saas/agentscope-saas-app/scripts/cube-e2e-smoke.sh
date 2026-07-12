@@ -34,6 +34,13 @@ SSE1="$TMPDIR/cube-smoke-1-$RUN_ID.sse"
 SSE2="$TMPDIR/cube-smoke-2-$RUN_ID.sse"
 CONFIRM_JSON="$TMPDIR/cube-smoke-confirm-$RUN_ID.json"
 DOWNLOAD_FILE="$TMPDIR/cube-smoke-download-$RUN_ID.txt"
+UPLOAD_SOURCE="$TMPDIR/cube-smoke-upload-$RUN_ID.txt"
+UPLOAD_JSON="$TMPDIR/cube-smoke-upload-$RUN_ID.json"
+UPLOAD_DOWNLOAD="$TMPDIR/cube-smoke-upload-download-$RUN_ID.txt"
+WORKSPACE_JSON="$TMPDIR/cube-smoke-workspace-$RUN_ID.json"
+SESSION_JSON="$TMPDIR/cube-smoke-session-$RUN_ID.json"
+TURN_WINDOW_JSON="$TMPDIR/cube-smoke-turn-window-$RUN_ID.json"
+OLDER_TURNS_JSON="$TMPDIR/cube-smoke-older-turns-$RUN_ID.json"
 SANDBOX_LIST_JSON="$TMPDIR/cube-smoke-sandboxes-$RUN_ID.json"
 
 PASS=0
@@ -85,7 +92,9 @@ cleanup() {
   if [ -n "$TOK" ] && [ -n "$AGID" ]; then
     curl -s -o /dev/null -X DELETE "$BASE/api/agents/$AGID" -H "Authorization: Bearer $TOK" || true
   fi
-  rm -f "$SSE1" "$SSE2" "$CONFIRM_JSON" "$DOWNLOAD_FILE" "$SANDBOX_LIST_JSON"
+  rm -f "$SSE1" "$SSE2" "$CONFIRM_JSON" "$DOWNLOAD_FILE" \
+    "$UPLOAD_SOURCE" "$UPLOAD_JSON" "$UPLOAD_DOWNLOAD" "$WORKSPACE_JSON" \
+    "$SESSION_JSON" "$TURN_WINDOW_JSON" "$OLDER_TURNS_JSON" "$SANDBOX_LIST_JSON"
 }
 trap cleanup EXIT
 
@@ -231,6 +240,47 @@ else
   exit 1
 fi
 
+UPLOAD_MARKER="browser-upload-$RUN_ID"
+printf '%s\n' "$UPLOAD_MARKER" > "$UPLOAD_SOURCE"
+HTTP_UPLOAD="$(curl -s -o "$UPLOAD_JSON" -w '%{http_code}' -X POST \
+  "$BASE/api/agents/$AGID/workspace/file/upload?path=uploads/browser-upload.txt" \
+  -H "Authorization: Bearer $TOK" -F "file=@$UPLOAD_SOURCE;type=text/plain")"
+UPLOAD_PATH="$(printf '%s' "$(cat "$UPLOAD_JSON" 2>/dev/null)" | json_get path)"
+if [ "$HTTP_UPLOAD" = "201" ] && [ "$UPLOAD_PATH" = "uploads/browser-upload.txt" ]; then
+  ok "browser multipart upload is cataloged"
+else
+  bad "browser multipart upload failed (HTTP $HTTP_UPLOAD): $(cat "$UPLOAD_JSON" 2>/dev/null)"
+fi
+
+HTTP_UPLOAD_DOWNLOAD="$(curl -s -o "$UPLOAD_DOWNLOAD" -w '%{http_code}' \
+  "$BASE/api/agents/$AGID/workspace/file/download?path=uploads/browser-upload.txt" \
+  -H "Authorization: Bearer $TOK")"
+if [ "$HTTP_UPLOAD_DOWNLOAD" = "200" ] && grep -q "$UPLOAD_MARKER" "$UPLOAD_DOWNLOAD"; then
+  ok "uploaded file is downloadable with unchanged content"
+else
+  bad "uploaded file download failed (HTTP $HTTP_UPLOAD_DOWNLOAD)"
+fi
+
+if curl -fsS -o "$WORKSPACE_JSON" "$BASE/api/agents/$AGID/workspace" \
+  -H "Authorization: Bearer $TOK" 2>/dev/null && \
+  python3 - "$WORKSPACE_JSON" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    summary = json.load(fh)
+assert summary["userFileBytes"] > 0
+assert summary["orgFileBytes"] > 0
+assert summary["maxFileBytes"] > 0
+assert summary["userFileBytes"] <= summary["userFileLimitBytes"]
+assert summary["orgFileBytes"] <= summary["orgFileLimitBytes"]
+PY
+then
+  ok "workspace quota usage reflects uploaded content"
+else
+  bad "workspace quota summary is invalid"
+fi
+
 CHAT_BODY="$(COMMAND="$COMMAND" python3 - <<'PY'
 import json
 import os
@@ -334,6 +384,53 @@ for line in open(sys.argv[1], encoding="utf-8"):
     elif ev.get("type") in {"TOOL_CALL_RESULT", "TEXT_MESSAGE_CONTENT"}:
         print("    output:", ev.get("content") or ev.get("delta") or "")
 PY
+fi
+
+if curl -fsS -o "$SESSION_JSON" "$BASE/api/agents/$AGID/chat/session" \
+  -H "Authorization: Bearer $TOK" 2>/dev/null; then
+  SESSION_KEY="$(cat "$SESSION_JSON" | json_get sessionKey)"
+else
+  SESSION_KEY=""
+fi
+if [ -n "$SESSION_KEY" ] && curl -fsS -o "$TURN_WINDOW_JSON" \
+  "$BASE/api/agents/$AGID/sessions/$SESSION_KEY/turns/window?limit=1" \
+  -H "Authorization: Bearer $TOK" 2>/dev/null; then
+  BEFORE_SEQ="$(python3 - "$TURN_WINDOW_JSON" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    page = json.load(fh)
+assert len(page["items"]) == 1
+assert page["hasMore"] is True
+cursor = page["nextBeforeSeq"]
+assert isinstance(cursor, int)
+print(cursor)
+PY
+)"
+  WINDOW_RC=$?
+else
+  BEFORE_SEQ=""
+  WINDOW_RC=1
+fi
+if [ "$WINDOW_RC" -eq 0 ] && [ -n "$BEFORE_SEQ" ] && \
+  curl -fsS -o "$OLDER_TURNS_JSON" \
+  "$BASE/api/agents/$AGID/sessions/$SESSION_KEY/turns/window?limit=1&beforeSeq=$BEFORE_SEQ" \
+  -H "Authorization: Bearer $TOK" 2>/dev/null && \
+  BEFORE_SEQ="$BEFORE_SEQ" python3 - "$OLDER_TURNS_JSON" <<'PY'
+import json
+import os
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    page = json.load(fh)
+assert len(page["items"]) == 1
+assert page["items"][0]["seq"] < int(os.environ["BEFORE_SEQ"])
+PY
+then
+  ok "long-session window loads newest turns and pages backwards"
+else
+  bad "long-session backwards window validation failed"
 fi
 
 HTTP_DOWNLOAD="$(curl -s -o "$DOWNLOAD_FILE" -w '%{http_code}' \

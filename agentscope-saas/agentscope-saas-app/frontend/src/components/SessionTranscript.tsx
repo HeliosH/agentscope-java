@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { TurnEntry, turnsPage, resetSession, deleteSession, markRead } from '../api/sessions';
+import { TurnEntry, turnsWindow, resetSession, deleteSession, markRead } from '../api/sessions';
 import { useNavigate } from 'react-router-dom';
 import ToolCallBlock from './ToolCallBlock';
 
@@ -36,7 +36,7 @@ const PAGE_SIZE = 100;
 export default function SessionTranscript({ agentId, sessionKey }: { agentId: string; sessionKey: string }) {
   const [entries, setEntries] = useState<TurnEntry[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  const [nextAfterSeq, setNextAfterSeq] = useState<number | null>(null);
+  const [nextBeforeSeq, setNextBeforeSeq] = useState<number | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const navigate = useNavigate();
@@ -44,9 +44,9 @@ export default function SessionTranscript({ agentId, sessionKey }: { agentId: st
   async function reload() {
     setErr(null);
     try {
-      const page = await turnsPage(agentId, sessionKey, null, PAGE_SIZE);
+      const page = await turnsWindow(agentId, sessionKey, null, PAGE_SIZE);
       setEntries(page.items);
-      setNextAfterSeq(page.nextAfterSeq);
+      setNextBeforeSeq(page.nextBeforeSeq);
       setHasMore(page.hasMore);
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : 'Failed');
@@ -58,9 +58,9 @@ export default function SessionTranscript({ agentId, sessionKey }: { agentId: st
     setLoadingMore(true);
     setErr(null);
     try {
-      const page = await turnsPage(agentId, sessionKey, nextAfterSeq, PAGE_SIZE);
-      setEntries(prev => [...prev, ...page.items]);
-      setNextAfterSeq(page.nextAfterSeq);
+      const page = await turnsWindow(agentId, sessionKey, nextBeforeSeq, PAGE_SIZE);
+      setEntries(prev => [...page.items, ...prev]);
+      setNextBeforeSeq(page.nextBeforeSeq);
       setHasMore(page.hasMore);
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : 'Failed');
@@ -111,6 +111,11 @@ export default function SessionTranscript({ agentId, sessionKey }: { agentId: st
       {!err && entries.length === 0 && (
         <div style={{ color: '#94a3b8', fontSize: '0.85rem' }}>No turns recorded.</div>
       )}
+      {hasMore && (
+        <button style={{ ...S.btn, marginBottom: 14 }} onClick={loadMore} disabled={loadingMore}>
+          {loadingMore ? 'Loading…' : 'Load earlier'}
+        </button>
+      )}
       {entries.map(t => {
         const role = String(t.role).toUpperCase();
         if (role === 'TOOL') {
@@ -132,11 +137,6 @@ export default function SessionTranscript({ agentId, sessionKey }: { agentId: st
           </div>
         );
       })}
-      {hasMore && (
-        <button style={{ ...S.btn, marginTop: 4 }} onClick={loadMore} disabled={loadingMore}>
-          {loadingMore ? 'Loading…' : 'Load more'}
-        </button>
-      )}
     </div>
   );
 }

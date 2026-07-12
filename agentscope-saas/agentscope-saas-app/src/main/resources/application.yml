@@ -7,6 +7,11 @@ server:
   port: ${SERVER_PORT:8080}
 
 spring:
+  webflux:
+    multipart:
+      max-in-memory-size: ${SAAS_MULTIPART_MAX_IN_MEMORY_SIZE:256KB}
+      max-disk-usage-per-part: ${SAAS_MULTIPART_MAX_DISK_USAGE_PER_PART:32MB}
+      max-parts: ${SAAS_MULTIPART_MAX_PARTS:20}
   application:
     name: agentscope-saas
   # --- PostgreSQL ---
@@ -63,6 +68,23 @@ saas:
     backend: ${SAAS_FILE_STORE_BACKEND:pg}
     table: ${SAAS_FILE_STORE_TABLE:file_object_blobs}
     object-key-prefix: ${SAAS_FILE_STORE_KEY_PREFIX:files/}
+    max-file-bytes: ${SAAS_FILE_STORE_MAX_FILE_BYTES:33554432}
+    max-user-bytes: ${SAAS_FILE_STORE_MAX_USER_BYTES:5368709120}
+    max-org-bytes: ${SAAS_FILE_STORE_MAX_ORG_BYTES:107374182400}
+    blocked-extensions: ${SAAS_FILE_STORE_BLOCKED_EXTENSIONS:exe,dll,com,msi,apk,dmg}
+    blocked-content-types: ${SAAS_FILE_STORE_BLOCKED_CONTENT_TYPES:application/x-msdownload,application/x-msdos-program,application/vnd.android.package-archive}
+    deleted-retention-days: ${SAAS_FILE_STORE_DELETED_RETENTION_DAYS:30}
+    max-versions-per-file: ${SAAS_FILE_STORE_MAX_VERSIONS:20}
+    gc-enabled: ${SAAS_FILE_STORE_GC_ENABLED:true}
+    gc-fixed-delay-seconds: ${SAAS_FILE_STORE_GC_FIXED_DELAY_SECONDS:3600}
+    gc-batch-size: ${SAAS_FILE_STORE_GC_BATCH_SIZE:100}
+    gc-max-attempts: ${SAAS_FILE_STORE_GC_MAX_ATTEMPTS:10}
+    antivirus:
+      enabled: ${SAAS_FILE_STORE_ANTIVIRUS_ENABLED:false}
+      host: ${SAAS_FILE_STORE_ANTIVIRUS_HOST:localhost}
+      port: ${SAAS_FILE_STORE_ANTIVIRUS_PORT:3310}
+      timeout-seconds: ${SAAS_FILE_STORE_ANTIVIRUS_TIMEOUT_SECONDS:15}
+      fail-closed: ${SAAS_FILE_STORE_ANTIVIRUS_FAIL_CLOSED:true}
     minio:
       endpoint: ${SAAS_FILE_STORE_MINIO_ENDPOINT:${SAAS_SANDBOX_MINIO_ENDPOINT:http://localhost:9000}}
       access-key: ${SAAS_FILE_STORE_MINIO_ACCESS_KEY:${SAAS_SANDBOX_MINIO_ACCESS_KEY:minioadmin}}
@@ -135,6 +157,16 @@ saas:
   agent:
     name: ${SAAS_AGENT_NAME:assistant}
     max-iters: ${SAAS_AGENT_MAX_ITERS:10}
+    conversation:
+      compaction-enabled: ${SAAS_AGENT_COMPACTION_ENABLED:true}
+      max-context-tokens: ${SAAS_AGENT_MAX_CONTEXT_TOKENS:32000}
+      compaction-trigger-messages: ${SAAS_AGENT_COMPACTION_TRIGGER_MESSAGES:60}
+      compaction-trigger-tokens: ${SAAS_AGENT_COMPACTION_TRIGGER_TOKENS:24000}
+      compaction-keep-messages: ${SAAS_AGENT_COMPACTION_KEEP_MESSAGES:20}
+      compaction-keep-tokens: ${SAAS_AGENT_COMPACTION_KEEP_TOKENS:8000}
+      truncate-trigger-messages: ${SAAS_AGENT_TRUNCATE_TRIGGER_MESSAGES:30}
+      truncate-trigger-tokens: ${SAAS_AGENT_TRUNCATE_TRIGGER_TOKENS:12000}
+      truncate-max-argument-length: ${SAAS_AGENT_TRUNCATE_MAX_ARGUMENT_LENGTH:2000}
   ltm:
     # Long-term memory (Mem0). Disabled by default — the platform runs with zero external deps,
     # falling back to MEMORY.md + snapshot persistence. Enable with a reachable Mem0 endpoint to

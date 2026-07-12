@@ -24,6 +24,8 @@ import io.agentscope.saas.core.persistence.entity.FileVersionEntity;
 import io.agentscope.saas.core.persistence.repo.FileAttachmentRepository;
 import io.agentscope.saas.core.persistence.repo.FileRepository;
 import io.agentscope.saas.core.persistence.repo.FileVersionRepository;
+import io.agentscope.saas.core.persistence.repo.OrgRepository;
+import io.agentscope.saas.core.persistence.repo.UserRepository;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.storage.FileObject;
@@ -42,8 +44,10 @@ import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 
 /**
  * Durable file catalog for assistant workspaces.
@@ -68,6 +72,8 @@ public class FileCatalogService {
     private final FileRepository fileRepository;
     private final FileVersionRepository fileVersionRepository;
     private final FileAttachmentRepository fileAttachmentRepository;
+    private final OrgRepository orgRepository;
+    private final UserRepository userRepository;
     private final ObjectProvider<FileObjectStore> objectStoreProvider;
     private final ObjectMapper objectMapper;
     private final SaasProperties properties;
@@ -76,12 +82,16 @@ public class FileCatalogService {
             FileRepository fileRepository,
             FileVersionRepository fileVersionRepository,
             FileAttachmentRepository fileAttachmentRepository,
+            OrgRepository orgRepository,
+            UserRepository userRepository,
             ObjectProvider<FileObjectStore> objectStoreProvider,
             ObjectMapper objectMapper,
             SaasProperties properties) {
         this.fileRepository = fileRepository;
         this.fileVersionRepository = fileVersionRepository;
         this.fileAttachmentRepository = fileAttachmentRepository;
+        this.orgRepository = orgRepository;
+        this.userRepository = userRepository;
         this.objectStoreProvider = objectStoreProvider;
         this.objectMapper = objectMapper;
         this.properties = properties;
@@ -97,22 +107,82 @@ public class FileCatalogService {
             String contentType,
             String source,
             Map<String, Object> metadata) {
+        return recordWorkspaceFileLocked(
+                tenant,
+                agentId,
+                sessionId,
+                logicalPath,
+                content,
+                contentType,
+                source,
+                metadata,
+                null);
+    }
+
+    /** Runs the workspace mutation only after quota locks and validation have succeeded. */
+    @Transactional
+    public Optional<FileRecord> recordWorkspaceFileWithWrite(
+            TenantContext tenant,
+            UUID agentId,
+            UUID sessionId,
+            String logicalPath,
+            byte[] content,
+            String contentType,
+            String source,
+            Map<String, Object> metadata,
+            Runnable workspaceWrite) {
+        return recordWorkspaceFileLocked(
+                tenant,
+                agentId,
+                sessionId,
+                logicalPath,
+                content,
+                contentType,
+                source,
+                metadata,
+                Objects.requireNonNull(workspaceWrite, "workspaceWrite"));
+    }
+
+    private Optional<FileRecord> recordWorkspaceFileLocked(
+            TenantContext tenant,
+            UUID agentId,
+            UUID sessionId,
+            String logicalPath,
+            byte[] content,
+            String contentType,
+            String source,
+            Map<String, Object> metadata,
+            Runnable workspaceWrite) {
         if (!properties.getFileStore().isEnabled()) {
+            runWorkspaceWrite(workspaceWrite);
             return Optional.empty();
         }
         Optional<UUID> orgId = parseUuid(tenant != null ? tenant.orgId() : null);
         Optional<UUID> userId = parseUuid(tenant != null ? tenant.userId() : null);
         FileObjectStore store = objectStoreProvider.getIfAvailable();
         if (orgId.isEmpty() || userId.isEmpty() || store == null) {
+            runWorkspaceWrite(workspaceWrite);
             return Optional.empty();
         }
         String path = normalizePath(logicalPath);
         byte[] bytes = content != null ? content : new byte[0];
+        long maxFileBytes = properties.getFileStore().getMaxFileBytes();
+        if (maxFileBytes > 0 && bytes.length > maxFileBytes) {
+            throw new ResponseStatusException(
+                    HttpStatus.PAYLOAD_TOO_LARGE,
+                    "File exceeds configured limit of " + maxFileBytes + " bytes");
+        }
         String sha256 = sha256(bytes);
 
         return withTenantOrg(
                 orgId.get().toString(),
                 () -> {
+                    orgRepository
+                            .lockTenantOrg(orgId.get())
+                            .orElseThrow(() -> new IllegalStateException("Organization not found"));
+                    userRepository
+                            .lockTenantUser(orgId.get(), userId.get())
+                            .orElseThrow(() -> new IllegalStateException("User not found"));
                     Optional<FileEntity> existing =
                             fileRepository.lockByOrgUserPath(orgId.get(), userId.get(), path);
                     FileEntity file =
@@ -129,6 +199,17 @@ public class FileCatalogService {
                         fileRepository.saveAndFlush(file);
                     }
                     Optional<FileVersionEntity> current = currentVersion(file, orgId.get());
+                    long replacedBytes =
+                            existing.isPresent()
+                                            && STATUS_ACTIVE.equals(file.getStatus())
+                                            && current.isPresent()
+                                            && current.get().getSizeBytes() != null
+                                    ? current.get().getSizeBytes()
+                                    : 0L;
+                    enforceQuota(orgId.get(), userId.get(), replacedBytes, bytes.length);
+                    if (workspaceWrite != null) {
+                        workspaceWrite.run();
+                    }
                     if (current.isPresent() && sha256.equals(current.get().getSha256())) {
                         FileVersionEntity version = current.get();
                         file.setAgentId(agentId);
@@ -191,6 +272,41 @@ public class FileCatalogService {
                 });
     }
 
+    private void enforceQuota(UUID orgId, UUID userId, long replacedBytes, long incomingBytes) {
+        SaasProperties.FileStore cfg = properties.getFileStore();
+        long userLimit = cfg.getMaxUserBytes();
+        long userUsage = fileVersionRepository.currentUsageByUser(orgId, userId);
+        long projectedUser = projectedUsage(userUsage, replacedBytes, incomingBytes);
+        if (userLimit > 0 && projectedUser > userLimit) {
+            throw new ResponseStatusException(
+                    HttpStatus.INSUFFICIENT_STORAGE,
+                    "User file quota exceeded: " + projectedUser + " > " + userLimit);
+        }
+        long orgLimit = cfg.getMaxOrgBytes();
+        long orgUsage = fileVersionRepository.currentUsageByOrg(orgId);
+        long projectedOrg = projectedUsage(orgUsage, replacedBytes, incomingBytes);
+        if (orgLimit > 0 && projectedOrg > orgLimit) {
+            throw new ResponseStatusException(
+                    HttpStatus.INSUFFICIENT_STORAGE,
+                    "Organization file quota exceeded: " + projectedOrg + " > " + orgLimit);
+        }
+    }
+
+    private static long projectedUsage(long current, long replaced, long incoming) {
+        long base = Math.max(0L, current - Math.max(0L, replaced));
+        try {
+            return Math.addExact(base, Math.max(0L, incoming));
+        } catch (ArithmeticException e) {
+            return Long.MAX_VALUE;
+        }
+    }
+
+    private static void runWorkspaceWrite(Runnable workspaceWrite) {
+        if (workspaceWrite != null) {
+            workspaceWrite.run();
+        }
+    }
+
     @Transactional(readOnly = true)
     public Optional<StoredFile> readCurrentFile(TenantContext tenant, String logicalPath) {
         if (!properties.getFileStore().isEnabled()) {
@@ -227,6 +343,25 @@ public class FileCatalogService {
                                                                 version.getObjectKey()),
                                                         version.getSizeBytes(),
                                                         version.getSha256())));
+    }
+
+    public FileQuotaUsage currentUsage(TenantContext tenant) {
+        Optional<UUID> orgId = parseUuid(tenant != null ? tenant.orgId() : null);
+        Optional<UUID> userId = parseUuid(tenant != null ? tenant.userId() : null);
+        SaasProperties.FileStore cfg = properties.getFileStore();
+        if (!cfg.isEnabled() || orgId.isEmpty() || userId.isEmpty()) {
+            return new FileQuotaUsage(
+                    0L, cfg.getMaxUserBytes(), 0L, cfg.getMaxOrgBytes(), cfg.getMaxFileBytes());
+        }
+        return withTenantOrg(
+                orgId.get().toString(),
+                () ->
+                        new FileQuotaUsage(
+                                fileVersionRepository.currentUsageByUser(orgId.get(), userId.get()),
+                                cfg.getMaxUserBytes(),
+                                fileVersionRepository.currentUsageByOrg(orgId.get()),
+                                cfg.getMaxOrgBytes(),
+                                cfg.getMaxFileBytes()));
     }
 
     @Transactional(readOnly = true)
@@ -724,6 +859,13 @@ public class FileCatalogService {
             String contentType,
             String source,
             String createdAt) {}
+
+    public record FileQuotaUsage(
+            long userBytes,
+            long userLimitBytes,
+            long orgBytes,
+            long orgLimitBytes,
+            long maxFileBytes) {}
 
     public record AttachmentRecord(
             UUID id, UUID fileId, UUID fileVersionId, String logicalPath, String kind) {}

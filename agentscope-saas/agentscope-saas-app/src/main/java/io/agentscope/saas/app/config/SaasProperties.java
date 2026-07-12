@@ -145,6 +145,9 @@ public class SaasProperties {
 
     /** Durable object storage for user/workspace files. */
     public static class FileStore {
+        private static final long MIB = 1024L * 1024L;
+        private static final long GIB = 1024L * MIB;
+
         /** Whether to catalog workspace file writes/downloads into durable file metadata tables. */
         private boolean enabled = true;
 
@@ -157,7 +160,38 @@ public class SaasProperties {
         /** Prefix used when generating object keys. */
         private String objectKeyPrefix = "files/";
 
+        /** Maximum size accepted for one uploaded or projected file. */
+        private long maxFileBytes = 32L * MIB;
+
+        /** Maximum active logical bytes for one user; zero disables the quota. */
+        private long maxUserBytes = 5L * GIB;
+
+        /** Maximum active logical bytes for one org; zero disables the quota. */
+        private long maxOrgBytes = 100L * GIB;
+
+        /** Executable containers blocked before they enter the workspace. */
+        private List<String> blockedExtensions = List.of("exe", "dll", "com", "msi", "apk", "dmg");
+
+        /** Declared media types rejected before body processing. */
+        private List<String> blockedContentTypes =
+                List.of(
+                        "application/x-msdownload",
+                        "application/x-msdos-program",
+                        "application/vnd.android.package-archive");
+
+        /** Retention period for soft-deleted logical files. */
+        private int deletedRetentionDays = 30;
+
+        /** Number of immutable versions retained per active logical file. */
+        private int maxVersionsPerFile = 20;
+
+        private boolean gcEnabled = true;
+        private long gcFixedDelaySeconds = 3600L;
+        private int gcBatchSize = 100;
+        private int gcMaxAttempts = 10;
+
         @NestedConfigurationProperty private final Minio minio = new Minio();
+        @NestedConfigurationProperty private final Antivirus antivirus = new Antivirus();
 
         public boolean isEnabled() {
             return enabled;
@@ -191,8 +225,149 @@ public class SaasProperties {
             this.objectKeyPrefix = objectKeyPrefix;
         }
 
+        public long getMaxFileBytes() {
+            return maxFileBytes;
+        }
+
+        public void setMaxFileBytes(long maxFileBytes) {
+            this.maxFileBytes = maxFileBytes;
+        }
+
+        public long getMaxUserBytes() {
+            return maxUserBytes;
+        }
+
+        public void setMaxUserBytes(long maxUserBytes) {
+            this.maxUserBytes = maxUserBytes;
+        }
+
+        public long getMaxOrgBytes() {
+            return maxOrgBytes;
+        }
+
+        public void setMaxOrgBytes(long maxOrgBytes) {
+            this.maxOrgBytes = maxOrgBytes;
+        }
+
+        public List<String> getBlockedExtensions() {
+            return blockedExtensions;
+        }
+
+        public void setBlockedExtensions(List<String> blockedExtensions) {
+            this.blockedExtensions = blockedExtensions == null ? List.of() : blockedExtensions;
+        }
+
+        public List<String> getBlockedContentTypes() {
+            return blockedContentTypes;
+        }
+
+        public void setBlockedContentTypes(List<String> blockedContentTypes) {
+            this.blockedContentTypes =
+                    blockedContentTypes == null ? List.of() : blockedContentTypes;
+        }
+
+        public int getDeletedRetentionDays() {
+            return deletedRetentionDays;
+        }
+
+        public void setDeletedRetentionDays(int deletedRetentionDays) {
+            this.deletedRetentionDays = deletedRetentionDays;
+        }
+
+        public int getMaxVersionsPerFile() {
+            return maxVersionsPerFile;
+        }
+
+        public void setMaxVersionsPerFile(int maxVersionsPerFile) {
+            this.maxVersionsPerFile = maxVersionsPerFile;
+        }
+
+        public boolean isGcEnabled() {
+            return gcEnabled;
+        }
+
+        public void setGcEnabled(boolean gcEnabled) {
+            this.gcEnabled = gcEnabled;
+        }
+
+        public long getGcFixedDelaySeconds() {
+            return gcFixedDelaySeconds;
+        }
+
+        public void setGcFixedDelaySeconds(long gcFixedDelaySeconds) {
+            this.gcFixedDelaySeconds = gcFixedDelaySeconds;
+        }
+
+        public int getGcBatchSize() {
+            return gcBatchSize;
+        }
+
+        public void setGcBatchSize(int gcBatchSize) {
+            this.gcBatchSize = gcBatchSize;
+        }
+
+        public int getGcMaxAttempts() {
+            return gcMaxAttempts;
+        }
+
+        public void setGcMaxAttempts(int gcMaxAttempts) {
+            this.gcMaxAttempts = gcMaxAttempts;
+        }
+
         public Minio getMinio() {
             return minio;
+        }
+
+        public Antivirus getAntivirus() {
+            return antivirus;
+        }
+
+        public static class Antivirus {
+            private boolean enabled = false;
+            private String host = "localhost";
+            private int port = 3310;
+            private int timeoutSeconds = 15;
+            private boolean failClosed = true;
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public String getHost() {
+                return host;
+            }
+
+            public void setHost(String host) {
+                this.host = host;
+            }
+
+            public int getPort() {
+                return port;
+            }
+
+            public void setPort(int port) {
+                this.port = port;
+            }
+
+            public int getTimeoutSeconds() {
+                return timeoutSeconds;
+            }
+
+            public void setTimeoutSeconds(int timeoutSeconds) {
+                this.timeoutSeconds = timeoutSeconds;
+            }
+
+            public boolean isFailClosed() {
+                return failClosed;
+            }
+
+            public void setFailClosed(boolean failClosed) {
+                this.failClosed = failClosed;
+            }
         }
 
         public static class Minio {
@@ -875,6 +1050,7 @@ public class SaasProperties {
         private String sysPrompt =
                 "You are a helpful enterprise AI assistant. Answer concisely and accurately.";
         private int maxIters = 10;
+        @NestedConfigurationProperty private final Conversation conversation = new Conversation();
         @NestedConfigurationProperty private final Skills skills = new Skills();
         @NestedConfigurationProperty private final Permission permission = new Permission();
 
@@ -902,12 +1078,101 @@ public class SaasProperties {
             this.maxIters = maxIters;
         }
 
+        public Conversation getConversation() {
+            return conversation;
+        }
+
         public Skills getSkills() {
             return skills;
         }
 
         public Permission getPermission() {
             return permission;
+        }
+    }
+
+    /** Bounded model context for long-running sessions. Full history remains in PostgreSQL. */
+    public static class Conversation {
+        private boolean compactionEnabled = true;
+        private int maxContextTokens = 32_000;
+        private int compactionTriggerMessages = 60;
+        private int compactionTriggerTokens = 24_000;
+        private int compactionKeepMessages = 20;
+        private int compactionKeepTokens = 8_000;
+        private int truncateTriggerMessages = 30;
+        private int truncateTriggerTokens = 12_000;
+        private int truncateMaxArgumentLength = 2_000;
+
+        public boolean isCompactionEnabled() {
+            return compactionEnabled;
+        }
+
+        public void setCompactionEnabled(boolean compactionEnabled) {
+            this.compactionEnabled = compactionEnabled;
+        }
+
+        public int getMaxContextTokens() {
+            return maxContextTokens;
+        }
+
+        public void setMaxContextTokens(int maxContextTokens) {
+            this.maxContextTokens = maxContextTokens;
+        }
+
+        public int getCompactionTriggerMessages() {
+            return compactionTriggerMessages;
+        }
+
+        public void setCompactionTriggerMessages(int compactionTriggerMessages) {
+            this.compactionTriggerMessages = compactionTriggerMessages;
+        }
+
+        public int getCompactionTriggerTokens() {
+            return compactionTriggerTokens;
+        }
+
+        public void setCompactionTriggerTokens(int compactionTriggerTokens) {
+            this.compactionTriggerTokens = compactionTriggerTokens;
+        }
+
+        public int getCompactionKeepMessages() {
+            return compactionKeepMessages;
+        }
+
+        public void setCompactionKeepMessages(int compactionKeepMessages) {
+            this.compactionKeepMessages = compactionKeepMessages;
+        }
+
+        public int getCompactionKeepTokens() {
+            return compactionKeepTokens;
+        }
+
+        public void setCompactionKeepTokens(int compactionKeepTokens) {
+            this.compactionKeepTokens = compactionKeepTokens;
+        }
+
+        public int getTruncateTriggerMessages() {
+            return truncateTriggerMessages;
+        }
+
+        public void setTruncateTriggerMessages(int truncateTriggerMessages) {
+            this.truncateTriggerMessages = truncateTriggerMessages;
+        }
+
+        public int getTruncateTriggerTokens() {
+            return truncateTriggerTokens;
+        }
+
+        public void setTruncateTriggerTokens(int truncateTriggerTokens) {
+            this.truncateTriggerTokens = truncateTriggerTokens;
+        }
+
+        public int getTruncateMaxArgumentLength() {
+            return truncateMaxArgumentLength;
+        }
+
+        public void setTruncateMaxArgumentLength(int truncateMaxArgumentLength) {
+            this.truncateMaxArgumentLength = truncateMaxArgumentLength;
         }
     }
 

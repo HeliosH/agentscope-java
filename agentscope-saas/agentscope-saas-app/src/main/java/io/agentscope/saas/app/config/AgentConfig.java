@@ -30,6 +30,7 @@ import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import io.agentscope.harness.agent.filesystem.spec.SandboxFilesystemSpec;
 import io.agentscope.harness.agent.memory.MemoryConfig;
 import io.agentscope.harness.agent.memory.MemoryConsolidator;
+import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
 import io.agentscope.harness.agent.skill.curator.SkillCuratorConfig;
 import io.agentscope.harness.agent.tools.McpClientRegistry;
 import io.agentscope.saas.app.memory.MemoryLedger;
@@ -116,6 +117,20 @@ public class AgentConfig {
                                 new RateLimitMiddleware(
                                         rateLimiter, rl.getMaxRequests(), rl.getWindowSeconds()))
                         .middleware(new UsageMeteringMiddleware(usageService));
+
+        SaasProperties.Conversation conversation = agentCfg.getConversation();
+        builder.maxContextTokens(positive(conversation.getMaxContextTokens(), 32_000));
+        if (conversation.isCompactionEnabled()) {
+            builder.compaction(buildCompactionConfig(conversation));
+            log.info(
+                    "Conversation compaction enabled: triggerMessages={} triggerTokens={}"
+                            + " keepMessages={} keepTokens={} maxContextTokens={}",
+                    conversation.getCompactionTriggerMessages(),
+                    conversation.getCompactionTriggerTokens(),
+                    conversation.getCompactionKeepMessages(),
+                    conversation.getCompactionKeepTokens(),
+                    conversation.getMaxContextTokens());
+        }
 
         MemoryConsolidator.ConsolidationSink consolidationSink =
                 consolidationSinkProvider.getIfAvailable();
@@ -305,6 +320,32 @@ public class AgentConfig {
                     tool, new PermissionRule(tool, null, PermissionBehavior.DENY, "tool_guard"));
         }
         return b.build();
+    }
+
+    static CompactionConfig buildCompactionConfig(SaasProperties.Conversation cfg) {
+        CompactionConfig.TruncateArgsConfig truncateArgs =
+                CompactionConfig.TruncateArgsConfig.builder()
+                        .triggerMessages(nonNegative(cfg.getTruncateTriggerMessages()))
+                        .triggerTokens(nonNegative(cfg.getTruncateTriggerTokens()))
+                        .keepMessages(nonNegative(cfg.getCompactionKeepMessages()))
+                        .keepTokens(nonNegative(cfg.getCompactionKeepTokens()))
+                        .maxArgLength(positive(cfg.getTruncateMaxArgumentLength(), 2_000))
+                        .build();
+        return CompactionConfig.builder()
+                .triggerMessages(nonNegative(cfg.getCompactionTriggerMessages()))
+                .triggerTokens(nonNegative(cfg.getCompactionTriggerTokens()))
+                .keepMessages(nonNegative(cfg.getCompactionKeepMessages()))
+                .keepTokens(nonNegative(cfg.getCompactionKeepTokens()))
+                .truncateArgs(truncateArgs)
+                .build();
+    }
+
+    private static int positive(int value, int fallback) {
+        return value > 0 ? value : fallback;
+    }
+
+    private static int nonNegative(int value) {
+        return Math.max(0, value);
     }
 
     /**

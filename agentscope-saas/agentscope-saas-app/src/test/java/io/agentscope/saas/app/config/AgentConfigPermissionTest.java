@@ -24,6 +24,7 @@ import io.agentscope.core.permission.PermissionMode;
 import io.agentscope.core.tool.AgentTool;
 import io.agentscope.core.tool.ToolBase;
 import io.agentscope.core.tool.Toolkit;
+import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -95,6 +96,19 @@ class AgentConfigPermissionTest {
     void defaultModeIsDefault() {
         PermissionContextState ctx = AgentConfig.buildPermissionContext(new SaasProperties.Agent());
         assertThat(ctx.getMode()).isEqualTo(PermissionMode.DEFAULT);
+    }
+
+    @Test
+    void buildsBoundedLongSessionCompactionPolicy() {
+        SaasProperties.Conversation cfg = new SaasProperties.Conversation();
+        CompactionConfig compaction = AgentConfig.buildCompactionConfig(cfg);
+
+        assertThat(compaction.getTriggerMessages()).isEqualTo(60);
+        assertThat(compaction.getTriggerTokens()).isEqualTo(24_000);
+        assertThat(compaction.getKeepTokens()).isEqualTo(8_000);
+        assertThat(compaction.getTruncateArgsConfig()).isNotNull();
+        assertThat(compaction.getTruncateArgsConfig().getTriggerTokens()).isEqualTo(12_000);
+        assertThat(compaction.getTruncateArgsConfig().getMaxArgLength()).isEqualTo(2_000);
     }
 
     private static ToolBase registerShellTool() {

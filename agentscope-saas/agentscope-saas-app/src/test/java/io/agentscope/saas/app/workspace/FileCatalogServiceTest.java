@@ -16,6 +16,7 @@
 package io.agentscope.saas.app.workspace;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -29,6 +30,8 @@ import io.agentscope.saas.core.persistence.entity.FileVersionEntity;
 import io.agentscope.saas.core.persistence.repo.FileAttachmentRepository;
 import io.agentscope.saas.core.persistence.repo.FileRepository;
 import io.agentscope.saas.core.persistence.repo.FileVersionRepository;
+import io.agentscope.saas.core.persistence.repo.OrgRepository;
+import io.agentscope.saas.core.persistence.repo.UserRepository;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.storage.FileObject;
@@ -41,9 +44,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.web.server.ResponseStatusException;
 
 class FileCatalogServiceTest {
 
@@ -51,6 +56,8 @@ class FileCatalogServiceTest {
     private final FileVersionRepository fileVersionRepository = mock(FileVersionRepository.class);
     private final FileAttachmentRepository fileAttachmentRepository =
             mock(FileAttachmentRepository.class);
+    private final OrgRepository orgRepository = mock(OrgRepository.class);
+    private final UserRepository userRepository = mock(UserRepository.class);
     private final FileObjectStore objectStore = mock(FileObjectStore.class);
 
     @SuppressWarnings("unchecked")
@@ -62,9 +69,23 @@ class FileCatalogServiceTest {
                     fileRepository,
                     fileVersionRepository,
                     fileAttachmentRepository,
+                    orgRepository,
+                    userRepository,
                     objectStoreProvider,
                     new ObjectMapper(),
                     properties);
+
+    @BeforeEach
+    void configureQuotaLocks() {
+        when(orgRepository.lockTenantOrg(any(UUID.class)))
+                .thenReturn(
+                        Optional.of(
+                                mock(io.agentscope.saas.core.persistence.entity.OrgEntity.class)));
+        when(userRepository.lockTenantUser(any(UUID.class), any(UUID.class)))
+                .thenReturn(
+                        Optional.of(
+                                mock(io.agentscope.saas.core.persistence.entity.UserEntity.class)));
+    }
 
     @AfterEach
     void clearTenantContext() {
@@ -176,6 +197,38 @@ class FileCatalogServiceTest {
         assertThat(stored.get().text()).isEqualTo("stored text");
         assertThat(stored.get().sizeBytes()).isEqualTo(content.length);
         assertThat(TenantContextHolder.getOrgId()).isNull();
+    }
+
+    @Test
+    void rejectsWriteThatWouldExceedUserQuota() throws Exception {
+        UUID orgId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        properties.getFileStore().setMaxUserBytes(5L);
+        properties.getFileStore().setMaxOrgBytes(100L);
+        when(objectStoreProvider.getIfAvailable()).thenReturn(objectStore);
+        when(fileRepository.lockByOrgUserPath(orgId, userId, "large.txt"))
+                .thenReturn(Optional.empty());
+        when(fileRepository.saveAndFlush(any(FileEntity.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+        when(fileVersionRepository.currentUsageByUser(orgId, userId)).thenReturn(4L);
+        Runnable workspaceWrite = mock(Runnable.class);
+
+        assertThatThrownBy(
+                        () ->
+                                service.recordWorkspaceFileWithWrite(
+                                        tenant(orgId, userId),
+                                        UUID.randomUUID(),
+                                        null,
+                                        "large.txt",
+                                        new byte[] {1, 2},
+                                        "text/plain",
+                                        FileCatalogService.SOURCE_WORKSPACE_UPLOAD,
+                                        Map.of(),
+                                        workspaceWrite))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("User file quota exceeded");
+        verify(objectStore, never()).put(any());
+        verify(workspaceWrite, never()).run();
     }
 
     private static TenantContext tenant(UUID orgId, UUID userId) {

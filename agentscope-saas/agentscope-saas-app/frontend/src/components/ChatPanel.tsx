@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ConfirmToolCall, currentSession, stream, type ChatEvent, type ChatRequest, type ConfirmResultInput } from '../api/chat';
-import { TurnEntry, turns as fetchTurns } from '../api/sessions';
+import { TurnEntry, turnsWindow } from '../api/sessions';
 import ToolCallBlock from './ToolCallBlock';
 
 type Role = 'user' | 'assistant' | 'system';
@@ -139,9 +139,13 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [restoring, setRestoring] = useState(true);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const [hasEarlier, setHasEarlier] = useState(false);
+  const [nextBeforeSeq, setNextBeforeSeq] = useState<number | null>(null);
   const [sessionKey, setSessionKey] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const preserveScrollRef = useRef(false);
 
   const persistSession = useCallback((key: string | null) => {
     if (key) {
@@ -157,6 +161,8 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
     setMessages([]);
     setInput('');
     setRestoring(true);
+    setHasEarlier(false);
+    setNextBeforeSeq(null);
 
     const urlKey = searchParams.get('session');
     const stored = (() => { try { return localStorage.getItem(storageKey(agentId)); } catch { return null; } })();
@@ -182,9 +188,11 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
       setSessionKey(key);
       if (key && exists) {
         try {
-          const list = await fetchTurns(agentId, key);
+          const page = await turnsWindow(agentId, key);
           if (cancelled) return;
-          setMessages(turnsToMessages(list));
+          setMessages(turnsToMessages(page.items));
+          setNextBeforeSeq(page.nextBeforeSeq);
+          setHasEarlier(page.hasMore);
         } catch {
           // tolerate failure: empty thread
         }
@@ -203,8 +211,33 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId]);
 
+  async function loadEarlier() {
+    if (!sessionKey || !hasEarlier || loadingEarlier) return;
+    const scroller = threadRef.current;
+    const previousHeight = scroller?.scrollHeight ?? 0;
+    const previousTop = scroller?.scrollTop ?? 0;
+    setLoadingEarlier(true);
+    try {
+      const page = await turnsWindow(agentId, sessionKey, nextBeforeSeq);
+      preserveScrollRef.current = true;
+      setMessages(prev => [...turnsToMessages(page.items), ...prev]);
+      setNextBeforeSeq(page.nextBeforeSeq);
+      setHasEarlier(page.hasMore);
+      requestAnimationFrame(() => {
+        if (scroller) scroller.scrollTop = previousTop + scroller.scrollHeight - previousHeight;
+        preserveScrollRef.current = false;
+      });
+    } catch {
+      preserveScrollRef.current = false;
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }
+
   useEffect(() => {
-    threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
+    if (!preserveScrollRef.current) {
+      threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
+    }
   }, [messages]);
 
   const canSend = useMemo(() => !busy && !restoring && input.trim().length > 0, [busy, restoring, input]);
@@ -379,6 +412,11 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
         </button>
       </div>
       <div style={S.thread} ref={threadRef}>
+        {hasEarlier && (
+          <button type="button" style={{ ...S.iconBtn, alignSelf: 'center' }} onClick={() => void loadEarlier()} disabled={loadingEarlier}>
+            {loadingEarlier ? 'Loading earlier messages…' : 'Load earlier messages'}
+          </button>
+        )}
         {restoring && messages.length === 0 && (
           <div style={S.empty}>Loading conversation…</div>
         )}

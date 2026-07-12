@@ -255,6 +255,35 @@ public class SessionController {
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
+    /** Returns the newest window first, then walks backwards with {@code beforeSeq}. */
+    @GetMapping("/api/agents/{agentId}/sessions/{sessionKey}/turns/window")
+    public Mono<TurnWindow> turnsWindow(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String agentId,
+            @PathVariable String sessionKey,
+            @RequestParam(name = "beforeSeq", required = false) Long beforeSeq,
+            @RequestParam(name = "limit", defaultValue = "100") int limit) {
+        UUID orgId = orgId(jwt);
+        UUID userId = userId(jwt);
+        UUID agentUuid = parseUuid(agentId);
+        UUID sessionUuid = parseUuid(sessionKey);
+        return Mono.fromCallable(
+                        () -> {
+                            ChatSessionEntity session =
+                                    requireSession(orgId, userId, agentUuid, sessionUuid);
+                            EntityWindow window = messageWindow(session.getId(), beforeSeq, limit);
+                            List<TurnEntry> turns = new ArrayList<>();
+                            String prevId = null;
+                            for (ChatMessageEntity m : window.items()) {
+                                TurnEntry turn = toTurn(m, prevId);
+                                turns.add(turn);
+                                prevId = turn.id();
+                            }
+                            return new TurnWindow(turns, window.nextBeforeSeq(), window.hasMore());
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
     /** Soft reset: clears the session's messages and resets bookkeeping (keeps the row). */
     @PostMapping("/api/agents/{agentId}/sessions/{sessionKey}/reset")
     public Mono<ResetResult> reset(
@@ -341,6 +370,19 @@ public class SessionController {
                 hasMore ? new ArrayList<>(raw.subList(0, effectiveLimit)) : raw;
         Long nextAfterSeq = items.isEmpty() ? afterSeq : items.get(items.size() - 1).getSeq();
         return new EntityPage(items, nextAfterSeq, hasMore);
+    }
+
+    private EntityWindow messageWindow(UUID sessionId, Long beforeSeq, int limit) {
+        int effectiveLimit = limit <= 0 ? 100 : Math.min(limit, 500);
+        List<ChatMessageEntity> raw =
+                messageRepository.pageBeforeSeq(
+                        sessionId, beforeSeq, PageRequest.of(0, effectiveLimit + 1));
+        boolean hasMore = raw.size() > effectiveLimit;
+        List<ChatMessageEntity> newestFirst =
+                hasMore ? new ArrayList<>(raw.subList(0, effectiveLimit)) : new ArrayList<>(raw);
+        java.util.Collections.reverse(newestFirst);
+        Long nextBeforeSeq = newestFirst.isEmpty() ? beforeSeq : newestFirst.get(0).getSeq();
+        return new EntityWindow(newestFirst, nextBeforeSeq, hasMore);
     }
 
     private static UUID orgId(Jwt jwt) {
@@ -473,5 +515,11 @@ public class SessionController {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record TurnPage(List<TurnEntry> items, Long nextAfterSeq, boolean hasMore) {}
 
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record TurnWindow(List<TurnEntry> items, Long nextBeforeSeq, boolean hasMore) {}
+
     private record EntityPage(List<ChatMessageEntity> items, Long nextAfterSeq, boolean hasMore) {}
+
+    private record EntityWindow(
+            List<ChatMessageEntity> items, Long nextBeforeSeq, boolean hasMore) {}
 }
