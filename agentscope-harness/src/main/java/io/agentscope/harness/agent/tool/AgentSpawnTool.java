@@ -346,7 +346,9 @@ public class AgentSpawnTool {
                                 d.getUrl(), d.getHeaders(), agentId, capturedTask);
             } else {
                 spec =
-                        new TaskRunSpec.LocalTaskRunSpec(
+                        new TaskRunSpec.DurableLocalTaskRunSpec(
+                                sessionId,
+                                capturedTask,
                                 () -> {
                                     try {
                                         Msg reply =
@@ -509,7 +511,9 @@ public class AgentSpawnTool {
                                 d.getUrl(), d.getHeaders(), spawned.agentId(), capturedMessage);
             } else {
                 spec =
-                        new TaskRunSpec.LocalTaskRunSpec(
+                        new TaskRunSpec.DurableLocalTaskRunSpec(
+                                spawned.sessionId(),
+                                capturedMessage,
                                 () -> {
                                     try {
                                         Msg reply =
@@ -885,7 +889,9 @@ public class AgentSpawnTool {
                                 d.getUrl(), d.getHeaders(), spawned.agentId(), capturedTask);
             } else {
                 spec =
-                        new TaskRunSpec.LocalTaskRunSpec(
+                        new TaskRunSpec.DurableLocalTaskRunSpec(
+                                spawned.sessionId(),
+                                capturedTask,
                                 () -> {
                                     try {
                                         Msg reply =

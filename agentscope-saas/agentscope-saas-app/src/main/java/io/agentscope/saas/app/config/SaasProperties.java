@@ -30,6 +30,8 @@ public class SaasProperties {
     @NestedConfigurationProperty private final Sandbox sandbox = new Sandbox();
     @NestedConfigurationProperty private final RateLimit rateLimit = new RateLimit();
     @NestedConfigurationProperty private final Agent agent = new Agent();
+    @NestedConfigurationProperty private final Orchestration orchestration = new Orchestration();
+    @NestedConfigurationProperty private final Subagents subagents = new Subagents();
     @NestedConfigurationProperty private final Ltm ltm = new Ltm();
     @NestedConfigurationProperty private final Degradation degradation = new Degradation();
 
@@ -55,6 +57,14 @@ public class SaasProperties {
 
     public Agent getAgent() {
         return agent;
+    }
+
+    public Orchestration getOrchestration() {
+        return orchestration;
+    }
+
+    public Subagents getSubagents() {
+        return subagents;
     }
 
     public Ltm getLtm() {
@@ -1050,6 +1060,13 @@ public class SaasProperties {
         private String sysPrompt =
                 "You are a helpful enterprise AI assistant. Answer concisely and accurately.";
         private int maxIters = 10;
+
+        /** Enables the framework Todo tools for explicit task tracking. */
+        private boolean taskListEnabled = true;
+
+        /** Enables persistent, permission-enforced plan mode for complex work. */
+        private boolean planModeEnabled = true;
+
         @NestedConfigurationProperty private final Conversation conversation = new Conversation();
         @NestedConfigurationProperty private final Skills skills = new Skills();
         @NestedConfigurationProperty private final Permission permission = new Permission();
@@ -1078,6 +1095,22 @@ public class SaasProperties {
             this.maxIters = maxIters;
         }
 
+        public boolean isTaskListEnabled() {
+            return taskListEnabled;
+        }
+
+        public void setTaskListEnabled(boolean taskListEnabled) {
+            this.taskListEnabled = taskListEnabled;
+        }
+
+        public boolean isPlanModeEnabled() {
+            return planModeEnabled;
+        }
+
+        public void setPlanModeEnabled(boolean planModeEnabled) {
+            this.planModeEnabled = planModeEnabled;
+        }
+
         public Conversation getConversation() {
             return conversation;
         }
@@ -1088,6 +1121,225 @@ public class SaasProperties {
 
         public Permission getPermission() {
             return permission;
+        }
+    }
+
+    /** Background subagent execution backend selected once for an application deployment. */
+    public static class Subagents {
+        private String executionMode = "workspace";
+        private int maxDepth = 3;
+        private int maxChildrenPerAgent = 8;
+        private int maxTasksPerRun = 32;
+
+        public String getExecutionMode() {
+            return executionMode;
+        }
+
+        public void setExecutionMode(String executionMode) {
+            this.executionMode = executionMode;
+        }
+
+        public boolean isDurable() {
+            return "durable".equalsIgnoreCase(executionMode);
+        }
+
+        public int getMaxDepth() {
+            return maxDepth;
+        }
+
+        public void setMaxDepth(int maxDepth) {
+            this.maxDepth = maxDepth;
+        }
+
+        public int getMaxChildrenPerAgent() {
+            return maxChildrenPerAgent;
+        }
+
+        public void setMaxChildrenPerAgent(int maxChildrenPerAgent) {
+            this.maxChildrenPerAgent = maxChildrenPerAgent;
+        }
+
+        public int getMaxTasksPerRun() {
+            return maxTasksPerRun;
+        }
+
+        public void setMaxTasksPerRun(int maxTasksPerRun) {
+            this.maxTasksPerRun = maxTasksPerRun;
+        }
+    }
+
+    /** Durable Run control-plane settings. Scheduler and durable subagents are phased in separately. */
+    public static class Orchestration {
+        /** Creates a persistent Run and root TaskNode for every chat request. */
+        private boolean enabled = true;
+
+        /** Reserved for the later lease-based scheduler rollout. */
+        private boolean schedulerEnabled = false;
+
+        /** Enables structured planning once plan publishing is wired. */
+        private boolean plannerEnabled = false;
+
+        /** Publishes the transactional event Outbox with lease-based, at-least-once delivery. */
+        private boolean outboxEnabled = true;
+
+        private long outboxFixedDelayMillis = 1000;
+        private int outboxBatchSize = 100;
+        private long outboxLeaseSeconds = 30;
+        private int outboxMaxAttempts = 10;
+        private long outboxRetryBaseSeconds = 2;
+        private long outboxRetryMaxSeconds = 300;
+
+        private int schedulerBatchSize = 16;
+        private long schedulerLeaseSeconds = 60;
+        private long schedulerRecoveryFixedDelaySeconds = 20;
+        private long schedulerRetryMaxSeconds = 300;
+        private long schedulerPollMillis = 1000;
+        private long schedulerHeartbeatSeconds = 20;
+        private int workerConcurrency = 4;
+        private long workerExecutionTimeoutSeconds = 900;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public boolean isSchedulerEnabled() {
+            return schedulerEnabled;
+        }
+
+        public void setSchedulerEnabled(boolean schedulerEnabled) {
+            this.schedulerEnabled = schedulerEnabled;
+        }
+
+        public boolean isPlannerEnabled() {
+            return plannerEnabled;
+        }
+
+        public void setPlannerEnabled(boolean plannerEnabled) {
+            this.plannerEnabled = plannerEnabled;
+        }
+
+        public boolean isOutboxEnabled() {
+            return outboxEnabled;
+        }
+
+        public void setOutboxEnabled(boolean outboxEnabled) {
+            this.outboxEnabled = outboxEnabled;
+        }
+
+        public long getOutboxFixedDelayMillis() {
+            return outboxFixedDelayMillis;
+        }
+
+        public void setOutboxFixedDelayMillis(long outboxFixedDelayMillis) {
+            this.outboxFixedDelayMillis = outboxFixedDelayMillis;
+        }
+
+        public int getOutboxBatchSize() {
+            return outboxBatchSize;
+        }
+
+        public void setOutboxBatchSize(int outboxBatchSize) {
+            this.outboxBatchSize = outboxBatchSize;
+        }
+
+        public long getOutboxLeaseSeconds() {
+            return outboxLeaseSeconds;
+        }
+
+        public void setOutboxLeaseSeconds(long outboxLeaseSeconds) {
+            this.outboxLeaseSeconds = outboxLeaseSeconds;
+        }
+
+        public int getOutboxMaxAttempts() {
+            return outboxMaxAttempts;
+        }
+
+        public void setOutboxMaxAttempts(int outboxMaxAttempts) {
+            this.outboxMaxAttempts = outboxMaxAttempts;
+        }
+
+        public long getOutboxRetryBaseSeconds() {
+            return outboxRetryBaseSeconds;
+        }
+
+        public void setOutboxRetryBaseSeconds(long outboxRetryBaseSeconds) {
+            this.outboxRetryBaseSeconds = outboxRetryBaseSeconds;
+        }
+
+        public long getOutboxRetryMaxSeconds() {
+            return outboxRetryMaxSeconds;
+        }
+
+        public void setOutboxRetryMaxSeconds(long outboxRetryMaxSeconds) {
+            this.outboxRetryMaxSeconds = outboxRetryMaxSeconds;
+        }
+
+        public int getSchedulerBatchSize() {
+            return schedulerBatchSize;
+        }
+
+        public void setSchedulerBatchSize(int schedulerBatchSize) {
+            this.schedulerBatchSize = schedulerBatchSize;
+        }
+
+        public long getSchedulerLeaseSeconds() {
+            return schedulerLeaseSeconds;
+        }
+
+        public void setSchedulerLeaseSeconds(long schedulerLeaseSeconds) {
+            this.schedulerLeaseSeconds = schedulerLeaseSeconds;
+        }
+
+        public long getSchedulerRecoveryFixedDelaySeconds() {
+            return schedulerRecoveryFixedDelaySeconds;
+        }
+
+        public void setSchedulerRecoveryFixedDelaySeconds(long schedulerRecoveryFixedDelaySeconds) {
+            this.schedulerRecoveryFixedDelaySeconds = schedulerRecoveryFixedDelaySeconds;
+        }
+
+        public long getSchedulerRetryMaxSeconds() {
+            return schedulerRetryMaxSeconds;
+        }
+
+        public void setSchedulerRetryMaxSeconds(long schedulerRetryMaxSeconds) {
+            this.schedulerRetryMaxSeconds = schedulerRetryMaxSeconds;
+        }
+
+        public long getSchedulerPollMillis() {
+            return schedulerPollMillis;
+        }
+
+        public void setSchedulerPollMillis(long schedulerPollMillis) {
+            this.schedulerPollMillis = schedulerPollMillis;
+        }
+
+        public long getSchedulerHeartbeatSeconds() {
+            return schedulerHeartbeatSeconds;
+        }
+
+        public void setSchedulerHeartbeatSeconds(long schedulerHeartbeatSeconds) {
+            this.schedulerHeartbeatSeconds = schedulerHeartbeatSeconds;
+        }
+
+        public int getWorkerConcurrency() {
+            return workerConcurrency;
+        }
+
+        public void setWorkerConcurrency(int workerConcurrency) {
+            this.workerConcurrency = workerConcurrency;
+        }
+
+        public long getWorkerExecutionTimeoutSeconds() {
+            return workerExecutionTimeoutSeconds;
+        }
+
+        public void setWorkerExecutionTimeoutSeconds(long workerExecutionTimeoutSeconds) {
+            this.workerExecutionTimeoutSeconds = workerExecutionTimeoutSeconds;
         }
     }
 

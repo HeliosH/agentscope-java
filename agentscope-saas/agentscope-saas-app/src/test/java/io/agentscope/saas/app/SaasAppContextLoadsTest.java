@@ -18,11 +18,13 @@ package io.agentscope.saas.app;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.saas.app.chat.SaasChatController;
 import io.agentscope.saas.app.marketplace.MarketplaceRegistry;
 import io.agentscope.saas.app.marketplace.MarketplacesController;
 import io.agentscope.saas.app.observability.AgentRunMetrics;
 import io.agentscope.saas.app.tools.AgentToolsController;
 import io.agentscope.saas.core.persistence.repo.MarketplaceRepository;
+import io.agentscope.saas.orchestration.RunOrchestrationService;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,6 +49,8 @@ class SaasAppContextLoadsTest {
     @Autowired AgentRunMetrics agentRunMetrics;
     @Autowired MeterRegistry meterRegistry;
     @Autowired HarnessAgent harnessAgent;
+    @Autowired RunOrchestrationService runOrchestrationService;
+    @Autowired SaasChatController saasChatController;
 
     @Test
     void contextLoads() {
@@ -58,5 +62,7 @@ class SaasAppContextLoadsTest {
         assertThat(meterRegistry.find("saas.agent.chat.stream.duration").timer()).isNotNull();
         assertThat(meterRegistry.find("saas.llm.model.calls").counter()).isNotNull();
         assertThat(harnessAgent.getCompactionHook()).isNotNull();
+        assertThat(runOrchestrationService).isNotNull();
+        assertThat(saasChatController).isNotNull();
     }
 }

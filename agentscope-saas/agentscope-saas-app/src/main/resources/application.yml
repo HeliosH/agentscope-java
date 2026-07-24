@@ -157,6 +157,8 @@ saas:
   agent:
     name: ${SAAS_AGENT_NAME:assistant}
     max-iters: ${SAAS_AGENT_MAX_ITERS:10}
+    task-list-enabled: ${SAAS_AGENT_TASK_LIST_ENABLED:true}
+    plan-mode-enabled: ${SAAS_AGENT_PLAN_MODE_ENABLED:true}
     conversation:
       compaction-enabled: ${SAAS_AGENT_COMPACTION_ENABLED:true}
       max-context-tokens: ${SAAS_AGENT_MAX_CONTEXT_TOKENS:32000}
@@ -167,6 +169,33 @@ saas:
       truncate-trigger-messages: ${SAAS_AGENT_TRUNCATE_TRIGGER_MESSAGES:30}
       truncate-trigger-tokens: ${SAAS_AGENT_TRUNCATE_TRIGGER_TOKENS:12000}
       truncate-max-argument-length: ${SAAS_AGENT_TRUNCATE_MAX_ARGUMENT_LENGTH:2000}
+  orchestration:
+    # Every chat turn is persisted as a Run with a root TaskNode. The durable scheduler and
+    # structured planner remain independently gated until their rollout phases are complete.
+    enabled: ${SAAS_ORCHESTRATION_ENABLED:true}
+    scheduler-enabled: ${SAAS_ORCHESTRATION_SCHEDULER_ENABLED:false}
+    planner-enabled: ${SAAS_ORCHESTRATION_PLANNER_ENABLED:false}
+    outbox-enabled: ${SAAS_ORCHESTRATION_OUTBOX_ENABLED:true}
+    outbox-fixed-delay-millis: ${SAAS_ORCHESTRATION_OUTBOX_FIXED_DELAY_MILLIS:1000}
+    outbox-batch-size: ${SAAS_ORCHESTRATION_OUTBOX_BATCH_SIZE:100}
+    outbox-lease-seconds: ${SAAS_ORCHESTRATION_OUTBOX_LEASE_SECONDS:30}
+    outbox-max-attempts: ${SAAS_ORCHESTRATION_OUTBOX_MAX_ATTEMPTS:10}
+    outbox-retry-base-seconds: ${SAAS_ORCHESTRATION_OUTBOX_RETRY_BASE_SECONDS:2}
+    outbox-retry-max-seconds: ${SAAS_ORCHESTRATION_OUTBOX_RETRY_MAX_SECONDS:300}
+    scheduler-batch-size: ${SAAS_ORCHESTRATION_SCHEDULER_BATCH_SIZE:16}
+    scheduler-lease-seconds: ${SAAS_ORCHESTRATION_SCHEDULER_LEASE_SECONDS:60}
+    scheduler-recovery-fixed-delay-seconds: ${SAAS_ORCHESTRATION_SCHEDULER_RECOVERY_FIXED_DELAY_SECONDS:20}
+    scheduler-retry-max-seconds: ${SAAS_ORCHESTRATION_SCHEDULER_RETRY_MAX_SECONDS:300}
+    scheduler-poll-millis: ${SAAS_ORCHESTRATION_SCHEDULER_POLL_MILLIS:1000}
+    scheduler-heartbeat-seconds: ${SAAS_ORCHESTRATION_SCHEDULER_HEARTBEAT_SECONDS:20}
+    worker-concurrency: ${SAAS_ORCHESTRATION_WORKER_CONCURRENCY:4}
+    worker-execution-timeout-seconds: ${SAAS_ORCHESTRATION_WORKER_EXECUTION_TIMEOUT_SECONDS:900}
+  subagents:
+    # Deployment choice only. durable requires orchestration + scheduler; users cannot select it.
+    execution-mode: ${SAAS_SUBAGENTS_EXECUTION_MODE:workspace}
+    max-depth: ${SAAS_SUBAGENTS_MAX_DEPTH:3}
+    max-children-per-agent: ${SAAS_SUBAGENTS_MAX_CHILDREN_PER_AGENT:8}
+    max-tasks-per-run: ${SAAS_SUBAGENTS_MAX_TASKS_PER_RUN:32}
   ltm:
     # Long-term memory (Mem0). Disabled by default — the platform runs with zero external deps,
     # falling back to MEMORY.md + snapshot persistence. Enable with a reachable Mem0 endpoint to

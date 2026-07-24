@@ -48,6 +48,7 @@ QwenPaw 是 **Python 产品**。框架有"等价物" ≠ QwenPaw 代码能直接
 | 12 | [具体实施方案](./12-implementation-plan.md) | 简单登录+完整 QwenPaw 对齐（不含 IM）：paw 产品层移植进 SaaS 多租户壳、分阶段 A–D |
 | 17 | [记忆与运行时资源设计](./17-memory-resource-design.md) | PG 记忆账本、文件记忆、Mem0/向量投影、Redis 运行态、CubeSandbox/Daytona 取舍 |
 | 18 | [企业岗位档案与个人记忆实施方案](./18-enterprise-memory-profile-implementation.md) | 企业维护岗位主数据、个人记忆卡片、Mem0 投影、任务前检索与分阶段实施 |
+| 19 | [企业智能助手运行框架优化落地方案](./19-runtime-orchestration-optimization-plan.md) | 持久化任务编排、可靠子 Agent、部署时可切换沙箱 Provider、恢复、验证与实施计划 |
 
 ## 一页速读
 

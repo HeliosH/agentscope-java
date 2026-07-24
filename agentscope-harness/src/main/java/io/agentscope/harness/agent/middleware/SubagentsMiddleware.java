@@ -89,6 +89,11 @@ public class SubagentsMiddleware implements MiddlewareBase {
      */
     static final int MAX_DELIVERIES_PER_REMINDER = 10;
 
+    /** Limits automatically injected task output while retaining full results in TaskRepository. */
+    static final int MAX_DELIVERY_ITEM_CHARS = 8_000;
+
+    static final int MAX_DELIVERY_CONTENT_CHARS = 24_000;
+
     // @formatter:off
     private static final String SUBAGENT_SECTION_TEMPLATE =
             """
@@ -326,9 +331,6 @@ public class SubagentsMiddleware implements MiddlewareBase {
             ReasoningInput input,
             Function<ReasoningInput, Flux<AgentEvent>> next) {
         List<SubagentEntry> currentEntries = this.entries;
-        if (currentEntries.isEmpty()) {
-            return next.apply(input);
-        }
         RuntimeContext rc = ctx != null ? ctx : RuntimeContext.empty();
         String sessionId = rc != null ? rc.getSessionId() : null;
 
@@ -351,7 +353,9 @@ public class SubagentsMiddleware implements MiddlewareBase {
         }
 
         StringBuilder addition = new StringBuilder();
-        addition.append(renderSubagentSection(currentEntries, isSessionMode));
+        if (!currentEntries.isEmpty()) {
+            addition.append(renderSubagentSection(currentEntries, isSessionMode));
+        }
         String taskSummary = buildTaskSummary(this.taskRepository, rc);
         if (taskSummary != null) {
             addition.append(taskSummary);
@@ -413,6 +417,7 @@ public class SubagentsMiddleware implements MiddlewareBase {
         sb.append(total == 1 ? " has" : "s have");
         sb.append(" completed since your last turn. ");
         sb.append("These results are now part of your conversation history.\n\n");
+        int remainingContentChars = MAX_DELIVERY_CONTENT_CHARS;
         for (int i = 0; i < shown; i++) {
             TaskDelivery d = deliveries.get(i);
             String state = stateLiteral(d.status());
@@ -425,12 +430,21 @@ public class SubagentsMiddleware implements MiddlewareBase {
             switch (d.status()) {
                 case COMPLETED -> {
                     sb.append("<task_result>\n");
-                    sb.append(d.result() != null ? d.result() : "");
+                    remainingContentChars =
+                            appendBoundedDeliveryContent(
+                                    sb, d.result(), d.taskId(), remainingContentChars);
                     sb.append("\n</task_result>\n");
                 }
                 case FAILED -> {
                     sb.append("<task_error>\n");
-                    sb.append(d.errorMessage() != null ? d.errorMessage() : "(no error message)");
+                    remainingContentChars =
+                            appendBoundedDeliveryContent(
+                                    sb,
+                                    d.errorMessage() != null
+                                            ? d.errorMessage()
+                                            : "(no error message)",
+                                    d.taskId(),
+                                    remainingContentChars);
                     sb.append("\n</task_error>\n");
                 }
                 case CANCELLED -> sb.append("Task was cancelled before producing a result.\n");
@@ -461,6 +475,26 @@ public class SubagentsMiddleware implements MiddlewareBase {
                                 Msg.METADATA_REMINDER_KIND,
                                 "task_delivery"))
                 .build();
+    }
+
+    private static int appendBoundedDeliveryContent(
+            StringBuilder target, String content, String taskId, int remainingContentChars) {
+        String value = content != null ? content : "";
+        int allowed = Math.min(MAX_DELIVERY_ITEM_CHARS, Math.max(0, remainingContentChars));
+        if (value.length() <= allowed) {
+            target.append(value);
+            return remainingContentChars - value.length();
+        }
+        String notice =
+                "\n...[truncated; call task_output(task_id=\""
+                        + taskId
+                        + "\", block=false) for full output]";
+        int prefixLength = Math.max(0, allowed - notice.length());
+        if (prefixLength > 0) {
+            target.append(value, 0, prefixLength);
+        }
+        target.append(notice);
+        return remainingContentChars - allowed;
     }
 
     private static String stateLiteral(TaskStatus status) {

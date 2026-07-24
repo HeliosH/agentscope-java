@@ -171,6 +171,34 @@ public class ChatPersistenceService {
         return saved;
     }
 
+    /** Persists one idempotent terminal assistant reply for a durable Run. */
+    @Transactional
+    public ChatMessageEntity saveAssistantMessageForRun(
+            TenantContext tenant,
+            UUID sessionId,
+            UUID agentId,
+            UUID runId,
+            List<ContentBlock> blocks) {
+        if (blocks == null || blocks.isEmpty()) {
+            return null;
+        }
+        sessionRepository
+                .lockById(sessionId)
+                .orElseThrow(() -> new IllegalStateException("Session not found: " + sessionId));
+        ChatMessageEntity existing = messageRepository.findBySourceRunId(runId).orElse(null);
+        if (existing != null) {
+            return existing;
+        }
+        if (blocks.stream().allMatch(b -> b instanceof TextBlock t && t.getText().isEmpty())) {
+            return null;
+        }
+        ChatMessageEntity msg = newMessage(tenant, sessionId, agentId, "assistant", blocks);
+        msg.setSourceRunId(runId);
+        ChatMessageEntity saved = messageRepository.save(msg);
+        touchSession(saved.getSessionId(), extractText(blocks));
+        return saved;
+    }
+
     private static String extractText(List<ContentBlock> blocks) {
         StringBuilder sb = new StringBuilder();
         for (ContentBlock b : blocks) {

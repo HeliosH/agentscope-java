@@ -45,6 +45,11 @@ saas:
     # image: ubuntu:22.04
     # isolation-scope: USER
     # idle-ttl-seconds: 600
+  orchestration:
+    enabled: true
+    scheduler-enabled: false
+    planner-enabled: false
+    outbox-enabled: true
   rate-limit:
     max-requests: 1000
     window-seconds: 60

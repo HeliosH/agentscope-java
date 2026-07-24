@@ -30,6 +30,14 @@ public sealed interface TaskRunSpec {
     record LocalTaskRunSpec(Supplier<String> execution) implements TaskRunSpec {}
 
     /**
+     * Locally materialized subagent invocation with enough metadata for a durable repository to
+     * recreate it after the submitting JVM exits. Workspace repositories execute the supplier;
+     * durable repositories persist {@code subSessionId} and {@code input} instead.
+     */
+    record DurableLocalTaskRunSpec(String subSessionId, String input, Supplier<String> execution)
+            implements TaskRunSpec {}
+
+    /**
      * Remote HTTP task execution. The {@code taskId} is chosen by the client and used as the
      * remote task key end-to-end.
      */

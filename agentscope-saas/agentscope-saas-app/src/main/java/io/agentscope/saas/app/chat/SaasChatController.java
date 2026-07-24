@@ -37,6 +37,7 @@ import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
 import io.agentscope.saas.core.persistence.repo.ChatSessionRepository;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantResolver;
+import io.agentscope.saas.orchestration.RunOrchestrationService;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -44,6 +45,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -52,9 +54,12 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
 
 /**
@@ -75,7 +80,10 @@ public class SaasChatController {
 
     /** Chat request payload. {@code confirmResults} resumes a paused HITL run (same sessionId). */
     public record ChatRequest(
-            String sessionId, String message, List<ConfirmResultInput> confirmResults) {
+            String sessionId,
+            String requestId,
+            String message,
+            List<ConfirmResultInput> confirmResults) {
 
         /** A single user confirmation decision for a pending tool call (HITL resume). */
         public record ConfirmResultInput(
@@ -85,9 +93,12 @@ public class SaasChatController {
     private final HarnessAgent agent;
     private final TenantResolver tenantResolver;
     private final ChatPersistenceService persistence;
+    private final ChatRunStartService runStarter;
     private final ChatSessionRepository sessionRepository;
     private final DegradationManager degradationManager;
     private final AgentRunMetrics metrics;
+    private final RunOrchestrationService orchestration;
+    private final boolean orchestrationEnabled;
     private final String sandboxType;
     private final AguiEventEncoder encoder = new AguiEventEncoder();
 
@@ -95,16 +106,24 @@ public class SaasChatController {
             HarnessAgent agent,
             TenantResolver tenantResolver,
             ChatPersistenceService persistence,
+            ChatRunStartService runStarter,
             ChatSessionRepository sessionRepository,
             DegradationManager degradationManager,
             AgentRunMetrics metrics,
+            RunOrchestrationService orchestration,
             SaasProperties properties) {
         this.agent = agent;
         this.tenantResolver = tenantResolver;
         this.persistence = persistence;
+        this.runStarter = runStarter;
         this.sessionRepository = sessionRepository;
         this.degradationManager = degradationManager;
         this.metrics = metrics != null ? metrics : AgentRunMetrics.noop();
+        this.orchestration = orchestration;
+        this.orchestrationEnabled =
+                properties != null
+                        && properties.getOrchestration() != null
+                        && properties.getOrchestration().isEnabled();
         this.sandboxType =
                 properties != null && properties.getSandbox() != null
                         ? properties.getSandbox().getType()
@@ -116,6 +135,9 @@ public class SaasChatController {
      * mount to decide whether to fetch turns. {@code sessionKey} equals the session UUID string.
      */
     public record CurrentSessionResponse(String sessionKey, boolean exists) {}
+
+    /** Explicit cancellation response. Browser/SSE disconnects do not call this endpoint. */
+    public record CancelRunResponse(String runId, String status, boolean interrupted) {}
 
     @GetMapping("/api/agents/{agentId}/chat/session")
     public Mono<CurrentSessionResponse> currentSession(
@@ -183,20 +205,45 @@ public class SaasChatController {
             TenantContext tenant, String agentId, ChatRequest request) {
         return Mono.fromCallable(
                         () -> {
-                            AgentEntity agentEntity = persistence.resolveAgent(tenant, agentId);
                             String message =
                                     request.message() != null && !request.message().isBlank()
                                             ? request.message()
                                             : "[tool confirmation]";
+                            if (orchestrationEnabled) {
+                                ChatRunStartService.StartedRun started =
+                                        runStarter.start(
+                                                tenant,
+                                                agentId,
+                                                request.sessionId(),
+                                                message,
+                                                request.requestId());
+                                return new ResolvedRun(
+                                        started.agentId(),
+                                        started.sessionId(),
+                                        started.triggerMessageId(),
+                                        started.runId(),
+                                        started.rootAgentRunId(),
+                                        started.status(),
+                                        started.reused());
+                            }
+                            AgentEntity agentEntity = persistence.resolveAgent(tenant, agentId);
                             ChatSessionEntity session =
                                     persistence.resolveSession(
                                             tenant,
                                             agentEntity.getId(),
                                             request.sessionId(),
                                             message);
-                            persistence.saveUserMessage(
-                                    tenant, session.getId(), agentEntity.getId(), message);
-                            return new ResolvedRun(agentEntity.getId(), session.getId());
+                            var userMessage =
+                                    persistence.saveUserMessage(
+                                            tenant, session.getId(), agentEntity.getId(), message);
+                            return new ResolvedRun(
+                                    agentEntity.getId(),
+                                    session.getId(),
+                                    userMessage.getId(),
+                                    null,
+                                    null,
+                                    null,
+                                    false);
                         })
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMapMany(resolved -> runAgent(tenant, request, resolved, true));
@@ -209,7 +256,11 @@ public class SaasChatController {
                 request.sessionId() != null && !request.sessionId().isBlank()
                         ? request.sessionId()
                         : UUID.randomUUID().toString();
-        return runAgent(tenant, request, new ResolvedRun(null, UUID.fromString(sessionId)), false);
+        return runAgent(
+                tenant,
+                request,
+                new ResolvedRun(null, UUID.fromString(sessionId), null, null, null, null, false),
+                false);
     }
 
     /** Runs the agent and emits AG-UI SSE events; optionally persists the assistant reply. */
@@ -217,8 +268,12 @@ public class SaasChatController {
             TenantContext tenant, ChatRequest request, ResolvedRun resolved, boolean persist) {
         String sessionId = resolved.sessionId().toString();
         String threadId = sessionId;
-        String runId = UUID.randomUUID().toString();
+        UUID durableRunId = persist && orchestrationEnabled ? resolved.runId() : UUID.randomUUID();
+        String runId = durableRunId.toString();
         AguiEventConverter converter = new AguiEventConverter(threadId, runId);
+        if (persist && orchestrationEnabled && resolved.reused()) {
+            return reusedRunStream(converter, threadId, runId, resolved.status());
+        }
         AssistantContentAccumulator accumulator = new AssistantContentAccumulator();
         long startedNanos = System.nanoTime();
         AtomicReference<String> streamOutcome = new AtomicReference<>("success");
@@ -230,6 +285,12 @@ public class SaasChatController {
                         .put(
                                 WorkspaceProjectionCatalogSink.ATTR_AGENT_ID,
                                 resolved.agentId() != null ? resolved.agentId().toString() : null)
+                        .put(RunOrchestrationService.ATTR_RUN_ID, runId)
+                        .put(
+                                RunOrchestrationService.ATTR_AGENT_RUN_ID,
+                                resolved.rootAgentRunId() != null
+                                        ? resolved.rootAgentRunId().toString()
+                                        : null)
                         .put(TenantContext.class, tenant)
                         .put(TenantContext.ATTR_KEY, tenant)
                         .build();
@@ -267,6 +328,12 @@ public class SaasChatController {
                                                             resolved.sessionId(),
                                                             resolved.agentId(),
                                                             accumulator.blocks());
+                                                    if (orchestrationEnabled) {
+                                                        orchestration.markSucceeded(
+                                                                tenant,
+                                                                resolved.agentId(),
+                                                                durableRunId);
+                                                    }
                                                     return (Object) null;
                                                 })
                                         .subscribeOn(Schedulers.boundedElastic())
@@ -277,35 +344,196 @@ public class SaasChatController {
                                 agentEvents,
                                 Flux.defer(() -> Flux.fromIterable(converter.runFinished())));
 
-        return withPersistence
-                .map(this::toSse)
-                .onErrorResume(
-                        error -> {
-                            streamOutcome.set("error");
-                            log.warn("Chat stream error: {}", error.toString());
-                            Map<String, Object> payload = new HashMap<>();
-                            payload.put("message", errorMessage(error));
-                            AguiEvent errorEvent =
-                                    new AguiEvent.Custom(threadId, runId, "error", payload);
-                            return Flux.just(toSse(errorEvent));
-                        })
-                .doOnCancel(
+        Flux<ServerSentEvent<String>> execution =
+                withPersistence
+                        .map(this::toSse)
+                        .onErrorResume(
+                                error -> {
+                                    streamOutcome.set("error");
+                                    log.warn("Chat stream error: {}", error.toString());
+                                    Map<String, Object> payload = new HashMap<>();
+                                    payload.put("message", errorMessage(error));
+                                    AguiEvent errorEvent =
+                                            new AguiEvent.Custom(threadId, runId, "error", payload);
+                                    if (!persist || !orchestrationEnabled) {
+                                        return Flux.just(toSse(errorEvent));
+                                    }
+                                    return Mono.fromRunnable(
+                                                    () ->
+                                                            orchestration.markFailed(
+                                                                    tenant,
+                                                                    resolved.agentId(),
+                                                                    durableRunId,
+                                                                    "AGENT_ERROR",
+                                                                    errorMessage(error)))
+                                            .subscribeOn(Schedulers.boundedElastic())
+                                            .thenMany(Flux.just(toSse(errorEvent)));
+                                })
+                        .doFinally(
+                                signal -> {
+                                    metrics.recordChatStream(
+                                            streamOutcome.get(),
+                                            persist,
+                                            sandboxType,
+                                            System.nanoTime() - startedNanos);
+                                });
+        return detachClient(execution, runId);
+    }
+
+    private Flux<ServerSentEvent<String>> reusedRunStream(
+            AguiEventConverter converter, String threadId, String runId, String status) {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("status", status);
+        payload.put("reused", true);
+        Flux<AguiEvent> events =
+                Flux.just(
+                        converter.runStarted(),
+                        new AguiEvent.Custom(threadId, runId, "run_reused", payload));
+        if (!RunOrchestrationService.RUN_RUNNING.equals(status)) {
+            events = Flux.concat(events, Flux.fromIterable(converter.runFinished()));
+        }
+        return events.map(this::toSse);
+    }
+
+    /**
+     * Starts the execution with an internal subscription so an HTTP/SSE disconnect only detaches the
+     * viewer. The durable Run/Event records remain the cross-restart source of truth; this bounded
+     * replay sink only bridges the initially connected browser to its live AG-UI events.
+     */
+    private Flux<ServerSentEvent<String>> detachClient(
+            Flux<ServerSentEvent<String>> execution, String runId) {
+        Sinks.Many<ServerSentEvent<String>> sink = Sinks.many().replay().limit(256);
+        execution.subscribe(
+                event -> {
+                    Sinks.EmitResult result = sink.tryEmitNext(event);
+                    if (result.isFailure() && result != Sinks.EmitResult.FAIL_ZERO_SUBSCRIBER) {
+                        log.debug("Could not relay live SSE event for Run {}: {}", runId, result);
+                    }
+                },
+                error -> sink.tryEmitError(error),
+                sink::tryEmitComplete);
+        return sink.asFlux();
+    }
+
+    @PostMapping("/api/agents/{agentId}/runs/{runId}/cancel")
+    public Mono<CancelRunResponse> cancelRun(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String agentId,
+            @PathVariable String runId) {
+        if (!orchestrationEnabled) {
+            return Mono.error(
+                    new ResponseStatusException(
+                            HttpStatus.NOT_FOUND, "Run orchestration is disabled"));
+        }
+        TenantContext tenant = tenantResolver.resolve(jwt != null ? jwt.getClaims() : Map.of());
+        if (!isPersistable(tenant)) {
+            return Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "Run not found"));
+        }
+        return Mono.fromCallable(
                         () -> {
-                            streamOutcome.set("cancel");
-                            log.debug("Client cancelled chat stream; interrupting agent");
-                            agent.interrupt();
-                        })
-                .doFinally(
-                        signal -> {
-                            if ("cancel".equalsIgnoreCase(signal.name())) {
-                                streamOutcome.set("cancel");
+                            UUID agentUuid = parseUuid(agentId, "agentId");
+                            UUID runUuid = parseUuid(runId, "runId");
+                            RunOrchestrationService.CancelledRun cancelled =
+                                    orchestration
+                                            .cancel(tenant, agentUuid, runUuid)
+                                            .orElseThrow(
+                                                    () ->
+                                                            new ResponseStatusException(
+                                                                    HttpStatus.NOT_FOUND,
+                                                                    "Run not found"));
+                            if (cancelled.interrupted()) {
+                                agent.getDelegate()
+                                        .interrupt(
+                                                RuntimeContext.builder()
+                                                        .userId(tenant.userId())
+                                                        .sessionId(cancelled.sessionId().toString())
+                                                        .put(TenantContext.class, tenant)
+                                                        .put(TenantContext.ATTR_KEY, tenant)
+                                                        .put(
+                                                                RunOrchestrationService.ATTR_RUN_ID,
+                                                                cancelled.runId().toString())
+                                                        .build());
                             }
-                            metrics.recordChatStream(
-                                    streamOutcome.get(),
-                                    persist,
-                                    sandboxType,
-                                    System.nanoTime() - startedNanos);
-                        });
+                            return new CancelRunResponse(
+                                    cancelled.runId().toString(),
+                                    RunOrchestrationService.RUN_CANCELLED,
+                                    cancelled.interrupted());
+                        })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    @GetMapping("/api/agents/{agentId}/runs/{runId}")
+    public Mono<RunOrchestrationService.RunView> getRun(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String agentId,
+            @PathVariable String runId) {
+        return withRun(
+                        tenantResolver.resolve(jwt != null ? jwt.getClaims() : Map.of()),
+                        agentId,
+                        runId)
+                .map(
+                        request ->
+                                orchestration
+                                        .getRun(
+                                                request.tenant(),
+                                                request.agentId(),
+                                                request.runId())
+                                        .orElseThrow(
+                                                () ->
+                                                        new ResponseStatusException(
+                                                                HttpStatus.NOT_FOUND,
+                                                                "Run not found")));
+    }
+
+    @GetMapping("/api/agents/{agentId}/runs/{runId}/tasks")
+    public Mono<List<RunOrchestrationService.TaskView>> getRunTasks(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String agentId,
+            @PathVariable String runId) {
+        return withRun(
+                        tenantResolver.resolve(jwt != null ? jwt.getClaims() : Map.of()),
+                        agentId,
+                        runId)
+                .map(
+                        request ->
+                                orchestration.getTasks(
+                                        request.tenant(), request.agentId(), request.runId()));
+    }
+
+    @GetMapping("/api/agents/{agentId}/runs/{runId}/attempts")
+    public Mono<List<RunOrchestrationService.AttemptView>> getRunAttempts(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String agentId,
+            @PathVariable String runId) {
+        return withRun(
+                        tenantResolver.resolve(jwt != null ? jwt.getClaims() : Map.of()),
+                        agentId,
+                        runId)
+                .map(
+                        request ->
+                                orchestration.getAttempts(
+                                        request.tenant(), request.agentId(), request.runId()));
+    }
+
+    @GetMapping("/api/agents/{agentId}/runs/{runId}/events")
+    public Mono<List<RunOrchestrationService.RunEventView>> getRunEvents(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String agentId,
+            @PathVariable String runId,
+            @RequestParam(defaultValue = "0") long afterSeq,
+            @RequestParam(defaultValue = "200") int limit) {
+        return withRun(
+                        tenantResolver.resolve(jwt != null ? jwt.getClaims() : Map.of()),
+                        agentId,
+                        runId)
+                .map(
+                        request ->
+                                orchestration.getEvents(
+                                        request.tenant(),
+                                        request.agentId(),
+                                        request.runId(),
+                                        afterSeq,
+                                        limit));
     }
 
     private Flux<ServerSentEvent<String>> degradationBlockedStream(
@@ -414,7 +642,37 @@ public class SaasChatController {
     }
 
     /** Captured agent + session ids for a resolved run. */
-    private record ResolvedRun(UUID agentId, UUID sessionId) {}
+    private Mono<RunRequest> withRun(TenantContext tenant, String agentId, String runId) {
+        if (!orchestrationEnabled || !isPersistable(tenant)) {
+            return Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "Run not found"));
+        }
+        return Mono.fromCallable(
+                        () ->
+                                new RunRequest(
+                                        tenant,
+                                        parseUuid(agentId, "agentId"),
+                                        parseUuid(runId, "runId")))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private static UUID parseUuid(String value, String field) {
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, field + " not found");
+        }
+    }
+
+    private record ResolvedRun(
+            UUID agentId,
+            UUID sessionId,
+            UUID triggerMessageId,
+            UUID runId,
+            UUID rootAgentRunId,
+            String status,
+            boolean reused) {}
+
+    private record RunRequest(TenantContext tenant, UUID agentId, UUID runId) {}
 
     /**
      * Captures the assistant's final content blocks so the reply can be persisted as structured

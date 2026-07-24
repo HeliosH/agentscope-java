@@ -187,6 +187,36 @@ class SubagentDeliveryTest {
     }
 
     @Test
+    void reminderBoundsLargeResultsAndPointsToFullOutput() {
+        Msg msg =
+                SubagentsMiddleware.buildDeliveryReminder(
+                        List.of(
+                                delivery(
+                                        "large-task",
+                                        TaskStatus.COMPLETED,
+                                        "x".repeat(20_000),
+                                        null)));
+
+        String text = textOf(msg);
+        assertTrue(text.length() < 9_000);
+        assertTrue(
+                text.contains("truncated; call task_output(task_id=\"large-task\", block=false)"));
+    }
+
+    @Test
+    void reminderBoundsAggregateResultContent() {
+        List<TaskDelivery> deliveries = new ArrayList<>();
+        for (int i = 0; i < SubagentsMiddleware.MAX_DELIVERIES_PER_REMINDER; i++) {
+            deliveries.add(delivery("large-" + i, TaskStatus.COMPLETED, "x".repeat(8_000), null));
+        }
+
+        String text = textOf(SubagentsMiddleware.buildDeliveryReminder(deliveries));
+
+        assertTrue(text.length() < 28_000);
+        assertTrue(text.contains("task_id=\"large-3\""));
+    }
+
+    @Test
     void reminder_hasSyntheticMetadata() {
         Msg msg =
                 SubagentsMiddleware.buildDeliveryReminder(
@@ -303,5 +333,61 @@ class SubagentDeliveryTest {
         assertTrue(text.contains("\"b\""));
         assertTrue(text.contains("\"c\""));
         assertEquals(List.of("a", "b", "c"), repo.markCalls);
+    }
+
+    @Test
+    void dynamicMiddlewareDeliversTasksEvenWithoutDeclaredSubagents() {
+        ReActAgent agent = newReActAgent();
+        StubRepo repo = new StubRepo();
+        repo.queue.add(delivery("dynamic", TaskStatus.COMPLETED, "dynamic result", null));
+        DynamicSubagentsMiddleware middleware =
+                new DynamicSubagentsMiddleware(
+                        List.of(), null, null, null, null, new Object(), repo);
+        AtomicReference<ReasoningInput> forwarded = new AtomicReference<>();
+
+        middleware
+                .onReasoning(
+                        agent,
+                        RuntimeContext.builder().sessionId("session").build(),
+                        new ReasoningInput(new ArrayList<>(), List.of(), null),
+                        input -> {
+                            forwarded.set(input);
+                            return Flux.empty();
+                        })
+                .blockLast();
+
+        assertTrue(
+                forwarded.get().messages().stream()
+                        .anyMatch(message -> textOf(message).contains("dynamic result")));
+        assertEquals(List.of("dynamic"), repo.markCalls);
+    }
+
+    @Test
+    void staticMiddlewareDeliversTasksEvenWithoutDeclaredSubagents() {
+        ReActAgent agent = newReActAgent();
+        StubRepo repo = new StubRepo();
+        repo.queue.add(delivery("static", TaskStatus.COMPLETED, "static result", null));
+        SubagentsMiddleware middleware =
+                new SubagentsMiddleware(
+                        List.of(),
+                        repo,
+                        (io.agentscope.harness.agent.workspace.WorkspaceManager) null);
+        AtomicReference<ReasoningInput> forwarded = new AtomicReference<>();
+
+        middleware
+                .onReasoning(
+                        agent,
+                        RuntimeContext.builder().sessionId("session").build(),
+                        new ReasoningInput(new ArrayList<>(), List.of(), null),
+                        input -> {
+                            forwarded.set(input);
+                            return Flux.empty();
+                        })
+                .blockLast();
+
+        assertTrue(
+                forwarded.get().messages().stream()
+                        .anyMatch(message -> textOf(message).contains("static result")));
+        assertEquals(List.of("static"), repo.markCalls);
     }
 }

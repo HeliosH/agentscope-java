@@ -44,6 +44,7 @@
 
     <modules>
         <module>agentscope-saas-core</module>
+        <module>agentscope-saas-orchestration</module>
         <module>agentscope-saas-storage</module>
         <module>agentscope-saas-sandbox</module>
         <module>agentscope-saas-app</module>
@@ -66,6 +67,11 @@
             <dependency>
                 <groupId>io.agentscope</groupId>
                 <artifactId>agentscope-saas-sandbox</artifactId>
+                <version>${revision}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.agentscope</groupId>
+                <artifactId>agentscope-saas-orchestration</artifactId>
                 <version>${revision}</version>
             </dependency>
             <dependency>

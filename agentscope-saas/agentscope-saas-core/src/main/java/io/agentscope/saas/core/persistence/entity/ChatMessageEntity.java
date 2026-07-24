@@ -61,6 +61,9 @@ public class ChatMessageEntity {
     @Column(name = "tool_name")
     private String toolName;
 
+    @Column(name = "source_run_id")
+    private UUID sourceRunId;
+
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "tool_input")
     private String toolInput;
@@ -150,6 +153,14 @@ public class ChatMessageEntity {
 
     public void setToolName(String toolName) {
         this.toolName = toolName;
+    }
+
+    public UUID getSourceRunId() {
+        return sourceRunId;
+    }
+
+    public void setSourceRunId(UUID sourceRunId) {
+        this.sourceRunId = sourceRunId;
     }
 
     public String getToolInput() {

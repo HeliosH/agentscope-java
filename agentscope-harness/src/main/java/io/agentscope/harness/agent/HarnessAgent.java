@@ -110,6 +110,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -434,6 +435,17 @@ public class HarnessAgent implements Agent, AutoCloseable {
             return dm.getAgentManager();
         }
         return null;
+    }
+
+    /** Recreates a configured subagent for durable execution on the current worker node. */
+    public Optional<Agent> createSubagentIfPresent(String agentId, RuntimeContext context) {
+        if (subagentMiddleware instanceof DynamicSubagentsMiddleware dm) {
+            return dm.createAgentIfPresent(agentId, context);
+        }
+        if (subagentMiddleware instanceof SubagentsMiddleware sm && sm.getAgentManager() != null) {
+            return sm.getAgentManager().createAgentIfPresent(agentId, context);
+        }
+        return Optional.empty();
     }
 
     /** @see ReActAgent#getDefaultSessionId() */

@@ -228,6 +228,13 @@ public class WorkspaceTaskRepository implements TaskRepository {
                                     runLocalSupplier(
                                             capturedRc, sessionId, taskId, local.execution()),
                             executor);
+        } else if (spec instanceof TaskRunSpec.DurableLocalTaskRunSpec local) {
+            future =
+                    CompletableFuture.supplyAsync(
+                            () ->
+                                    runLocalSupplier(
+                                            capturedRc, sessionId, taskId, local.execution()),
+                            executor);
         } else if (spec instanceof TaskRunSpec.RemoteTaskRunSpec remote) {
             future =
                     CompletableFuture.supplyAsync(

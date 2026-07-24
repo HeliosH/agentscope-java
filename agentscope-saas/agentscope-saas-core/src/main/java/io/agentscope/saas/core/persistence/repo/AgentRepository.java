@@ -16,10 +16,14 @@
 package io.agentscope.saas.core.persistence.repo;
 
 import io.agentscope.saas.core.persistence.entity.AgentEntity;
+import jakarta.persistence.LockModeType;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 /** Repository for {@link AgentEntity}, with org-scoped queries. */
 public interface AgentRepository extends JpaRepository<AgentEntity, UUID> {
@@ -27,6 +31,13 @@ public interface AgentRepository extends JpaRepository<AgentEntity, UUID> {
     List<AgentEntity> findByOrgId(UUID orgId);
 
     Optional<AgentEntity> findByIdAndOrgId(UUID id, UUID orgId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query(
+            "SELECT a FROM AgentEntity a WHERE a.id = :id AND a.orgId = :orgId AND a.userId ="
+                    + " :userId")
+    Optional<AgentEntity> lockOwnedAgent(
+            @Param("id") UUID id, @Param("orgId") UUID orgId, @Param("userId") UUID userId);
 
     List<AgentEntity> findByOrgIdAndUserIdOrderByIdAsc(UUID orgId, UUID userId);
 

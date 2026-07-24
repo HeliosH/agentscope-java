@@ -37,6 +37,7 @@ import io.agentscope.saas.app.memory.MemoryLedger;
 import io.agentscope.saas.app.memory.SaasLongTermMemoryMiddleware;
 import io.agentscope.saas.app.observability.AgentRunMetrics;
 import io.agentscope.saas.app.observability.AgentTelemetryMiddleware;
+import io.agentscope.saas.app.orchestration.PgTaskRepository;
 import io.agentscope.saas.app.org.OrgToolsConfigService;
 import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
 import io.agentscope.saas.core.middleware.RateLimitMiddleware;
@@ -87,7 +88,8 @@ public class AgentConfig {
             ObjectProvider<MemoryLedger> memoryLedgerProvider,
             ObjectProvider<WorkspaceProjectionCatalogSink> workspaceProjectionCatalogSinkProvider,
             ObjectProvider<MemoryConsolidator.ConsolidationSink> consolidationSinkProvider,
-            ObjectProvider<AgentRunMetrics> agentRunMetricsProvider) {
+            ObjectProvider<AgentRunMetrics> agentRunMetricsProvider,
+            ObjectProvider<PgTaskRepository> pgTaskRepositoryProvider) {
 
         SaasProperties.Agent agentCfg = properties.getAgent();
         SaasProperties.RateLimit rl = properties.getRateLimit();
@@ -107,6 +109,8 @@ public class AgentConfig {
                         .maxIters(agentCfg.getMaxIters())
                         .stateStore(agentStateStore)
                         .defaultSessionId("default")
+                        .enableTaskList(agentCfg.isTaskListEnabled())
+                        .enablePlanMode(agentCfg.isPlanModeEnabled())
                         .middleware(new TenantContextMiddleware())
                         .middleware(
                                 new AgentTelemetryMiddleware(
@@ -117,6 +121,23 @@ public class AgentConfig {
                                 new RateLimitMiddleware(
                                         rateLimiter, rl.getMaxRequests(), rl.getWindowSeconds()))
                         .middleware(new UsageMeteringMiddleware(usageService));
+
+        if (properties.getSubagents().isDurable()) {
+            if (!properties.getOrchestration().isEnabled()
+                    || !properties.getOrchestration().isSchedulerEnabled()) {
+                throw new IllegalStateException(
+                        "durable subagents require orchestration and its scheduler to be enabled");
+            }
+            SaasProperties.Subagents subagents = properties.getSubagents();
+            if (subagents.getMaxDepth() < 1
+                    || subagents.getMaxChildrenPerAgent() < 1
+                    || subagents.getMaxTasksPerRun() < 1) {
+                throw new IllegalStateException(
+                        "durable subagent depth, fan-out, and task limits must be positive");
+            }
+            builder.taskRepository(pgTaskRepositoryProvider.getObject());
+            log.info("Background subagents use PostgreSQL durable orchestration");
+        }
 
         SaasProperties.Conversation conversation = agentCfg.getConversation();
         builder.maxContextTokens(positive(conversation.getMaxContextTokens(), 32_000));

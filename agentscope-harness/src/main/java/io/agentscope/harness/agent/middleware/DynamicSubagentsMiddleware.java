@@ -15,6 +15,7 @@
  */
 package io.agentscope.harness.agent.middleware;
 
+import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -29,6 +30,7 @@ import io.agentscope.harness.agent.subagent.AgentSpecLoader;
 import io.agentscope.harness.agent.subagent.DefaultAgentManager;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.SubagentFactory;
+import io.agentscope.harness.agent.subagent.task.TaskDelivery;
 import io.agentscope.harness.agent.subagent.task.TaskRepository;
 import io.agentscope.harness.agent.tool.AgentSpawnTool;
 import io.agentscope.harness.agent.tool.TaskTool;
@@ -39,6 +41,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -134,6 +137,27 @@ public class DynamicSubagentsMiddleware implements MiddlewareBase {
     }
 
     /**
+     * Materializes one dynamic subagent from the caller's own workspace snapshot. The lookup and
+     * factory invocation use the same immutable snapshot, avoiding cross-tenant races in the
+     * shared manager's reasoning-time registry.
+     */
+    public Optional<Agent> createAgentIfPresent(String agentId, RuntimeContext rc) {
+        if (agentId == null) {
+            return Optional.empty();
+        }
+        RuntimeContext effective = rc != null ? rc : RuntimeContext.empty();
+        return reloadEntries(effective).stream()
+                .filter(entry -> agentId.equals(entry.name()))
+                .filter(
+                        entry ->
+                                entry.declaration() == null
+                                        || entry.declaration().getMode()
+                                                != SubagentDeclaration.Mode.PRIMARY)
+                .findFirst()
+                .map(entry -> entry.factory().create(effective));
+    }
+
+    /**
      * Returns the tool instances this middleware contributes to the agent toolkit. The caller
      * is responsible for registering them on the toolkit at orchestration time.
      */
@@ -152,6 +176,20 @@ public class DynamicSubagentsMiddleware implements MiddlewareBase {
         if (agentManager != null) {
             agentManager.replaceAgents(merged);
         }
+        String sessionId = rc.getSessionId();
+        List<TaskDelivery> pending = taskRepository.findPendingDeliveries(rc, sessionId);
+        Msg deliveryMsg = null;
+        if (!pending.isEmpty() && agent instanceof ReActAgent reAct) {
+            deliveryMsg = SubagentsMiddleware.buildDeliveryReminder(pending);
+            try {
+                RuntimeContext.resolveAgentState(rc, reAct).contextMutable().add(deliveryMsg);
+            } catch (RuntimeException e) {
+                log.warn(
+                        "Failed to append task delivery reminder to AgentState; "
+                                + "will inject for this round only: {}",
+                        e.getMessage());
+            }
+        }
         StringBuilder addition = new StringBuilder();
         if (!merged.isEmpty()) {
             addition.append(SubagentsMiddleware.renderSubagentSection(merged, false));
@@ -160,12 +198,36 @@ public class DynamicSubagentsMiddleware implements MiddlewareBase {
         if (taskSummary != null) {
             addition.append(taskSummary);
         }
-        if (addition.length() == 0) {
-            return next.apply(input);
-        }
         List<Msg> rebuilt =
-                SubagentsMiddleware.prependToSystemMessage(input.messages(), addition.toString());
-        return next.apply(new ReasoningInput(rebuilt, input.tools(), input.options()));
+                addition.length() == 0
+                        ? input.messages()
+                        : SubagentsMiddleware.prependToSystemMessage(
+                                input.messages(), addition.toString());
+        if (deliveryMsg != null) {
+            rebuilt = new ArrayList<>(rebuilt);
+            rebuilt.add(deliveryMsg);
+        }
+        Flux<AgentEvent> downstream =
+                next.apply(new ReasoningInput(rebuilt, input.tools(), input.options()));
+        if (!pending.isEmpty()) {
+            downstream =
+                    downstream.doOnComplete(
+                            () -> {
+                                for (TaskDelivery delivery : pending) {
+                                    try {
+                                        taskRepository.markDelivered(
+                                                rc, sessionId, delivery.taskId());
+                                    } catch (RuntimeException e) {
+                                        log.warn(
+                                                "Failed to mark task {} as delivered; "
+                                                        + "may re-push next round: {}",
+                                                delivery.taskId(),
+                                                e.getMessage());
+                                    }
+                                }
+                            });
+        }
+        return downstream;
     }
 
     private List<SubagentEntry> reloadEntries(RuntimeContext rc) {

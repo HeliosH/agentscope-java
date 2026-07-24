@@ -17,6 +17,7 @@ package io.agentscope.saas.core.persistence.repo;
 
 import io.agentscope.saas.core.persistence.entity.ChatMessageEntity;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -25,6 +26,10 @@ import org.springframework.data.repository.query.Param;
 
 /** Repository for {@link ChatMessageEntity}, with session-scoped queries for history replay. */
 public interface ChatMessageRepository extends JpaRepository<ChatMessageEntity, UUID> {
+
+    long countBySessionId(UUID sessionId);
+
+    Optional<ChatMessageEntity> findBySourceRunId(UUID sourceRunId);
 
     List<ChatMessageEntity> findBySessionIdOrderByCreatedAtAsc(UUID sessionId);
 
