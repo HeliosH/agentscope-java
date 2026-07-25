@@ -18,6 +18,7 @@ package io.agentscope.saas.core.usage;
 import io.agentscope.saas.core.persistence.entity.UsageRecordEntity;
 import io.agentscope.saas.core.persistence.repo.UsageRecordRepository;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.core.tenant.TenantContextHolder;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,6 +46,8 @@ public class UsageService {
         if (tenant == null || tenant.orgId() == null || tenant.userId() == null) {
             return; // anonymous; nothing to attribute
         }
+        String previousOrgId = TenantContextHolder.getOrgId();
+        TenantContextHolder.setOrgId(tenant.orgId());
         try {
             UsageRecordEntity entity = new UsageRecordEntity();
             entity.setOrgId(UUID.fromString(tenant.orgId()));
@@ -55,6 +58,8 @@ public class UsageService {
             repository.save(entity);
         } catch (Exception e) {
             log.warn("Failed to record usage metric {}={}: {}", metric, value, e.getMessage());
+        } finally {
+            TenantContextHolder.setOrgId(previousOrgId);
         }
     }
 }

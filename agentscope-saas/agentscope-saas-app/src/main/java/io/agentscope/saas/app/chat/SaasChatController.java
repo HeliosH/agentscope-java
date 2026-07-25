@@ -323,16 +323,23 @@ public class SaasChatController {
                                 agentEvents,
                                 Mono.fromCallable(
                                                 () -> {
-                                                    persistence.saveAssistantMessage(
-                                                            tenant,
-                                                            resolved.sessionId(),
-                                                            resolved.agentId(),
-                                                            accumulator.blocks());
                                                     if (orchestrationEnabled) {
+                                                        persistence.saveAssistantMessageForRun(
+                                                                tenant,
+                                                                resolved.sessionId(),
+                                                                resolved.agentId(),
+                                                                durableRunId,
+                                                                accumulator.blocks());
                                                         orchestration.markSucceeded(
                                                                 tenant,
                                                                 resolved.agentId(),
                                                                 durableRunId);
+                                                    } else {
+                                                        persistence.saveAssistantMessage(
+                                                                tenant,
+                                                                resolved.sessionId(),
+                                                                resolved.agentId(),
+                                                                accumulator.blocks());
                                                     }
                                                     return (Object) null;
                                                 })
@@ -402,17 +409,27 @@ public class SaasChatController {
      */
     private Flux<ServerSentEvent<String>> detachClient(
             Flux<ServerSentEvent<String>> execution, String runId) {
-        Sinks.Many<ServerSentEvent<String>> sink = Sinks.many().replay().limit(256);
-        execution.subscribe(
-                event -> {
-                    Sinks.EmitResult result = sink.tryEmitNext(event);
-                    if (result.isFailure() && result != Sinks.EmitResult.FAIL_ZERO_SUBSCRIBER) {
-                        log.debug("Could not relay live SSE event for Run {}: {}", runId, result);
-                    }
-                },
-                error -> sink.tryEmitError(error),
-                sink::tryEmitComplete);
-        return sink.asFlux();
+        return Flux.deferContextual(
+                requestContext -> {
+                    Sinks.Many<ServerSentEvent<String>> sink = Sinks.many().replay().limit(256);
+                    execution
+                            .contextWrite(requestContext)
+                            .subscribe(
+                                    event -> {
+                                        Sinks.EmitResult result = sink.tryEmitNext(event);
+                                        if (result.isFailure()
+                                                && result
+                                                        != Sinks.EmitResult.FAIL_ZERO_SUBSCRIBER) {
+                                            log.debug(
+                                                    "Could not relay live SSE event for Run {}: {}",
+                                                    runId,
+                                                    result);
+                                        }
+                                    },
+                                    error -> sink.tryEmitError(error),
+                                    sink::tryEmitComplete);
+                    return sink.asFlux();
+                });
     }
 
     @PostMapping("/api/agents/{agentId}/runs/{runId}/cancel")

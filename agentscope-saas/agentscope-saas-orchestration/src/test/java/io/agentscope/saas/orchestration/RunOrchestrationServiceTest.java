@@ -11,47 +11,38 @@ package io.agentscope.saas.orchestration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import io.agentscope.saas.core.persistence.entity.AgentRunEntity;
-import io.agentscope.saas.core.persistence.entity.AssistantRunEntity;
-import io.agentscope.saas.core.persistence.entity.OrchestrationOutboxEntity;
-import io.agentscope.saas.core.persistence.entity.RunAttemptEntity;
-import io.agentscope.saas.core.persistence.entity.RunEventEntity;
-import io.agentscope.saas.core.persistence.entity.TaskNodeEntity;
-import io.agentscope.saas.core.persistence.repo.AgentRunRepository;
-import io.agentscope.saas.core.persistence.repo.AssistantRunRepository;
-import io.agentscope.saas.core.persistence.repo.OrchestrationOutboxRepository;
-import io.agentscope.saas.core.persistence.repo.RunAttemptRepository;
-import io.agentscope.saas.core.persistence.repo.RunEventRepository;
-import io.agentscope.saas.core.persistence.repo.TaskNodeRepository;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.AgentRun;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.AssistantRun;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewAgentRun;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewAttempt;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewEvent;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewOutboxMessage;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewRun;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewTask;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.RunAttempt;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.TaskNode;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class RunOrchestrationServiceTest {
 
-    private final AssistantRunRepository runRepository = mock(AssistantRunRepository.class);
-    private final TaskNodeRepository taskRepository = mock(TaskNodeRepository.class);
-    private final AgentRunRepository agentRunRepository = mock(AgentRunRepository.class);
-    private final RunAttemptRepository attemptRepository = mock(RunAttemptRepository.class);
-    private final RunEventRepository eventRepository = mock(RunEventRepository.class);
-    private final OrchestrationOutboxRepository outboxRepository =
-            mock(OrchestrationOutboxRepository.class);
-    private final RunOrchestrationService service =
-            new RunOrchestrationService(
-                    runRepository,
-                    taskRepository,
-                    agentRunRepository,
-                    attemptRepository,
-                    eventRepository,
-                    outboxRepository);
+    private final RunOrchestrationRepository repository = mock(RunOrchestrationRepository.class);
+    private final RunOrchestrationService service = new RunOrchestrationService(repository);
 
     @Test
     void createsDirectRunWithRootTaskAndOrderedEvents() {
@@ -59,8 +50,25 @@ class RunOrchestrationServiceTest {
         UUID userId = UUID.randomUUID();
         UUID agentId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
-        when(runRepository.save(any(AssistantRunEntity.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+        AtomicReference<NewRun> insertedRun = new AtomicReference<>();
+        doAnswer(
+                        invocation -> {
+                            insertedRun.set(invocation.getArgument(0));
+                            return null;
+                        })
+                .when(repository)
+                .insertRun(any(NewRun.class));
+        when(repository.findOwnedRun(any(), eq(orgId), eq(userId), eq(agentId)))
+                .thenAnswer(
+                        invocation -> {
+                            NewRun run = insertedRun.get();
+                            return Optional.of(
+                                    runningRun(run.id(), orgId, userId, agentId, sessionId));
+                        });
+        AtomicLong sequence = new AtomicLong();
+        when(repository.nextEventSequence(any(), eq(orgId), any()))
+                .thenAnswer(invocation -> sequence.incrementAndGet());
+
         RunOrchestrationService.RunHandle handle =
                 service.createDirectRun(
                         tenant(orgId, userId),
@@ -69,54 +77,49 @@ class RunOrchestrationServiceTest {
                         UUID.randomUUID(),
                         "Build a report");
 
-        ArgumentCaptor<AssistantRunEntity> runCaptor =
-                ArgumentCaptor.forClass(AssistantRunEntity.class);
-        ArgumentCaptor<TaskNodeEntity> taskCaptor = ArgumentCaptor.forClass(TaskNodeEntity.class);
-        ArgumentCaptor<AgentRunEntity> agentRunCaptor =
-                ArgumentCaptor.forClass(AgentRunEntity.class);
-        ArgumentCaptor<RunAttemptEntity> attemptCaptor =
-                ArgumentCaptor.forClass(RunAttemptEntity.class);
-        ArgumentCaptor<RunEventEntity> eventCaptor = ArgumentCaptor.forClass(RunEventEntity.class);
-        ArgumentCaptor<OrchestrationOutboxEntity> outboxCaptor =
-                ArgumentCaptor.forClass(OrchestrationOutboxEntity.class);
-        verify(runRepository).save(runCaptor.capture());
-        verify(taskRepository, org.mockito.Mockito.times(2)).save(taskCaptor.capture());
-        verify(agentRunRepository).save(agentRunCaptor.capture());
-        verify(attemptRepository).save(attemptCaptor.capture());
-        verify(eventRepository, org.mockito.Mockito.times(4)).save(eventCaptor.capture());
-        verify(outboxRepository, org.mockito.Mockito.times(4)).save(outboxCaptor.capture());
+        ArgumentCaptor<NewRun> runCaptor = ArgumentCaptor.forClass(NewRun.class);
+        ArgumentCaptor<NewTask> taskCaptor = ArgumentCaptor.forClass(NewTask.class);
+        ArgumentCaptor<NewAgentRun> agentRunCaptor = ArgumentCaptor.forClass(NewAgentRun.class);
+        ArgumentCaptor<NewAttempt> attemptCaptor = ArgumentCaptor.forClass(NewAttempt.class);
+        ArgumentCaptor<NewEvent> eventCaptor = ArgumentCaptor.forClass(NewEvent.class);
+        ArgumentCaptor<NewOutboxMessage> outboxCaptor =
+                ArgumentCaptor.forClass(NewOutboxMessage.class);
+        verify(repository).insertRun(runCaptor.capture());
+        verify(repository).insertTask(taskCaptor.capture());
+        verify(repository).insertAgentRun(agentRunCaptor.capture());
+        verify(repository).insertAttempt(attemptCaptor.capture());
+        verify(repository, org.mockito.Mockito.times(4)).insertEvent(eventCaptor.capture());
+        verify(repository, org.mockito.Mockito.times(4)).insertOutbox(outboxCaptor.capture());
 
-        AssistantRunEntity run = runCaptor.getValue();
-        TaskNodeEntity task = taskCaptor.getValue();
-        assertThat(handle.runId()).isEqualTo(run.getId());
-        assertThat(run.getStatus()).isEqualTo(RunOrchestrationService.RUN_RUNNING);
-        assertThat(task.getRunId()).isEqualTo(handle.runId());
-        assertThat(task.getStatus()).isEqualTo(RunOrchestrationService.TASK_RUNNING);
-        assertThat(task.getWorkspaceMode()).isEqualTo("NONE");
-        assertThat(agentRunCaptor.getValue().getTaskId()).isEqualTo(task.getId());
-        assertThat(agentRunCaptor.getValue().getStatus())
+        NewRun run = runCaptor.getValue();
+        NewTask task = taskCaptor.getValue();
+        assertThat(handle.runId()).isEqualTo(run.id());
+        assertThat(run.status()).isEqualTo(RunOrchestrationService.RUN_RUNNING);
+        assertThat(task.runId()).isEqualTo(handle.runId());
+        assertThat(task.status()).isEqualTo(RunOrchestrationService.TASK_RUNNING);
+        assertThat(task.workspaceMode()).isEqualTo("NONE");
+        assertThat(agentRunCaptor.getValue().taskId()).isEqualTo(task.id());
+        assertThat(agentRunCaptor.getValue().status())
                 .isEqualTo(RunOrchestrationService.RUN_RUNNING);
-        assertThat(attemptCaptor.getValue().getAgentRunId())
-                .isEqualTo(agentRunCaptor.getValue().getId());
-        assertThat(attemptCaptor.getValue().getStatus())
+        assertThat(attemptCaptor.getValue().agentRunId()).isEqualTo(agentRunCaptor.getValue().id());
+        assertThat(attemptCaptor.getValue().status())
                 .isEqualTo(RunOrchestrationService.ATTEMPT_RUNNING);
         assertThat(eventCaptor.getAllValues())
-                .extracting(RunEventEntity::getSeq)
+                .extracting(NewEvent::sequence)
                 .containsExactly(1L, 2L, 3L, 4L);
         assertThat(eventCaptor.getAllValues())
-                .extracting(RunEventEntity::getEventType)
+                .extracting(NewEvent::eventType)
                 .containsExactly(
                         "RUN_CREATED", "RUN_STARTED", "TASK_STARTED", "AGENT_PERMISSION_SNAPSHOT");
-        assertThat(run.getNextEventSeq()).isEqualTo(4);
         assertThat(outboxCaptor.getAllValues())
-                .extracting(OrchestrationOutboxEntity::getEventType)
+                .extracting(NewOutboxMessage::eventType)
                 .containsExactly(
                         "RUN_CREATED", "RUN_STARTED", "TASK_STARTED", "AGENT_PERMISSION_SNAPSHOT");
         assertThat(outboxCaptor.getAllValues())
                 .allSatisfy(
                         outbox -> {
-                            assertThat(outbox.getAggregateId()).isEqualTo(run.getId());
-                            assertThat(outbox.getPayloadJson()).contains("\"seq\"");
+                            assertThat(outbox.aggregateId()).isEqualTo(run.id());
+                            assertThat(outbox.payloadJson()).contains("\"seq\"");
                         });
     }
 
@@ -127,31 +130,56 @@ class RunOrchestrationServiceTest {
         UUID agentId = UUID.randomUUID();
         UUID runId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
-        AssistantRunEntity run = runningRun(runId, orgId, userId, agentId, sessionId);
-        TaskNodeEntity root = runningTask(runId, orgId);
-        AgentRunEntity agentRun = runningAgentRun(runId, root.getId(), orgId);
-        RunAttemptEntity attempt = runningAttempt(runId, root.getId(), agentRun.getId(), orgId);
-        when(runRepository.lockOwnedRun(runId, orgId, userId, agentId))
-                .thenReturn(Optional.of(run));
-        when(taskRepository.findByRunIdAndOrgIdOrderByCreatedAtAsc(runId, orgId))
-                .thenReturn(List.of(root));
-        when(agentRunRepository.findByRunIdAndOrgIdOrderByCreatedAtAsc(runId, orgId))
-                .thenReturn(List.of(agentRun));
-        when(attemptRepository.findByRunIdAndOrgIdOrderByAttemptNoAsc(runId, orgId))
-                .thenReturn(List.of(attempt));
+        AssistantRun run = runningRun(runId, orgId, userId, agentId, sessionId);
+        TaskNode root = runningTask(runId, orgId);
+        AgentRun agentRun = runningAgentRun(runId, root.id(), orgId);
+        RunAttempt attempt = runningAttempt(runId, root.id(), agentRun.id(), orgId);
+        when(repository.lockOwnedRun(runId, orgId, userId, agentId)).thenReturn(Optional.of(run));
+        when(repository.findTasks(runId, orgId)).thenReturn(List.of(root));
+        when(repository.findAgentRuns(runId, orgId)).thenReturn(List.of(agentRun));
+        when(repository.findAttempts(runId, orgId)).thenReturn(List.of(attempt));
+        when(repository.nextEventSequence(eq(runId), eq(orgId), any())).thenReturn(1L, 2L);
+
         Optional<RunOrchestrationService.CancelledRun> cancelled =
                 service.cancel(tenant(orgId, userId), agentId, runId);
 
         assertThat(cancelled).isPresent();
         assertThat(cancelled.orElseThrow().interrupted()).isTrue();
-        assertThat(run.getStatus()).isEqualTo(RunOrchestrationService.RUN_CANCELLED);
-        assertThat(run.isCancelRequested()).isTrue();
-        assertThat(root.getStatus()).isEqualTo(RunOrchestrationService.TASK_CANCELLED);
-        assertThat(agentRun.getStatus()).isEqualTo(RunOrchestrationService.TASK_CANCELLED);
-        assertThat(attempt.getStatus()).isEqualTo(RunOrchestrationService.ATTEMPT_CANCELLED);
-        verify(taskRepository).save(root);
-        verify(agentRunRepository).save(agentRun);
-        verify(attemptRepository).save(attempt);
+        verify(repository)
+                .completeRun(
+                        eq(runId),
+                        eq(orgId),
+                        eq(RunOrchestrationService.RUN_CANCELLED),
+                        eq(true),
+                        eq(null),
+                        eq(null),
+                        any(),
+                        any());
+        verify(repository)
+                .completeTask(
+                        eq(root.id()),
+                        eq(orgId),
+                        eq(RunOrchestrationService.TASK_CANCELLED),
+                        eq(null),
+                        eq(null),
+                        any(),
+                        any());
+        verify(repository)
+                .updateAgentRunStatus(
+                        eq(agentRun.id()),
+                        eq(orgId),
+                        eq(RunOrchestrationService.TASK_CANCELLED),
+                        any(),
+                        any());
+        verify(repository)
+                .updateAttemptStatus(
+                        eq(attempt.id()),
+                        eq(orgId),
+                        eq(RunOrchestrationService.ATTEMPT_CANCELLED),
+                        eq(null),
+                        eq(null),
+                        any(),
+                        any());
     }
 
     @Test
@@ -161,10 +189,8 @@ class RunOrchestrationServiceTest {
         UUID agentId = UUID.randomUUID();
         UUID runId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
-        AssistantRunEntity existing = runningRun(runId, orgId, userId, agentId, sessionId);
-        existing.setIdempotencyKey("request-1");
-        when(runRepository.findByOrgIdAndUserIdAndAgentIdAndIdempotencyKey(
-                        orgId, userId, agentId, "request-1"))
+        AssistantRun existing = runningRun(runId, orgId, userId, agentId, sessionId);
+        when(repository.findByIdempotencyKey(orgId, userId, agentId, "request-1"))
                 .thenReturn(Optional.of(existing));
 
         RunOrchestrationService.RunHandle handle =
@@ -179,8 +205,8 @@ class RunOrchestrationServiceTest {
         assertThat(handle.runId()).isEqualTo(runId);
         assertThat(handle.sessionId()).isEqualTo(sessionId);
         assertThat(handle.reused()).isTrue();
-        verify(taskRepository, never()).save(any());
-        verify(eventRepository, never()).save(any());
+        verify(repository, never()).insertTask(any());
+        verify(repository, never()).insertEvent(any());
     }
 
     private static TenantContext tenant(UUID orgId, UUID userId) {
@@ -188,48 +214,82 @@ class RunOrchestrationServiceTest {
                 orgId.toString(), userId.toString(), "member", "standard", 2, 10_000);
     }
 
-    private static AssistantRunEntity runningRun(
+    private static AssistantRun runningRun(
             UUID id, UUID orgId, UUID userId, UUID agentId, UUID sessionId) {
-        AssistantRunEntity run = new AssistantRunEntity();
-        run.setId(id);
-        run.setOrgId(orgId);
-        run.setUserId(userId);
-        run.setAgentId(agentId);
-        run.setSessionId(sessionId);
-        run.setMode(RunOrchestrationService.MODE_DIRECT);
-        run.setStatus(RunOrchestrationService.RUN_RUNNING);
-        run.setNextEventSeq(0);
-        return run;
+        return new AssistantRun(
+                id,
+                orgId,
+                userId,
+                agentId,
+                sessionId,
+                RunOrchestrationService.MODE_DIRECT,
+                RunOrchestrationService.RUN_RUNNING,
+                false,
+                null,
+                null,
+                null,
+                0,
+                null,
+                0,
+                null,
+                0,
+                null,
+                OffsetDateTime.now(),
+                OffsetDateTime.now(),
+                null);
     }
 
-    private static TaskNodeEntity runningTask(UUID runId, UUID orgId) {
-        TaskNodeEntity task = new TaskNodeEntity();
-        task.setId(UUID.randomUUID());
-        task.setRunId(runId);
-        task.setOrgId(orgId);
-        task.setStatus(RunOrchestrationService.TASK_RUNNING);
-        return task;
+    private static TaskNode runningTask(UUID runId, UUID orgId) {
+        return new TaskNode(
+                UUID.randomUUID(),
+                orgId,
+                runId,
+                null,
+                null,
+                null,
+                "root",
+                "agent",
+                RunOrchestrationService.TASK_RUNNING,
+                "{}",
+                "NONE",
+                3,
+                null,
+                0,
+                null,
+                0,
+                null,
+                0,
+                null,
+                OffsetDateTime.now(),
+                null);
     }
 
-    private static AgentRunEntity runningAgentRun(UUID runId, UUID taskId, UUID orgId) {
-        AgentRunEntity agentRun = new AgentRunEntity();
-        agentRun.setId(UUID.randomUUID());
-        agentRun.setRunId(runId);
-        agentRun.setTaskId(taskId);
-        agentRun.setOrgId(orgId);
-        agentRun.setStatus(RunOrchestrationService.RUN_RUNNING);
-        return agentRun;
+    private static AgentRun runningAgentRun(UUID runId, UUID taskId, UUID orgId) {
+        return new AgentRun(
+                UUID.randomUUID(),
+                orgId,
+                runId,
+                taskId,
+                null,
+                "assistant",
+                RunOrchestrationService.RUN_RUNNING,
+                0,
+                "{}",
+                null);
     }
 
-    private static RunAttemptEntity runningAttempt(
-            UUID runId, UUID taskId, UUID agentRunId, UUID orgId) {
-        RunAttemptEntity attempt = new RunAttemptEntity();
-        attempt.setId(UUID.randomUUID());
-        attempt.setRunId(runId);
-        attempt.setTaskId(taskId);
-        attempt.setAgentRunId(agentRunId);
-        attempt.setOrgId(orgId);
-        attempt.setStatus(RunOrchestrationService.ATTEMPT_RUNNING);
-        return attempt;
+    private static RunAttempt runningAttempt(UUID runId, UUID taskId, UUID agentRunId, UUID orgId) {
+        return new RunAttempt(
+                UUID.randomUUID(),
+                orgId,
+                runId,
+                taskId,
+                agentRunId,
+                1,
+                RunOrchestrationService.ATTEMPT_RUNNING,
+                null,
+                null,
+                OffsetDateTime.now(),
+                null);
     }
 }

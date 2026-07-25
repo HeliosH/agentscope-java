@@ -84,6 +84,30 @@ class DataAccessArchitectureTest {
     }
 
     @Test
+    void orchestrationCannotDependOnLegacyPersistenceModels() throws IOException {
+        Path orchestrationRoot = Path.of("../agentscope-saas-orchestration/src/main/java");
+
+        assertThat(javaFiles(orchestrationRoot))
+                .allSatisfy(
+                        file ->
+                                assertThat(read(file))
+                                        .doesNotContain(
+                                                "io.agentscope.saas.core.persistence.entity",
+                                                "io.agentscope.saas.core.persistence.repo",
+                                                "jakarta.persistence.",
+                                                "org.springframework.data.jpa."));
+    }
+
+    @Test
+    void legacyJpaRepositoryCountCannotIncrease() throws IOException {
+        Path repositoryRoot =
+                Path.of(
+                        "../agentscope-saas-core/src/main/java/io/agentscope/saas/core/persistence/repo");
+
+        assertThat(javaFiles(repositoryRoot)).hasSizeLessThanOrEqualTo(14);
+    }
+
+    @Test
     void tenantTaskMapperCannotUseAdministrativeSession() throws IOException {
         Path dalRoot = Path.of("../agentscope-saas-dal/src/main/java");
         Set<String> durableTaskSources =

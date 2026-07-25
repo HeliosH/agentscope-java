@@ -10,26 +10,25 @@
 package io.agentscope.saas.orchestration;
 
 import io.agentscope.core.util.JsonUtils;
-import io.agentscope.saas.core.persistence.entity.AgentRunEntity;
-import io.agentscope.saas.core.persistence.entity.AssistantRunEntity;
-import io.agentscope.saas.core.persistence.entity.OrchestrationOutboxEntity;
-import io.agentscope.saas.core.persistence.entity.RunAttemptEntity;
-import io.agentscope.saas.core.persistence.entity.RunEventEntity;
-import io.agentscope.saas.core.persistence.entity.TaskNodeEntity;
-import io.agentscope.saas.core.persistence.repo.AgentRunRepository;
-import io.agentscope.saas.core.persistence.repo.AssistantRunRepository;
-import io.agentscope.saas.core.persistence.repo.OrchestrationOutboxRepository;
-import io.agentscope.saas.core.persistence.repo.RunAttemptRepository;
-import io.agentscope.saas.core.persistence.repo.RunEventRepository;
-import io.agentscope.saas.core.persistence.repo.TaskNodeRepository;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.AgentRun;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.AssistantRun;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewAgentRun;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewAttempt;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewEvent;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewOutboxMessage;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewRun;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewTask;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.RunAttempt;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.RunEvent;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.TaskNode;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -66,26 +65,10 @@ public class RunOrchestrationService {
                     + "continue the original task. Produce the final answer, or delegate only "
                     + "when additional work is required.\"}";
 
-    private final AssistantRunRepository runRepository;
-    private final TaskNodeRepository taskRepository;
-    private final AgentRunRepository agentRunRepository;
-    private final RunAttemptRepository attemptRepository;
-    private final RunEventRepository eventRepository;
-    private final OrchestrationOutboxRepository outboxRepository;
+    private final RunOrchestrationRepository repository;
 
-    public RunOrchestrationService(
-            AssistantRunRepository runRepository,
-            TaskNodeRepository taskRepository,
-            AgentRunRepository agentRunRepository,
-            RunAttemptRepository attemptRepository,
-            RunEventRepository eventRepository,
-            OrchestrationOutboxRepository outboxRepository) {
-        this.runRepository = runRepository;
-        this.taskRepository = taskRepository;
-        this.agentRunRepository = agentRunRepository;
-        this.attemptRepository = attemptRepository;
-        this.eventRepository = eventRepository;
-        this.outboxRepository = outboxRepository;
+    public RunOrchestrationService(RunOrchestrationRepository repository) {
+        this.repository = repository;
     }
 
     /** Creates the durable Run and its root task before the agent begins streaming. */
@@ -140,115 +123,113 @@ public class RunOrchestrationService {
         RunPolicy policy = requestedPolicy != null ? requestedPolicy : RunPolicy.unlimited();
         String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
         if (normalizedKey != null) {
-            Optional<AssistantRunEntity> existing =
-                    runRepository.findByOrgIdAndUserIdAndAgentIdAndIdempotencyKey(
-                            orgId, userId, agentId, normalizedKey);
+            Optional<AssistantRun> existing =
+                    repository.findByIdempotencyKey(orgId, userId, agentId, normalizedKey);
             if (existing.isPresent()) {
-                AssistantRunEntity run = existing.get();
+                AssistantRun run = existing.get();
                 return new RunHandle(
-                        run.getId(), null, null, null, run.getAgentId(), run.getSessionId(), true);
+                        run.id(), null, null, null, run.agentId(), run.sessionId(), true);
             }
         }
         OffsetDateTime now = OffsetDateTime.now();
+        UUID runId = UUID.randomUUID();
+        UUID rootTaskId = UUID.randomUUID();
+        UUID rootAgentRunId = UUID.randomUUID();
+        UUID rootAttemptId = UUID.randomUUID();
+        repository.insertRun(
+                new NewRun(
+                        runId,
+                        orgId,
+                        userId,
+                        agentId,
+                        sessionId,
+                        triggerMessageId,
+                        normalizedKey,
+                        MODE_DIRECT,
+                        RUN_RUNNING,
+                        positiveLimit(policy.runTokenBudget()),
+                        positiveLimit(policy.runCostBudgetMicros()),
+                        positiveLimit(policy.runModelCallBudget()),
+                        deadline(now, policy.runTimeoutSeconds()),
+                        now,
+                        now));
+        repository.insertTask(
+                new NewTask(
+                        rootTaskId,
+                        orgId,
+                        runId,
+                        null,
+                        null,
+                        null,
+                        titleFor(userMessage),
+                        "agent",
+                        TASK_RUNNING,
+                        0,
+                        "{}",
+                        "{}",
+                        "{}",
+                        "[]",
+                        "NONE",
+                        MAX_COORDINATOR_ATTEMPTS,
+                        "IDEMPOTENT",
+                        2,
+                        positiveLimit(policy.taskTokenBudget()),
+                        positiveLimit(policy.taskCostBudgetMicros()),
+                        positiveLimit(policy.taskModelCallBudget()),
+                        deadline(now, policy.taskTimeoutSeconds()),
+                        now));
 
-        AssistantRunEntity run = new AssistantRunEntity();
-        run.setId(UUID.randomUUID());
-        run.setOrgId(orgId);
-        run.setUserId(userId);
-        run.setAgentId(agentId);
-        run.setSessionId(sessionId);
-        run.setTriggerMessageId(triggerMessageId);
-        run.setIdempotencyKey(normalizedKey);
-        run.setMode(MODE_DIRECT);
-        run.setStatus(RUN_RUNNING);
-        run.setCancelRequested(false);
-        run.setNextEventSeq(0);
-        run.setTokenBudget(positiveLimit(policy.runTokenBudget()));
-        run.setCostBudgetMicros(positiveLimit(policy.runCostBudgetMicros()));
-        run.setModelCallBudget(positiveLimit(policy.runModelCallBudget()));
-        run.setDeadlineAt(deadline(now, policy.runTimeoutSeconds()));
-        run.setStartedAt(now);
-        run.setUpdatedAt(now);
-        run = runRepository.save(run);
-
-        TaskNodeEntity root = new TaskNodeEntity();
-        root.setId(UUID.randomUUID());
-        root.setOrgId(orgId);
-        root.setRunId(run.getId());
-        root.setTitle(titleFor(userMessage));
-        root.setTaskType("agent");
-        root.setStatus(TASK_RUNNING);
-        root.setPriority(0);
-        root.setInputJson("{}");
-        root.setExpectedOutputJson("{}");
-        root.setOutputJson("{}");
-        root.setAcceptanceJson("[]");
-        root.setWorkspaceMode("NONE");
-        root.setMaxAttempts(MAX_COORDINATOR_ATTEMPTS);
-        root.setRetryMode("IDEMPOTENT");
-        root.setRetryBaseSeconds(2);
-        root.setTokenBudget(positiveLimit(policy.taskTokenBudget()));
-        root.setCostBudgetMicros(positiveLimit(policy.taskCostBudgetMicros()));
-        root.setModelCallBudget(positiveLimit(policy.taskModelCallBudget()));
-        root.setDeadlineAt(deadline(now, policy.taskTimeoutSeconds()));
-        root.setUpdatedAt(now);
-        taskRepository.save(root);
-
-        AgentRunEntity agentRun = new AgentRunEntity();
-        agentRun.setId(UUID.randomUUID());
-        agentRun.setOrgId(orgId);
-        agentRun.setRunId(run.getId());
-        agentRun.setTaskId(root.getId());
-        agentRun.setAgentType("assistant");
-        agentRun.setStatus(RUN_RUNNING);
-        agentRun.setDepth(0);
-        agentRun.setContextPolicy("FRESH");
         PermissionSnapshotIntegrity.Snapshot permissionSnapshot =
                 PermissionSnapshotIntegrity.canonicalize(
                         validJsonObject(policy.permissionSnapshotJson()));
-        agentRun.setPermissionSnapshotJson(permissionSnapshot.json());
-        agentRun.setPermissionSnapshotHash(permissionSnapshot.hash());
-        agentRun.setUpdatedAt(now);
-        agentRunRepository.save(agentRun);
+        repository.insertAgentRun(
+                new NewAgentRun(
+                        rootAgentRunId,
+                        orgId,
+                        runId,
+                        rootTaskId,
+                        null,
+                        "assistant",
+                        RUN_RUNNING,
+                        0,
+                        "FRESH",
+                        permissionSnapshot.json(),
+                        permissionSnapshot.hash(),
+                        now));
+        repository.assignTaskOwner(rootTaskId, orgId, rootAgentRunId, now);
+        repository.insertAttempt(
+                new NewAttempt(
+                        rootAttemptId,
+                        orgId,
+                        runId,
+                        rootTaskId,
+                        rootAgentRunId,
+                        1,
+                        ATTEMPT_RUNNING,
+                        "direct:" + runId,
+                        now,
+                        now));
 
-        root.setOwnerAgentRunId(agentRun.getId());
-        taskRepository.save(root);
-
-        RunAttemptEntity attempt = new RunAttemptEntity();
-        attempt.setId(UUID.randomUUID());
-        attempt.setOrgId(orgId);
-        attempt.setRunId(run.getId());
-        attempt.setTaskId(root.getId());
-        attempt.setAgentRunId(agentRun.getId());
-        attempt.setAttemptNo(1);
-        attempt.setStatus(ATTEMPT_RUNNING);
-        attempt.setIdempotencyKey("direct:" + run.getId());
-        attempt.setStartedAt(now);
-        attempt.setUpdatedAt(now);
-        attemptRepository.save(attempt);
-
-        appendEvent(run, root.getId(), "RUN_CREATED", "{\"mode\":\"DIRECT\"}");
-        appendEvent(run, root.getId(), "RUN_STARTED", "{}");
-        appendEvent(run, root.getId(), "TASK_STARTED", "{}");
+        AssistantRun run =
+                repository
+                        .findOwnedRun(runId, orgId, userId, agentId)
+                        .orElseThrow(() -> new IllegalStateException("Created Run was not found"));
+        appendEvent(run, rootTaskId, "RUN_CREATED", "{\"mode\":\"DIRECT\"}");
+        appendEvent(run, rootTaskId, "RUN_STARTED", "{}");
+        appendEvent(run, rootTaskId, "TASK_STARTED", "{}");
         appendEvent(
                 run,
-                root.getId(),
+                rootTaskId,
                 "AGENT_PERMISSION_SNAPSHOT",
                 JsonUtils.getJsonCodec()
                         .toJson(
                                 Map.of(
                                         "agentRunId",
-                                        agentRun.getId().toString(),
+                                        rootAgentRunId.toString(),
                                         "snapshotHash",
-                                        valueOrEmpty(agentRun.getPermissionSnapshotHash()))));
+                                        valueOrEmpty(permissionSnapshot.hash()))));
         return new RunHandle(
-                run.getId(),
-                root.getId(),
-                agentRun.getId(),
-                attempt.getId(),
-                agentId,
-                sessionId,
-                false);
+                runId, rootTaskId, rootAgentRunId, rootAttemptId, agentId, sessionId, false);
     }
 
     @Transactional(readOnly = true)
@@ -258,8 +239,8 @@ public class RunOrchestrationService {
         if (normalizedKey == null) {
             return Optional.empty();
         }
-        return runRepository
-                .findByOrgIdAndUserIdAndAgentIdAndIdempotencyKey(
+        return repository
+                .findByIdempotencyKey(
                         uuid(tenant.orgId(), "orgId"),
                         uuid(tenant.userId(), "userId"),
                         agentId,
@@ -273,33 +254,30 @@ public class RunOrchestrationService {
      */
     @Transactional
     public void markSucceeded(TenantContext tenant, UUID agentId, UUID runId) {
-        AssistantRunEntity run = lockOwnedRun(tenant, agentId, runId);
-        if (!RUN_RUNNING.equals(run.getStatus())) {
+        AssistantRun run = lockOwnedRun(tenant, agentId, runId);
+        if (!RUN_RUNNING.equals(run.status())) {
             return;
         }
         OffsetDateTime now = OffsetDateTime.now();
         completeCoordinator(run, now);
-        List<TaskNodeEntity> children =
-                taskRepository
-                        .findByRunIdAndOrgIdOrderByCreatedAtAsc(run.getId(), run.getOrgId())
-                        .stream()
-                        .filter(task -> task.getParentId() != null)
+        List<TaskNode> children =
+                repository.findTasks(run.id(), run.orgId()).stream()
+                        .filter(task -> task.parentId() != null)
                         .toList();
         boolean childrenPending =
                 children.stream()
                         .anyMatch(
                                 task ->
-                                        !isTerminalTaskStatus(task.getStatus())
-                                                || "MANUAL_ACTION".equals(task.getStatus()));
+                                        !isTerminalTaskStatus(task.status())
+                                                || "MANUAL_ACTION".equals(task.status()));
         if (childrenPending) {
-            run.setUpdatedAt(now);
+            repository.touchRun(run.id(), run.orgId(), now);
             appendEvent(run, null, "COORDINATOR_SUCCEEDED", "{}");
         } else if (!children.isEmpty()) {
             scheduleCoordinatorContinuation(run, now);
         } else {
-            run.setStatus(RUN_SUCCEEDED);
-            run.setCompletedAt(now);
-            run.setUpdatedAt(now);
+            repository.completeRun(
+                    run.id(), run.orgId(), RUN_SUCCEEDED, false, null, null, now, now);
             appendEvent(run, null, "RUN_SUCCEEDED", "{}");
         }
     }
@@ -316,108 +294,102 @@ public class RunOrchestrationService {
             String subSessionId,
             String inputJson,
             SubagentPolicy policy) {
-        AssistantRunEntity run = lockOwnedRun(tenant, agentId, runId);
-        if (!RUN_RUNNING.equals(run.getStatus())) {
+        AssistantRun run = lockOwnedRun(tenant, agentId, runId);
+        if (!RUN_RUNNING.equals(run.status())) {
             throw new IllegalStateException("Cannot add a task to terminal Run " + runId);
         }
         String taskKey = required(externalTaskId, "taskId", 255);
-        Optional<TaskNodeEntity> existing =
-                taskRepository.findByRunIdAndOrgIdAndExternalTaskId(
-                        run.getId(), run.getOrgId(), taskKey);
+        Optional<TaskNode> existing =
+                repository.findTaskByExternalId(run.id(), run.orgId(), taskKey);
         if (existing.isPresent()) {
-            TaskNodeEntity task = existing.get();
-            return new SubagentTaskHandle(
-                    task.getId(), task.getOwnerAgentRunId(), task.getStatus(), true);
+            TaskNode task = existing.get();
+            return new SubagentTaskHandle(task.id(), task.ownerAgentRunId(), task.status(), true);
         }
 
-        List<TaskNodeEntity> tasks =
-                taskRepository.findByRunIdAndOrgIdOrderByCreatedAtAsc(run.getId(), run.getOrgId());
-        TaskNodeEntity root =
+        List<TaskNode> tasks = repository.findTasks(run.id(), run.orgId());
+        TaskNode root =
                 tasks.stream()
-                        .filter(task -> task.getParentId() == null)
+                        .filter(task -> task.parentId() == null)
                         .findFirst()
                         .orElseThrow(
                                 () -> new IllegalStateException("Run has no coordinator task"));
-        List<AgentRunEntity> agentRuns =
-                agentRunRepository.findByRunIdAndOrgIdOrderByCreatedAtAsc(
-                        run.getId(), run.getOrgId());
-        AgentRunEntity parentAgentRun = resolveParentAgentRun(agentRuns, parentAgentRunId);
+        List<AgentRun> agentRuns = repository.findAgentRuns(run.id(), run.orgId());
+        AgentRun parentAgentRun = resolveParentAgentRun(agentRuns, parentAgentRunId);
         validateSubagentPolicy(tasks, agentRuns, parentAgentRun, policy);
 
         OffsetDateTime now = OffsetDateTime.now();
-        TaskNodeEntity task = new TaskNodeEntity();
-        task.setId(UUID.randomUUID());
-        task.setOrgId(run.getOrgId());
-        task.setRunId(run.getId());
-        task.setParentId(root.getId());
-        task.setExternalTaskId(taskKey);
-        task.setSubSessionId(required(subSessionId, "subSessionId", 255));
-        task.setTitle(titleFor(subagentType + ": " + taskKey));
-        task.setTaskType("subagent");
-        task.setStatus("READY");
-        task.setPriority(0);
-        task.setInputJson(validJsonObject(inputJson));
-        task.setExpectedOutputJson("{}");
-        task.setOutputJson("{}");
-        task.setAcceptanceJson("[]");
-        task.setWorkspaceMode("ISOLATED_ATTEMPT");
-        task.setMaxAttempts(3);
-        task.setRetryMode("IDEMPOTENT");
-        task.setRetryBaseSeconds(2);
-        task.setTokenBudget(positiveLimit(policy.taskTokenBudget()));
-        task.setCostBudgetMicros(positiveLimit(policy.taskCostBudgetMicros()));
-        task.setModelCallBudget(positiveLimit(policy.taskModelCallBudget()));
-        task.setDeadlineAt(deadline(now, policy.taskTimeoutSeconds()));
-        task.setUpdatedAt(now);
-        taskRepository.save(task);
-
-        AgentRunEntity child = new AgentRunEntity();
-        child.setId(UUID.randomUUID());
-        child.setOrgId(run.getOrgId());
-        child.setRunId(run.getId());
-        child.setTaskId(task.getId());
-        child.setParentAgentRunId(parentAgentRun.getId());
-        child.setAgentType(required(subagentType, "subagentType", 128));
-        child.setStatus("READY");
-        child.setDepth(parentAgentRun.getDepth() + 1);
-        child.setContextPolicy("FRESH_RELEVANT");
-        child.setPermissionSnapshotJson(parentAgentRun.getPermissionSnapshotJson());
-        child.setPermissionSnapshotHash(parentAgentRun.getPermissionSnapshotHash());
-        child.setUpdatedAt(now);
-        agentRunRepository.save(child);
-
-        task.setOwnerAgentRunId(child.getId());
-        taskRepository.save(task);
+        UUID taskId = UUID.randomUUID();
+        UUID childAgentRunId = UUID.randomUUID();
+        repository.insertTask(
+                new NewTask(
+                        taskId,
+                        run.orgId(),
+                        run.id(),
+                        root.id(),
+                        taskKey,
+                        required(subSessionId, "subSessionId", 255),
+                        titleFor(subagentType + ": " + taskKey),
+                        "subagent",
+                        "READY",
+                        0,
+                        validJsonObject(inputJson),
+                        "{}",
+                        "{}",
+                        "[]",
+                        "ISOLATED_ATTEMPT",
+                        3,
+                        "IDEMPOTENT",
+                        2,
+                        positiveLimit(policy.taskTokenBudget()),
+                        positiveLimit(policy.taskCostBudgetMicros()),
+                        positiveLimit(policy.taskModelCallBudget()),
+                        deadline(now, policy.taskTimeoutSeconds()),
+                        now));
+        repository.insertAgentRun(
+                new NewAgentRun(
+                        childAgentRunId,
+                        run.orgId(),
+                        run.id(),
+                        taskId,
+                        parentAgentRun.id(),
+                        required(subagentType, "subagentType", 128),
+                        "READY",
+                        parentAgentRun.depth() + 1,
+                        "FRESH_RELEVANT",
+                        parentAgentRun.permissionSnapshotJson(),
+                        parentAgentRun.permissionSnapshotHash(),
+                        now));
+        repository.assignTaskOwner(taskId, run.orgId(), childAgentRunId, now);
         appendEvent(
                 run,
-                task.getId(),
+                taskId,
                 "TASK_READY",
                 JsonUtils.getJsonCodec()
                         .toJson(Map.of("taskId", taskKey, "agentType", subagentType)));
         appendEvent(
                 run,
-                task.getId(),
+                taskId,
                 "SUBAGENT_PERMISSION_INHERITED",
                 JsonUtils.getJsonCodec()
                         .toJson(
                                 Map.of(
                                         "parentAgentRunId",
-                                        parentAgentRun.getId().toString(),
+                                        parentAgentRun.id().toString(),
                                         "childAgentRunId",
-                                        child.getId().toString(),
+                                        childAgentRunId.toString(),
                                         "snapshotHash",
-                                        valueOrEmpty(child.getPermissionSnapshotHash()))));
-        return new SubagentTaskHandle(task.getId(), child.getId(), task.getStatus(), false);
+                                        valueOrEmpty(parentAgentRun.permissionSnapshotHash()))));
+        return new SubagentTaskHandle(taskId, childAgentRunId, "READY", false);
     }
 
-    private static AgentRunEntity resolveParentAgentRun(
-            List<AgentRunEntity> agentRuns, UUID requestedParentId) {
+    private static AgentRun resolveParentAgentRun(
+            List<AgentRun> agentRuns, UUID requestedParentId) {
         return agentRuns.stream()
                 .filter(
                         candidate ->
                                 requestedParentId != null
-                                        ? requestedParentId.equals(candidate.getId())
-                                        : candidate.getParentAgentRunId() == null)
+                                        ? requestedParentId.equals(candidate.id())
+                                        : candidate.parentAgentRunId() == null)
                 .findFirst()
                 .orElseThrow(
                         () ->
@@ -428,18 +400,18 @@ public class RunOrchestrationService {
     }
 
     private static void validateSubagentPolicy(
-            List<TaskNodeEntity> tasks,
-            List<AgentRunEntity> agentRuns,
-            AgentRunEntity parent,
+            List<TaskNode> tasks,
+            List<AgentRun> agentRuns,
+            AgentRun parent,
             SubagentPolicy policy) {
         SubagentPolicy requiredPolicy = policy != null ? policy : new SubagentPolicy(3, 8, 32);
-        if (parent.getDepth() + 1 > requiredPolicy.maxDepth()) {
+        if (parent.depth() + 1 > requiredPolicy.maxDepth()) {
             throw new IllegalStateException(
                     "Durable subagent maximum depth exceeded: " + requiredPolicy.maxDepth());
         }
         long childCount =
                 agentRuns.stream()
-                        .filter(candidate -> parent.getId().equals(candidate.getParentAgentRunId()))
+                        .filter(candidate -> parent.id().equals(candidate.parentAgentRunId()))
                         .count();
         if (childCount >= requiredPolicy.maxChildrenPerAgent()) {
             throw new IllegalStateException(
@@ -447,7 +419,7 @@ public class RunOrchestrationService {
                             + requiredPolicy.maxChildrenPerAgent());
         }
         long durableTaskCount =
-                tasks.stream().filter(candidate -> candidate.getExternalTaskId() != null).count();
+                tasks.stream().filter(candidate -> candidate.externalTaskId() != null).count();
         if (durableTaskCount >= requiredPolicy.maxTasksPerRun()) {
             throw new IllegalStateException(
                     "Durable subagent task limit exceeded: " + requiredPolicy.maxTasksPerRun());
@@ -457,63 +429,52 @@ public class RunOrchestrationService {
     /** Cancels one durable child and invalidates any live Attempt lease. */
     @Transactional
     public boolean cancelSubagentTask(TenantContext tenant, UUID agentId, UUID runId, UUID taskId) {
-        AssistantRunEntity run = lockOwnedRun(tenant, agentId, runId);
-        TaskNodeEntity task =
-                taskRepository
-                        .findById(taskId)
-                        .filter(candidate -> run.getId().equals(candidate.getRunId()))
-                        .filter(candidate -> run.getOrgId().equals(candidate.getOrgId()))
+        AssistantRun run = lockOwnedRun(tenant, agentId, runId);
+        TaskNode task =
+                repository
+                        .findTask(taskId, run.id(), run.orgId())
                         .orElseThrow(
                                 () -> new IllegalArgumentException("Task does not belong to Run"));
-        if (isTerminalTaskStatus(task.getStatus())) {
+        if (isTerminalTaskStatus(task.status())) {
             return false;
         }
         OffsetDateTime now = OffsetDateTime.now();
-        task.setStatus(TASK_CANCELLED);
-        task.setCompletedAt(now);
-        task.setUpdatedAt(now);
-        taskRepository.save(task);
-        agentRunRepository
-                .findByRunIdAndOrgIdOrderByCreatedAtAsc(run.getId(), run.getOrgId())
-                .stream()
-                .filter(agentRun -> task.getId().equals(agentRun.getTaskId()))
-                .filter(agentRun -> !isTerminalTaskStatus(agentRun.getStatus()))
+        repository.completeTask(task.id(), run.orgId(), TASK_CANCELLED, null, null, now, now);
+        repository.findAgentRuns(run.id(), run.orgId()).stream()
+                .filter(agentRun -> task.id().equals(agentRun.taskId()))
+                .filter(agentRun -> !isTerminalTaskStatus(agentRun.status()))
                 .forEach(
-                        agentRun -> {
-                            agentRun.setStatus(TASK_CANCELLED);
-                            agentRun.setCompletedAt(now);
-                            agentRun.setUpdatedAt(now);
-                            agentRunRepository.save(agentRun);
-                        });
-        attemptRepository
-                .findByRunIdAndOrgIdOrderByAttemptNoAsc(run.getId(), run.getOrgId())
-                .stream()
-                .filter(attempt -> task.getId().equals(attempt.getTaskId()))
-                .filter(attempt -> !isTerminalAttemptStatus(attempt.getStatus()))
+                        agentRun ->
+                                repository.updateAgentRunStatus(
+                                        agentRun.id(), run.orgId(), TASK_CANCELLED, now, now));
+        repository.findAttempts(run.id(), run.orgId()).stream()
+                .filter(attempt -> task.id().equals(attempt.taskId()))
+                .filter(attempt -> !isTerminalAttemptStatus(attempt.status()))
                 .forEach(
-                        attempt -> {
-                            attempt.setStatus(ATTEMPT_CANCELLED);
-                            attempt.setLeaseExpiresAt(null);
-                            attempt.setCompletedAt(now);
-                            attempt.setUpdatedAt(now);
-                            attemptRepository.save(attempt);
-                        });
-        appendEvent(run, task.getId(), "TASK_CANCELLED", "{}");
+                        attempt ->
+                                repository.updateAttemptStatus(
+                                        attempt.id(),
+                                        run.orgId(),
+                                        ATTEMPT_CANCELLED,
+                                        null,
+                                        null,
+                                        now,
+                                        now));
+        appendEvent(run, task.id(), "TASK_CANCELLED", "{}");
 
-        List<TaskNodeEntity> allTasks =
-                taskRepository.findByRunIdAndOrgIdOrderByCreatedAtAsc(run.getId(), run.getOrgId());
+        List<TaskNode> allTasks = repository.findTasks(run.id(), run.orgId());
         boolean allChildrenSettled =
                 allTasks.stream()
-                        .filter(candidate -> candidate.getParentId() != null)
+                        .filter(candidate -> candidate.parentId() != null)
                         .allMatch(
                                 candidate ->
-                                        TASK_SUCCEEDED.equals(candidate.getStatus())
-                                                || TASK_CANCELLED.equals(candidate.getStatus()));
+                                        TASK_SUCCEEDED.equals(candidate.status())
+                                                || TASK_CANCELLED.equals(candidate.status()));
         boolean coordinatorCompleted =
                 allTasks.stream()
-                        .filter(candidate -> candidate.getParentId() == null)
-                        .anyMatch(candidate -> TASK_SUCCEEDED.equals(candidate.getStatus()));
-        if (allChildrenSettled && coordinatorCompleted && RUN_RUNNING.equals(run.getStatus())) {
+                        .filter(candidate -> candidate.parentId() == null)
+                        .anyMatch(candidate -> TASK_SUCCEEDED.equals(candidate.status()));
+        if (allChildrenSettled && coordinatorCompleted && RUN_RUNNING.equals(run.status())) {
             scheduleCoordinatorContinuation(run, now);
         }
         return true;
@@ -522,21 +483,7 @@ public class RunOrchestrationService {
     /** True while a continuation has delegated more work that must settle before its final reply. */
     @Transactional(readOnly = true)
     public boolean hasUnsettledChildren(UUID runId) {
-        return runRepository
-                .findById(runId)
-                .map(
-                        run ->
-                                taskRepository
-                                        .findByRunIdAndOrgIdOrderByCreatedAtAsc(
-                                                run.getId(), run.getOrgId())
-                                        .stream()
-                                        .filter(task -> task.getParentId() != null)
-                                        .anyMatch(
-                                                task ->
-                                                        !TASK_SUCCEEDED.equals(task.getStatus())
-                                                                && !TASK_CANCELLED.equals(
-                                                                        task.getStatus())))
-                .orElse(true);
+        return repository.hasUnsettledChildren(runId);
     }
 
     /** Persists an execution failure. Terminal states are immutable. */
@@ -547,16 +494,20 @@ public class RunOrchestrationService {
             UUID runId,
             String failureCode,
             String failureMessage) {
-        AssistantRunEntity run = lockOwnedRun(tenant, agentId, runId);
-        if (!RUN_RUNNING.equals(run.getStatus())) {
+        AssistantRun run = lockOwnedRun(tenant, agentId, runId);
+        if (!RUN_RUNNING.equals(run.status())) {
             return;
         }
         OffsetDateTime now = OffsetDateTime.now();
-        run.setStatus(RUN_FAILED);
-        run.setFailureCode(truncate(failureCode, 128));
-        run.setFailureMessage(truncate(failureMessage, 2000));
-        run.setCompletedAt(now);
-        run.setUpdatedAt(now);
+        repository.completeRun(
+                run.id(),
+                run.orgId(),
+                RUN_FAILED,
+                false,
+                truncate(failureCode, 128),
+                truncate(failureMessage, 2000),
+                now,
+                now);
         completeExecution(run, TASK_FAILED, ATTEMPT_FAILED, now, failureCode, failureMessage);
         appendEvent(run, null, "RUN_FAILED", "{}");
     }
@@ -567,8 +518,8 @@ public class RunOrchestrationService {
      */
     @Transactional
     public Optional<CancelledRun> cancel(TenantContext tenant, UUID agentId, UUID runId) {
-        Optional<AssistantRunEntity> maybeRun =
-                runRepository.lockOwnedRun(
+        Optional<AssistantRun> maybeRun =
+                repository.lockOwnedRun(
                         runId,
                         uuid(tenant.orgId(), "orgId"),
                         uuid(tenant.userId(), "userId"),
@@ -576,26 +527,21 @@ public class RunOrchestrationService {
         if (maybeRun.isEmpty()) {
             return Optional.empty();
         }
-        AssistantRunEntity run = maybeRun.get();
-        if (!RUN_RUNNING.equals(run.getStatus())) {
-            return Optional.of(
-                    new CancelledRun(run.getId(), run.getAgentId(), run.getSessionId(), false));
+        AssistantRun run = maybeRun.get();
+        if (!RUN_RUNNING.equals(run.status())) {
+            return Optional.of(new CancelledRun(run.id(), run.agentId(), run.sessionId(), false));
         }
         OffsetDateTime now = OffsetDateTime.now();
-        run.setCancelRequested(true);
-        run.setStatus(RUN_CANCELLED);
-        run.setCompletedAt(now);
-        run.setUpdatedAt(now);
+        repository.completeRun(run.id(), run.orgId(), RUN_CANCELLED, true, null, null, now, now);
         completeExecution(run, TASK_CANCELLED, ATTEMPT_CANCELLED, now, null, null);
         appendEvent(run, null, "RUN_CANCELLED", "{}");
-        return Optional.of(
-                new CancelledRun(run.getId(), run.getAgentId(), run.getSessionId(), true));
+        return Optional.of(new CancelledRun(run.id(), run.agentId(), run.sessionId(), true));
     }
 
     @Transactional(readOnly = true)
     public Optional<RunView> getRun(TenantContext tenant, UUID agentId, UUID runId) {
-        return runRepository
-                .findByIdAndOrgIdAndUserIdAndAgentId(
+        return repository
+                .findOwnedRun(
                         runId,
                         uuid(tenant.orgId(), "orgId"),
                         uuid(tenant.userId(), "userId"),
@@ -605,24 +551,18 @@ public class RunOrchestrationService {
 
     @Transactional(readOnly = true)
     public List<TaskView> getTasks(TenantContext tenant, UUID agentId, UUID runId) {
-        AssistantRunEntity run =
+        AssistantRun run =
                 getRunEntity(tenant, agentId, runId)
                         .orElseThrow(() -> new RunNotFoundException(runId));
-        return taskRepository
-                .findByRunIdAndOrgIdOrderByCreatedAtAsc(run.getId(), run.getOrgId())
-                .stream()
-                .map(this::toTaskView)
-                .toList();
+        return repository.findTasks(run.id(), run.orgId()).stream().map(this::toTaskView).toList();
     }
 
     @Transactional(readOnly = true)
     public List<AttemptView> getAttempts(TenantContext tenant, UUID agentId, UUID runId) {
-        AssistantRunEntity run =
+        AssistantRun run =
                 getRunEntity(tenant, agentId, runId)
                         .orElseThrow(() -> new RunNotFoundException(runId));
-        return attemptRepository
-                .findByRunIdAndOrgIdOrderByAttemptNoAsc(run.getId(), run.getOrgId())
-                .stream()
+        return repository.findAttempts(run.id(), run.orgId()).stream()
                 .map(this::toAttemptView)
                 .toList();
     }
@@ -630,24 +570,20 @@ public class RunOrchestrationService {
     @Transactional(readOnly = true)
     public List<RunEventView> getEvents(
             TenantContext tenant, UUID agentId, UUID runId, long afterSeq, int limit) {
-        AssistantRunEntity run =
+        AssistantRun run =
                 getRunEntity(tenant, agentId, runId)
                         .orElseThrow(() -> new RunNotFoundException(runId));
         int boundedLimit = Math.max(1, Math.min(limit, 500));
-        return eventRepository
-                .findByRunIdAndOrgIdAndUserIdAndSeqGreaterThanOrderBySeqAsc(
-                        run.getId(),
-                        run.getOrgId(),
-                        run.getUserId(),
-                        Math.max(0, afterSeq),
-                        PageRequest.of(0, boundedLimit))
+        return repository
+                .findEvents(
+                        run.id(), run.orgId(), run.userId(), Math.max(0, afterSeq), boundedLimit)
                 .stream()
                 .map(this::toEventView)
                 .toList();
     }
 
-    private AssistantRunEntity lockOwnedRun(TenantContext tenant, UUID agentId, UUID runId) {
-        return runRepository
+    private AssistantRun lockOwnedRun(TenantContext tenant, UUID agentId, UUID runId) {
+        return repository
                 .lockOwnedRun(
                         runId,
                         uuid(tenant.orgId(), "orgId"),
@@ -656,227 +592,207 @@ public class RunOrchestrationService {
                 .orElseThrow(() -> new RunNotFoundException(runId));
     }
 
-    private Optional<AssistantRunEntity> getRunEntity(
-            TenantContext tenant, UUID agentId, UUID runId) {
-        return runRepository.findByIdAndOrgIdAndUserIdAndAgentId(
+    private Optional<AssistantRun> getRunEntity(TenantContext tenant, UUID agentId, UUID runId) {
+        return repository.findOwnedRun(
                 runId, uuid(tenant.orgId(), "orgId"), uuid(tenant.userId(), "userId"), agentId);
     }
 
     private void completeExecution(
-            AssistantRunEntity run,
+            AssistantRun run,
             String taskStatus,
             String attemptStatus,
             OffsetDateTime completedAt,
             String errorCode,
             String errorMessage) {
-        for (TaskNodeEntity task :
-                taskRepository.findByRunIdAndOrgIdOrderByCreatedAtAsc(
-                        run.getId(), run.getOrgId())) {
-            if (!isTerminalTaskStatus(task.getStatus())) {
-                task.setStatus(taskStatus);
-                task.setCompletedAt(completedAt);
-                task.setUpdatedAt(completedAt);
-                taskRepository.save(task);
-                appendEvent(run, task.getId(), "TASK_" + taskStatus, "{}");
+        for (TaskNode task : repository.findTasks(run.id(), run.orgId())) {
+            if (!isTerminalTaskStatus(task.status())) {
+                repository.completeTask(
+                        task.id(),
+                        run.orgId(),
+                        taskStatus,
+                        truncate(errorCode, 128),
+                        truncate(errorMessage, 2000),
+                        completedAt,
+                        completedAt);
+                appendEvent(run, task.id(), "TASK_" + taskStatus, "{}");
             }
         }
-        for (AgentRunEntity agentRun :
-                agentRunRepository.findByRunIdAndOrgIdOrderByCreatedAtAsc(
-                        run.getId(), run.getOrgId())) {
-            if (RUN_RUNNING.equals(agentRun.getStatus())) {
-                agentRun.setStatus(taskStatus);
-                agentRun.setCompletedAt(completedAt);
-                agentRun.setUpdatedAt(completedAt);
-                agentRunRepository.save(agentRun);
+        for (AgentRun agentRun : repository.findAgentRuns(run.id(), run.orgId())) {
+            if (RUN_RUNNING.equals(agentRun.status())) {
+                repository.updateAgentRunStatus(
+                        agentRun.id(), run.orgId(), taskStatus, completedAt, completedAt);
             }
         }
-        for (RunAttemptEntity attempt :
-                attemptRepository.findByRunIdAndOrgIdOrderByAttemptNoAsc(
-                        run.getId(), run.getOrgId())) {
-            if (!isTerminalAttemptStatus(attempt.getStatus())) {
-                attempt.setStatus(attemptStatus);
-                attempt.setErrorCode(truncate(errorCode, 128));
-                attempt.setErrorMessage(truncate(errorMessage, 2000));
-                attempt.setCompletedAt(completedAt);
-                attempt.setUpdatedAt(completedAt);
-                attemptRepository.save(attempt);
+        for (RunAttempt attempt : repository.findAttempts(run.id(), run.orgId())) {
+            if (!isTerminalAttemptStatus(attempt.status())) {
+                repository.updateAttemptStatus(
+                        attempt.id(),
+                        run.orgId(),
+                        attemptStatus,
+                        truncate(errorCode, 128),
+                        truncate(errorMessage, 2000),
+                        completedAt,
+                        completedAt);
             }
         }
     }
 
-    private void completeCoordinator(AssistantRunEntity run, OffsetDateTime completedAt) {
-        TaskNodeEntity root =
-                taskRepository
-                        .findByRunIdAndOrgIdOrderByCreatedAtAsc(run.getId(), run.getOrgId())
-                        .stream()
-                        .filter(task -> task.getParentId() == null)
+    private void completeCoordinator(AssistantRun run, OffsetDateTime completedAt) {
+        TaskNode root =
+                repository.findTasks(run.id(), run.orgId()).stream()
+                        .filter(task -> task.parentId() == null)
                         .findFirst()
                         .orElseThrow(
                                 () -> new IllegalStateException("Run has no coordinator task"));
-        if (!isTerminalTaskStatus(root.getStatus())) {
-            root.setStatus(TASK_SUCCEEDED);
-            root.setCompletedAt(completedAt);
-            root.setUpdatedAt(completedAt);
-            taskRepository.save(root);
-            appendEvent(run, root.getId(), "TASK_SUCCEEDED", "{}");
+        if (!isTerminalTaskStatus(root.status())) {
+            repository.completeTask(
+                    root.id(), run.orgId(), TASK_SUCCEEDED, null, null, completedAt, completedAt);
+            appendEvent(run, root.id(), "TASK_SUCCEEDED", "{}");
         }
-        agentRunRepository
-                .findByRunIdAndOrgIdOrderByCreatedAtAsc(run.getId(), run.getOrgId())
-                .stream()
-                .filter(agentRun -> agentRun.getParentAgentRunId() == null)
-                .filter(agentRun -> RUN_RUNNING.equals(agentRun.getStatus()))
+        repository.findAgentRuns(run.id(), run.orgId()).stream()
+                .filter(agentRun -> agentRun.parentAgentRunId() == null)
+                .filter(agentRun -> RUN_RUNNING.equals(agentRun.status()))
                 .forEach(
-                        agentRun -> {
-                            agentRun.setStatus(TASK_SUCCEEDED);
-                            agentRun.setCompletedAt(completedAt);
-                            agentRun.setUpdatedAt(completedAt);
-                            agentRunRepository.save(agentRun);
-                        });
-        attemptRepository
-                .findByRunIdAndOrgIdOrderByAttemptNoAsc(run.getId(), run.getOrgId())
-                .stream()
-                .filter(attempt -> root.getId().equals(attempt.getTaskId()))
-                .filter(attempt -> !isTerminalAttemptStatus(attempt.getStatus()))
+                        agentRun ->
+                                repository.updateAgentRunStatus(
+                                        agentRun.id(),
+                                        run.orgId(),
+                                        TASK_SUCCEEDED,
+                                        completedAt,
+                                        completedAt));
+        repository.findAttempts(run.id(), run.orgId()).stream()
+                .filter(attempt -> root.id().equals(attempt.taskId()))
+                .filter(attempt -> !isTerminalAttemptStatus(attempt.status()))
                 .forEach(
-                        attempt -> {
-                            attempt.setStatus(ATTEMPT_SUCCEEDED);
-                            attempt.setCompletedAt(completedAt);
-                            attempt.setUpdatedAt(completedAt);
-                            attemptRepository.save(attempt);
-                        });
+                        attempt ->
+                                repository.updateAttemptStatus(
+                                        attempt.id(),
+                                        run.orgId(),
+                                        ATTEMPT_SUCCEEDED,
+                                        null,
+                                        null,
+                                        completedAt,
+                                        completedAt));
     }
 
-    private void scheduleCoordinatorContinuation(AssistantRunEntity run, OffsetDateTime now) {
-        TaskNodeEntity root =
-                taskRepository
-                        .findByRunIdAndOrgIdOrderByCreatedAtAsc(run.getId(), run.getOrgId())
-                        .stream()
-                        .filter(task -> task.getParentId() == null)
+    private void scheduleCoordinatorContinuation(AssistantRun run, OffsetDateTime now) {
+        TaskNode root =
+                repository.findTasks(run.id(), run.orgId()).stream()
+                        .filter(task -> task.parentId() == null)
                         .findFirst()
                         .orElseThrow(
                                 () -> new IllegalStateException("Run has no coordinator task"));
-        if (!TASK_SUCCEEDED.equals(root.getStatus())) {
+        if (!TASK_SUCCEEDED.equals(root.status())) {
             return;
         }
-        root.setStatus("READY");
-        root.setInputJson(COORDINATOR_CONTINUATION_INPUT);
-        root.setMaxAttempts(Math.max(root.getMaxAttempts(), MAX_COORDINATOR_ATTEMPTS));
-        root.setNextAttemptAt(null);
-        root.setCompletedAt(null);
-        root.setUpdatedAt(now);
-        taskRepository.save(root);
-
-        agentRunRepository
-                .findByRunIdAndOrgIdOrderByCreatedAtAsc(run.getId(), run.getOrgId())
-                .stream()
-                .filter(agentRun -> agentRun.getParentAgentRunId() == null)
+        repository.scheduleTaskContinuation(
+                root.id(),
+                run.orgId(),
+                COORDINATOR_CONTINUATION_INPUT,
+                Math.max(root.maxAttempts(), MAX_COORDINATOR_ATTEMPTS),
+                now);
+        repository.findAgentRuns(run.id(), run.orgId()).stream()
+                .filter(agentRun -> agentRun.parentAgentRunId() == null)
                 .findFirst()
                 .ifPresent(
-                        agentRun -> {
-                            agentRun.setStatus("READY");
-                            agentRun.setCompletedAt(null);
-                            agentRun.setUpdatedAt(now);
-                            agentRunRepository.save(agentRun);
-                        });
-        run.setCompletedAt(null);
-        run.setUpdatedAt(now);
-        appendEvent(run, root.getId(), "COORDINATOR_CONTINUATION_READY", "{}");
+                        agentRun ->
+                                repository.updateAgentRunStatus(
+                                        agentRun.id(), run.orgId(), "READY", null, now));
+        repository.reopenRun(run.id(), run.orgId(), now);
+        appendEvent(run, root.id(), "COORDINATOR_CONTINUATION_READY", "{}");
     }
 
-    private void appendEvent(
-            AssistantRunEntity run, UUID taskId, String eventType, String payloadJson) {
-        RunEventEntity event = new RunEventEntity();
-        event.setId(UUID.randomUUID());
-        event.setOrgId(run.getOrgId());
-        event.setUserId(run.getUserId());
-        event.setRunId(run.getId());
-        event.setTaskId(taskId);
-        long seq = run.getNextEventSeq() + 1;
-        run.setNextEventSeq(seq);
-        event.setSeq(seq);
-        event.setEventType(eventType);
-        event.setPayloadJson(payloadJson);
-        eventRepository.save(event);
+    private void appendEvent(AssistantRun run, UUID taskId, String eventType, String payloadJson) {
+        UUID eventId = UUID.randomUUID();
+        long sequence = repository.nextEventSequence(run.id(), run.orgId(), OffsetDateTime.now());
+        repository.insertEvent(
+                new NewEvent(
+                        eventId,
+                        run.orgId(),
+                        run.userId(),
+                        run.id(),
+                        taskId,
+                        sequence,
+                        eventType,
+                        payloadJson));
 
         Map<String, Object> envelope = new LinkedHashMap<>();
-        envelope.put("eventId", event.getId().toString());
-        envelope.put("runId", run.getId().toString());
-        envelope.put("seq", seq);
+        envelope.put("eventId", eventId.toString());
+        envelope.put("runId", run.id().toString());
+        envelope.put("seq", sequence);
         envelope.put("taskId", taskId != null ? taskId.toString() : null);
         envelope.put("payload", JsonUtils.getJsonCodec().fromJson(payloadJson, Object.class));
-
-        OrchestrationOutboxEntity outbox = new OrchestrationOutboxEntity();
-        outbox.setId(UUID.randomUUID());
-        outbox.setOrgId(run.getOrgId());
-        outbox.setAggregateId(run.getId());
-        outbox.setAggregateType("assistant_run");
-        outbox.setEventType(eventType);
-        outbox.setPayloadJson(JsonUtils.getJsonCodec().toJson(envelope));
-        outbox.setAttempts(0);
-        outboxRepository.save(outbox);
+        repository.insertOutbox(
+                new NewOutboxMessage(
+                        UUID.randomUUID(),
+                        run.orgId(),
+                        run.id(),
+                        "assistant_run",
+                        eventType,
+                        JsonUtils.getJsonCodec().toJson(envelope)));
     }
 
-    private RunView toView(AssistantRunEntity run) {
+    private RunView toView(AssistantRun run) {
         return new RunView(
-                run.getId(),
-                run.getSessionId(),
-                run.getAgentId(),
-                run.getMode(),
-                run.getStatus(),
-                run.isCancelRequested(),
-                run.getFailureCode(),
-                run.getFailureMessage(),
-                run.getTokenBudget(),
-                run.getConsumedTokens(),
-                run.getCostBudgetMicros(),
-                run.getConsumedCostMicros(),
-                run.getModelCallBudget(),
-                run.getConsumedModelCalls(),
-                run.getDeadlineAt(),
-                run.getCreatedAt(),
-                run.getStartedAt(),
-                run.getCompletedAt());
+                run.id(),
+                run.sessionId(),
+                run.agentId(),
+                run.mode(),
+                run.status(),
+                run.cancelRequested(),
+                run.failureCode(),
+                run.failureMessage(),
+                run.tokenBudget(),
+                run.consumedTokens(),
+                run.costBudgetMicros(),
+                run.consumedCostMicros(),
+                run.modelCallBudget(),
+                run.consumedModelCalls(),
+                run.deadlineAt(),
+                run.createdAt(),
+                run.startedAt(),
+                run.completedAt());
     }
 
-    private TaskView toTaskView(TaskNodeEntity task) {
+    private TaskView toTaskView(TaskNode task) {
         return new TaskView(
-                task.getId(),
-                task.getParentId(),
-                task.getTitle(),
-                task.getTaskType(),
-                task.getStatus(),
-                task.getWorkspaceMode(),
-                task.getTokenBudget(),
-                task.getConsumedTokens(),
-                task.getCostBudgetMicros(),
-                task.getConsumedCostMicros(),
-                task.getModelCallBudget(),
-                task.getConsumedModelCalls(),
-                task.getDeadlineAt(),
-                task.getCreatedAt(),
-                task.getCompletedAt());
+                task.id(),
+                task.parentId(),
+                task.title(),
+                task.taskType(),
+                task.status(),
+                task.workspaceMode(),
+                task.tokenBudget(),
+                task.consumedTokens(),
+                task.costBudgetMicros(),
+                task.consumedCostMicros(),
+                task.modelCallBudget(),
+                task.consumedModelCalls(),
+                task.deadlineAt(),
+                task.createdAt(),
+                task.completedAt());
     }
 
-    private RunEventView toEventView(RunEventEntity event) {
+    private RunEventView toEventView(RunEvent event) {
         return new RunEventView(
-                event.getSeq(),
-                event.getEventType(),
-                event.getTaskId(),
-                event.getPayloadJson(),
-                event.getCreatedAt());
+                event.sequence(),
+                event.eventType(),
+                event.taskId(),
+                event.payloadJson(),
+                event.createdAt());
     }
 
-    private AttemptView toAttemptView(RunAttemptEntity attempt) {
+    private AttemptView toAttemptView(RunAttempt attempt) {
         return new AttemptView(
-                attempt.getId(),
-                attempt.getTaskId(),
-                attempt.getAgentRunId(),
-                attempt.getAttemptNo(),
-                attempt.getStatus(),
-                attempt.getErrorCode(),
-                attempt.getErrorMessage(),
-                attempt.getStartedAt(),
-                attempt.getCompletedAt());
+                attempt.id(),
+                attempt.taskId(),
+                attempt.agentRunId(),
+                attempt.attemptNo(),
+                attempt.status(),
+                attempt.errorCode(),
+                attempt.errorMessage(),
+                attempt.startedAt(),
+                attempt.completedAt());
     }
 
     private static UUID uuid(String value, String field) {

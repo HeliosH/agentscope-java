@@ -4,7 +4,7 @@
 >
 > 目标：服务接口层、应用/领域层、数据访问层物理分离；业务数据库访问统一收敛到 MyBatis
 >
-> 状态：基础分层已实施，认证、任务查询、任务租约、Outbox、治理和记忆投影已完成垂直迁移
+> 状态：基础分层已实施，认证、运行编排、任务租约、Outbox、治理和记忆投影已完成垂直迁移
 
 ## 1. 核心决策
 
@@ -69,7 +69,15 @@ dal/mybatis ───────── implements repository ports ────
 - `MemoryProjectionRepository` 领域端口及 MyBatis 条件领取实现；
 - `SandboxReconciliationRepository` 领域端口及 MyBatis 条件领取实现；
 - `FileObjectGcRepository` 领域端口及 MyBatis 删除队列实现；
+- `RunOrchestrationRepository` 领域端口及 MyBatis 聚合实现；
 - 登录、注册、持久化子任务查询、交付状态和租约领取不再直接使用 JDBC；
+- Run、Task、AgentRun、Attempt、Event 与 Outbox 已从同一租户 MyBatis 会话原子写入；
+- Run 事件序号通过数据库原子递增生成，避免并发事件重复；
+- JSON TypeHandler 同时覆盖 PostgreSQL JSONB 和 H2 JSON，避免 JSON 对象被写成字符串；
+- SSE 断连保护的内部订阅会继承请求 Reactor Context，保证任务脱离浏览器连接继续执行时，
+  RLS 租户上下文仍能跨调度线程传播；
+- 用量异步写入按显式 `TenantContext` 绑定和恢复租户，不依赖调用线程残留状态；
+- 助手终态消息按 `source_run_id` 幂等写入，防止重试产生重复回复；
 - Outbox 发布、预算治理、权限快照和记忆重放不再直接使用 JDBC；
 - 记忆投影领取会重新校验状态、重试次数和 stale 时间，防止多 worker 重复投影；
 - 沙箱释放和文件 GC 在调用外部资源前执行条件领取，防止多 worker 重复删除；
@@ -78,11 +86,13 @@ dal/mybatis ───────── implements repository ports ────
   管理数据源；
 - PostgreSQL 集成测试覆盖租户切换后的拒绝与恢复，防止 MyBatis 解包数据源代理后绕过
   RLS；
+- PostgreSQL 17.5 端到端验证覆盖注册、Agent 创建、SSE 任务执行、幂等复用、Run/Task/
+  Attempt/Event 查询、JSONB、Outbox 和终态消息；
 - 迁移期保留默认 JPA 事务管理器，避免改变未迁移用例的事务语义。
 
 当前应用层直接使用 `JdbcTemplate` 的业务类数量为 0。
 
-`agentscope-saas-core` 中仍有 20 个 Spring Data JPA Repository。基础设施配置中为连接池、
+`agentscope-saas-core` 中仍有 14 个 Spring Data JPA Repository。基础设施配置中为连接池、
 RLS GUC 和旧存储 adapter 装配而使用的 `DataSource` 不计入上述业务类数量；其中仍依赖
 JPA Repository 的存储 adapter 须在后续批次迁入 DAL。
 
@@ -95,7 +105,7 @@ JPA Repository 的存储 adapter 须在后续批次迁入 DAL。
 - `DurableTaskLeaseService`（已完成）
 - `OrchestrationGovernanceService`（已完成）
 - `OrchestrationOutboxPublisher`（已完成）
-- `RunOrchestrationService` 使用的 6 个 JPA Repository
+- `RunOrchestrationService` 使用的 6 个 JPA Repository（已完成）
 
 验收要求：
 
@@ -103,6 +113,9 @@ JPA Repository 的存储 adapter 须在后续批次迁入 DAL。
 - 任务状态转换全部为条件更新；
 - Outbox 领取、续租、发布、失败重试语义不变；
 - H2 功能测试和 PostgreSQL 并发集成测试通过。
+
+本批次同时删除上述 6 个旧 JPA Repository 和实体，并增加架构测试，禁止 orchestration
+模块重新依赖旧 persistence 模型。
 
 ### P1：会话、文件与记忆
 

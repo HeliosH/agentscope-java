@@ -13,21 +13,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.http.MediaType.TEXT_EVENT_STREAM;
 
-import io.agentscope.saas.core.persistence.repo.AssistantRunRepository;
-import io.agentscope.saas.core.persistence.repo.ChatMessageRepository;
-import io.agentscope.saas.core.persistence.repo.OrchestrationOutboxRepository;
-import io.agentscope.saas.core.persistence.repo.RunEventRepository;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
@@ -40,15 +39,12 @@ class SaasChatOrchestrationIntegrationTest {
 
     @LocalServerPort int port;
 
-    @Autowired AssistantRunRepository runRepository;
-
-    @Autowired RunEventRepository eventRepository;
-
-    @Autowired OrchestrationOutboxRepository outboxRepository;
-
-    @Autowired ChatMessageRepository messageRepository;
+    @Autowired
+    @Qualifier("adminDataSource")
+    DataSource adminDataSource;
 
     private WebTestClient webClient;
+    private JdbcTemplate jdbc;
 
     @BeforeEach
     void setUp() {
@@ -57,6 +53,7 @@ class SaasChatOrchestrationIntegrationTest {
                         .responseTimeout(Duration.ofSeconds(30))
                         .baseUrl("http://localhost:" + port)
                         .build();
+        jdbc = new JdbcTemplate(adminDataSource);
     }
 
     @Test
@@ -199,12 +196,33 @@ class SaasChatOrchestrationIntegrationTest {
                 .jsonPath("$[0].eventType")
                 .isEqualTo("RUN_CREATED")
                 .jsonPath("$[4].eventType")
+                .isEqualTo("TASK_SUCCEEDED")
+                .jsonPath("$[5].eventType")
                 .isEqualTo("RUN_SUCCEEDED");
 
         UUID durableRunId = UUID.fromString(runId);
-        var persistedRun = runRepository.findById(durableRunId).orElseThrow();
-        assertThat(eventRepository.countByRunId(durableRunId)).isEqualTo(5);
-        assertThat(outboxRepository.countByAggregateId(durableRunId)).isEqualTo(5);
-        assertThat(messageRepository.countBySessionId(persistedRun.getSessionId())).isEqualTo(2);
+        UUID sessionId =
+                jdbc.queryForObject(
+                        "SELECT session_id FROM assistant_runs WHERE id = ?",
+                        UUID.class,
+                        durableRunId);
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT COUNT(*) FROM run_events WHERE run_id = ?",
+                                Long.class,
+                                durableRunId))
+                .isEqualTo(6L);
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT COUNT(*) FROM orchestration_outbox WHERE aggregate_id = ?",
+                                Long.class,
+                                durableRunId))
+                .isEqualTo(6L);
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT COUNT(*) FROM chat_messages WHERE session_id = ?",
+                                Long.class,
+                                sessionId))
+                .isEqualTo(2L);
     }
 }

@@ -144,7 +144,9 @@ public class ChatPersistenceService {
                         agentId,
                         "user",
                         List.of(TextBlock.builder().text(content == null ? "" : content).build()));
-        ChatMessageEntity saved = messageRepository.save(msg);
+        // The durable Run is inserted through MyBatis in the same transaction and references this
+        // row, so make the JPA write visible before crossing the persistence boundary.
+        ChatMessageEntity saved = messageRepository.saveAndFlush(msg);
         touchSession(saved.getSessionId(), content);
         return saved;
     }
