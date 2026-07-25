@@ -51,6 +51,7 @@ class PgTaskRepositoryIntegrationTest {
     private static final UUID USER_ID = UUID.fromString("00000000-0000-0000-0000-0000000000a2");
 
     private final JdbcTemplate jdbc;
+    private final JdbcTemplate tenantJdbc;
 
     @Autowired PgTaskRepository tasks;
     @Autowired RunOrchestrationService runs;
@@ -58,8 +59,11 @@ class PgTaskRepositoryIntegrationTest {
     @Autowired DurableTaskWorker worker;
 
     @Autowired
-    PgTaskRepositoryIntegrationTest(@Qualifier("adminDataSource") DataSource adminDataSource) {
+    PgTaskRepositoryIntegrationTest(
+            @Qualifier("adminDataSource") DataSource adminDataSource,
+            @Qualifier("dataSource") DataSource tenantDataSource) {
         this.jdbc = new JdbcTemplate(adminDataSource);
+        this.tenantJdbc = new JdbcTemplate(tenantDataSource);
     }
 
     @BeforeEach
@@ -283,6 +287,41 @@ class PgTaskRepositoryIntegrationTest {
         }
     }
 
+    @Test
+    void tenantMapperRlsRejectsMismatchedConnectionContext() {
+        assertThat(tenantJdbc.queryForObject("SELECT current_user", String.class)).isEqualTo("app");
+        UUID agentId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        seedAgentAndSession(agentId, sessionId);
+        TenantContext tenant = tenant();
+        var run = runs.createDirectRun(tenant, agentId, sessionId, null, "RLS task query");
+        RuntimeContext context = context(tenant, agentId, sessionId, run.runId());
+        tasks.putTask(
+                context,
+                "task_rls",
+                "researcher",
+                sessionId.toString(),
+                new TaskRunSpec.DurableLocalTaskRunSpec(
+                        "sub-rls", "Verify tenant mapper isolation", () -> "not-used"));
+
+        try {
+            String otherOrgId = UUID.randomUUID().toString();
+            TenantContextHolder.setOrgId(otherOrgId);
+            assertThat(
+                            tenantJdbc.queryForObject(
+                                    "SELECT current_setting('app.current_org', true)",
+                                    String.class))
+                    .isEqualTo(otherOrgId);
+            assertThat(tasks.getTask(context, sessionId.toString(), "task_rls")).isNull();
+
+            TenantContextHolder.setOrgId(ORG_ID.toString());
+            assertThat(tasks.getTask(context, sessionId.toString(), "task_rls")).isNotNull();
+        } finally {
+            TenantContextHolder.setOrgId(ORG_ID.toString());
+            runs.cancel(tenant, agentId, run.runId());
+        }
+    }
+
     private static TenantContext tenant() {
         return new TenantContext(
                 ORG_ID.toString(), USER_ID.toString(), "member", "standard", 2, 100_000);
@@ -318,8 +357,10 @@ class PgTaskRepositoryIntegrationTest {
                 new TaskRunSpec.DurableLocalTaskRunSpec(
                         subSessionId, "Nested task " + taskId, () -> "not-used"));
         return jdbc.queryForObject(
-                "SELECT owner_agent_run_id FROM task_nodes WHERE external_task_id = ?",
+                "SELECT owner_agent_run_id FROM task_nodes "
+                        + "WHERE run_id = ? AND external_task_id = ?",
                 UUID.class,
+                UUID.fromString(context.get(RunOrchestrationService.ATTR_RUN_ID)),
                 taskId);
     }
 

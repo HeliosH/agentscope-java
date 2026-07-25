@@ -21,14 +21,8 @@ import org.junit.jupiter.api.Test;
 /** Incremental architecture guard for the DDD and MyBatis migration. */
 class DataAccessArchitectureTest {
 
-    private static final Set<String> LEGACY_JDBC_ALLOWLIST =
-            Set.of(
-                    "io/agentscope/saas/app/orchestration/DurableTaskLeaseService.java",
-                    "io/agentscope/saas/app/sandbox/SandboxReconciliationJob.java",
-                    "io/agentscope/saas/app/workspace/FileObjectGcJob.java");
-
     @Test
-    void applicationCannotIntroduceNewJdbcTemplateUsage() throws IOException {
+    void applicationBusinessCodeCannotUseJdbcTemplate() throws IOException {
         Path sourceRoot = Path.of("src/main/java");
         Set<String> users =
                 javaFiles(sourceRoot).stream()
@@ -37,7 +31,21 @@ class DataAccessArchitectureTest {
                         .map(DataAccessArchitectureTest::portablePath)
                         .collect(Collectors.toSet());
 
-        assertThat(users).isSubsetOf(LEGACY_JDBC_ALLOWLIST);
+        assertThat(users).isEmpty();
+    }
+
+    @Test
+    void applicationJavaSqlUsageIsLimitedToTenantConnectionInfrastructure() throws IOException {
+        Path sourceRoot = Path.of("src/main/java");
+        Set<String> users =
+                javaFiles(sourceRoot).stream()
+                        .filter(file -> read(file).contains("import java.sql."))
+                        .map(sourceRoot::relativize)
+                        .map(DataAccessArchitectureTest::portablePath)
+                        .collect(Collectors.toSet());
+
+        assertThat(users)
+                .containsExactly("io/agentscope/saas/app/config/TenantAwareDataSourceConfig.java");
     }
 
     @Test
@@ -73,6 +81,32 @@ class DataAccessArchitectureTest {
 
         assertThat(mapperSources)
                 .allMatch(path -> path.startsWith("agentscope-saas-dal/src/main/java/"));
+    }
+
+    @Test
+    void tenantTaskMapperCannotUseAdministrativeSession() throws IOException {
+        Path dalRoot = Path.of("../agentscope-saas-dal/src/main/java");
+        Set<String> durableTaskSources =
+                javaFiles(dalRoot).stream()
+                        .filter(
+                                file ->
+                                        Set.of("DurableTaskData.java", "DurableTaskMapper.java")
+                                                .contains(file.getFileName().toString()))
+                        .map(dalRoot::relativize)
+                        .map(DataAccessArchitectureTest::portablePath)
+                        .collect(Collectors.toSet());
+
+        assertThat(durableTaskSources)
+                .isNotEmpty()
+                .allMatch(path -> path.startsWith("io/agentscope/saas/dal/mybatis/tenant/"));
+        assertThat(
+                        read(
+                                Path.of(
+                                        "src/main/java/io/agentscope/saas/app/config/"
+                                                + "TenantMyBatisDataAccessConfig.java")))
+                .contains(
+                        "io.agentscope.saas.dal.mybatis.tenant",
+                        "sqlSessionTemplateRef = \"tenantSqlSessionTemplate\"");
     }
 
     private static Set<Path> javaFiles(Path root) throws IOException {

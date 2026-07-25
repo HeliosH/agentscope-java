@@ -4,7 +4,7 @@
 >
 > 目标：服务接口层、应用/领域层、数据访问层物理分离；业务数据库访问统一收敛到 MyBatis
 >
-> 状态：基础分层已实施，认证、任务查询、Outbox、治理和记忆投影已完成垂直迁移
+> 状态：基础分层已实施，认证、任务查询、任务租约、Outbox、治理和记忆投影已完成垂直迁移
 
 ## 1. 核心决策
 
@@ -58,27 +58,33 @@ dal/mybatis ───────── implements repository ports ────
 
 - 纯领域模块 `agentscope-saas-domain`；
 - 独立数据访问模块 `agentscope-saas-dal`；
-- 管理数据源专用 MyBatis `SqlSessionFactory` 和 Mapper 扫描边界；
+- 租户数据源与管理数据源各自独立的 MyBatis `SqlSessionFactory`、`SqlSessionTemplate`
+  和 Mapper 扫描边界；
 - PostgreSQL/H2 通用 UUID TypeHandler；
 - `AuthIdentityRepository` 领域端口及 MyBatis 实现；
 - `DurableTaskRepository` 领域端口及 MyBatis 实现；
+- `DurableTaskLeaseRepository` 领域端口及 MyBatis 状态机实现；
 - `OrchestrationOutboxRepository` 领域端口及 MyBatis 租约实现；
 - `OrchestrationGovernanceRepository` 领域端口及 MyBatis 悲观锁实现；
 - `MemoryProjectionRepository` 领域端口及 MyBatis 条件领取实现；
-- 登录、注册、持久化子任务查询和交付状态不再直接使用 JDBC；
+- `SandboxReconciliationRepository` 领域端口及 MyBatis 条件领取实现；
+- `FileObjectGcRepository` 领域端口及 MyBatis 删除队列实现；
+- 登录、注册、持久化子任务查询、交付状态和租约领取不再直接使用 JDBC；
 - Outbox 发布、预算治理、权限快照和记忆重放不再直接使用 JDBC；
 - 记忆投影领取会重新校验状态、重试次数和 stale 时间，防止多 worker 重复投影；
+- 沙箱释放和文件 GC 在调用外部资源前执行条件领取，防止多 worker 重复删除；
+- 文件元数据清理与对象删除队列写入处于同一管理事务，物理对象删除在事务外重试；
+- 租户 Mapper 使用非超级用户数据源并经过 RLS GUC 包装；管理 Mapper 只使用显式
+  管理数据源；
+- PostgreSQL 集成测试覆盖租户切换后的拒绝与恢复，防止 MyBatis 解包数据源代理后绕过
+  RLS；
 - 迁移期保留默认 JPA 事务管理器，避免改变未迁移用例的事务语义。
 
-当前应用层剩余 3 个直接使用 `JdbcTemplate` 的业务类：
-
-- `DurableTaskLeaseService`
-- `SandboxReconciliationJob`
-- `FileObjectGcJob`
+当前应用层直接使用 `JdbcTemplate` 的业务类数量为 0。
 
 `agentscope-saas-core` 中仍有 20 个 Spring Data JPA Repository。基础设施配置中为连接池、
-RLS GUC 和旧存储 adapter 装配而使用的 `DataSource` 不计入上述业务类数量，但对应存储
-adapter 仍须在后续批次迁入 DAL。
+RLS GUC 和旧存储 adapter 装配而使用的 `DataSource` 不计入上述业务类数量；其中仍依赖
+JPA Repository 的存储 adapter 须在后续批次迁入 DAL。
 
 ## 5. 后续迁移批次
 
@@ -86,7 +92,7 @@ adapter 仍须在后续批次迁入 DAL。
 
 迁移以下能力到 `domain + orchestration + dal`：
 
-- `DurableTaskLeaseService`
+- `DurableTaskLeaseService`（已完成）
 - `OrchestrationGovernanceService`（已完成）
 - `OrchestrationOutboxPublisher`（已完成）
 - `RunOrchestrationService` 使用的 6 个 JPA Repository
@@ -107,7 +113,8 @@ adapter 仍须在后续批次迁入 DAL。
 - 长会话仍按 `session_id + seq` 游标分页；
 - 文件二进制仍在 MinIO/对象存储，PG 只保存元数据和引用；
 - 记忆事实与 Mem0 投影职责不变；
-- 文件 GC 的领取、重试和幂等删除保持事务一致性。
+- 文件 GC 的领取、重试和幂等删除保持事务一致性（Job 与删除队列已完成，文件业务
+  Repository 待迁移）。
 
 ### P2：租户管理与运行资源
 
@@ -117,7 +124,8 @@ adapter 仍须在后续批次迁入 DAL。
 
 - 租户查询同时具备显式 `org_id` 条件与 PostgreSQL RLS；
 - 管理查询只能通过管理 Mapper；
-- 配额锁定点和并发创建限制不退化。
+- 配额锁定点和并发创建限制不退化；
+- 沙箱对账作业已完成，租户沙箱业务 Repository 待迁移。
 
 ### P3：清理旧持久化层
 

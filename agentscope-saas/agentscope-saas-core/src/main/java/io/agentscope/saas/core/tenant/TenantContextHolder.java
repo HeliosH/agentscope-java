@@ -17,7 +17,7 @@ package io.agentscope.saas.core.tenant;
 
 /**
  * Thread-local holder for the current request's org id, used to propagate the tenant into the JDBC
- * layer so {@code TenantAwareDataSource} can issue {@code SET LOCAL app.current_org} for Row-Level
+ * layer so {@code TenantAwareDataSource} can issue {@code SET app.current_org} for Row-Level
  * Security.
  *
  * <p>Bridged across two scheduler boundaries: (1) Reactor's various schedulers (Netty request

@@ -12,12 +12,18 @@ package io.agentscope.saas.app.orchestration;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.agentscope.saas.app.config.SaasProperties;
+import io.agentscope.saas.dal.mybatis.admin.DurableTaskLeaseMapper;
+import io.agentscope.saas.dal.mybatis.type.UuidTypeHandler;
+import io.agentscope.saas.dal.repository.MyBatisDurableTaskLeaseRepository;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 import javax.sql.DataSource;
+import org.apache.ibatis.session.SqlSessionFactory;
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mybatis.spring.SqlSessionFactoryBean;
+import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -40,7 +46,7 @@ class DurableTaskLeaseServiceTest {
         properties.getOrchestration().setSchedulerRetryMaxSeconds(30);
         leases =
                 new DurableTaskLeaseService(
-                        jdbc,
+                        leaseRepository(dataSource),
                         new TransactionTemplate(new DataSourceTransactionManager(dataSource)),
                         properties);
         runId = UUID.randomUUID();
@@ -246,5 +252,25 @@ class DurableTaskLeaseServiceTest {
                         + UUID.randomUUID()
                         + ";MODE=PostgreSQL;DB_CLOSE_DELAY=-1");
         return ds;
+    }
+
+    private static MyBatisDurableTaskLeaseRepository leaseRepository(DataSource dataSource) {
+        try {
+            org.apache.ibatis.session.Configuration configuration =
+                    new org.apache.ibatis.session.Configuration();
+            configuration.setMapUnderscoreToCamelCase(true);
+            configuration.setArgNameBasedConstructorAutoMapping(true);
+            configuration.getTypeHandlerRegistry().register(UUID.class, UuidTypeHandler.class);
+            configuration.addMapper(DurableTaskLeaseMapper.class);
+            SqlSessionFactoryBean factoryBean = new SqlSessionFactoryBean();
+            factoryBean.setDataSource(dataSource);
+            factoryBean.setConfiguration(configuration);
+            SqlSessionFactory factory = factoryBean.getObject();
+            DurableTaskLeaseMapper mapper =
+                    new SqlSessionTemplate(factory).getMapper(DurableTaskLeaseMapper.class);
+            return new MyBatisDurableTaskLeaseRepository(mapper);
+        } catch (Exception e) {
+            throw new IllegalStateException("Cannot create lease test repository", e);
+        }
     }
 }

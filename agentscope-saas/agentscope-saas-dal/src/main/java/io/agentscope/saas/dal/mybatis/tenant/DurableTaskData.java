@@ -7,7 +7,7 @@
  *
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-package io.agentscope.saas.dal.mybatis.admin;
+package io.agentscope.saas.dal.mybatis.tenant;
 
 import java.time.OffsetDateTime;
 import java.util.UUID;

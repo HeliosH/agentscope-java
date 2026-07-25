@@ -29,10 +29,8 @@ import org.springframework.context.annotation.Configuration;
 /**
  * The admin/bypass {@link DataSource}: a plain Hikari pool that connects as the superuser
  * {@code agentscope} role and does <strong>not</strong> set the RLS GUC {@code app.current_org}, so
- * it bypasses Row-Level Security. Used ONLY for bootstrap queries that run before a tenant context
- * exists (login/register — see {@link
- * io.agentscope.saas.dal.repository.MyBatisAuthIdentityRepository}). Every authenticated request
- * continues to
+ * it bypasses Row-Level Security. Used only for bootstrap queries that run before a tenant context
+ * exists and explicitly cross-tenant background workers. Every authenticated request continues to
  * use the {@code @Primary} RLS-wrapped {@link DataSource} from {@link TenantAwareDataSourceConfig}.
  *
  * <p>The bypass is explicit and narrow by design: there is no routing layer, so an empty tenant
@@ -58,7 +56,7 @@ public class AdminDataSourceConfig {
                         .password(properties.password())
                         .driverClassName(properties.driverClassName())
                         .build();
-        log.info("Admin (RLS-bypass) DataSource configured for bootstrap queries (login/register)");
+        log.info("Admin (RLS-bypass) DataSource configured for bootstrap and system workers");
         return pool;
     }
 

@@ -20,6 +20,10 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import io.agentscope.saas.app.config.SaasProperties;
+import io.agentscope.saas.app.support.MyBatisRepositoryTestSupport;
+import io.agentscope.saas.dal.mybatis.admin.SandboxReconciliationMapper;
+import io.agentscope.saas.dal.repository.MyBatisSandboxReconciliationRepository;
+import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository;
 import io.agentscope.saas.sandbox.SandboxBackendTerminator;
 import io.agentscope.saas.sandbox.SandboxMetrics;
 import java.time.OffsetDateTime;
@@ -33,6 +37,7 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 class SandboxReconciliationJobTest {
 
     private JdbcTemplate jdbc;
+    private SandboxReconciliationRepository repository;
     private SaasProperties properties;
     private SandboxMetrics metrics;
 
@@ -45,6 +50,9 @@ class SandboxReconciliationJobTest {
                         + UUID.randomUUID().toString().replace("-", "")
                         + ";MODE=PostgreSQL;DATABASE_TO_UPPER=false;DB_CLOSE_DELAY=-1");
         jdbc = new JdbcTemplate(ds);
+        repository =
+                new MyBatisSandboxReconciliationRepository(
+                        MyBatisRepositoryTestSupport.mapper(ds, SandboxReconciliationMapper.class));
         jdbc.execute(
                 """
                 CREATE TABLE sandboxes (
@@ -129,7 +137,7 @@ class SandboxReconciliationJobTest {
     }
 
     private SandboxReconciliationJob jobWithTerminator(SandboxBackendTerminator terminator) {
-        return new SandboxReconciliationJob(jdbc, properties, terminator, metrics);
+        return new SandboxReconciliationJob(repository, properties, terminator, metrics);
     }
 
     private UUID insertSandbox(

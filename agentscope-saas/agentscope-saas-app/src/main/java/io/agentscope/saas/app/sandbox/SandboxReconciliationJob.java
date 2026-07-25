@@ -16,20 +16,16 @@
 package io.agentscope.saas.app.sandbox;
 
 import io.agentscope.saas.app.config.SaasProperties;
+import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository;
+import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository.SandboxResource;
 import io.agentscope.saas.sandbox.SandboxBackendTerminator;
 import io.agentscope.saas.sandbox.SandboxMetrics;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.time.OffsetDateTime;
-import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
-import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -44,37 +40,20 @@ public class SandboxReconciliationJob {
 
     private static final Logger log = LoggerFactory.getLogger(SandboxReconciliationJob.class);
 
-    private static final String STATUS_ACTIVE = "active";
-    private static final String STATUS_EVICTED = "evicted";
-    private static final String RELEASE_PENDING = "pending";
-    private static final String RELEASE_FAILED = "failed";
-    private static final String RELEASE_TERMINATING = "terminating";
     private static final int MAX_ERROR_LENGTH = 2000;
 
-    private final JdbcTemplate jdbc;
+    private final SandboxReconciliationRepository repository;
     private final SaasProperties properties;
     private final SandboxBackendTerminator terminator;
     private final SandboxMetrics metrics;
 
     @Autowired
     public SandboxReconciliationJob(
-            @Qualifier("adminDataSource") DataSource adminDataSource,
+            SandboxReconciliationRepository repository,
             SaasProperties properties,
             SandboxBackendTerminator terminator,
             SandboxMetrics metrics) {
-        this(
-                new JdbcTemplate(adminDataSource),
-                properties,
-                terminator,
-                metrics != null ? metrics : SandboxMetrics.noop());
-    }
-
-    SandboxReconciliationJob(
-            JdbcTemplate jdbc,
-            SaasProperties properties,
-            SandboxBackendTerminator terminator,
-            SandboxMetrics metrics) {
-        this.jdbc = jdbc;
+        this.repository = repository;
         this.properties = properties;
         this.terminator = terminator != null ? terminator : SandboxBackendTerminator.unsupported();
         this.metrics = metrics != null ? metrics : SandboxMetrics.noop();
@@ -113,19 +92,21 @@ public class SandboxReconciliationJob {
                         .minusSeconds(Math.max(0L, sandbox.getReconciliationActiveGraceSeconds()));
 
         MutableSummary summary = new MutableSummary();
-        for (SandboxCandidate candidate : findExpiredActive(staleBefore, batchSize)) {
-            if (markExpiredActiveEvicted(candidate.id())) {
+        for (SandboxResource candidate : repository.findExpiredActive(staleBefore, batchSize)) {
+            if (repository.markExpiredActiveEvicted(candidate.id(), OffsetDateTime.now()) == 1) {
                 metrics.evict(candidate.sandboxType());
                 summary.expiredActive++;
-                terminateAndRecord(candidate, maxAttempts, summary);
+                if (repository.claimBackendRelease(candidate.id(), maxAttempts) == 1) {
+                    terminateAndRecord(candidate, maxAttempts, summary);
+                }
             }
         }
 
         int remaining = Math.max(0, batchSize - summary.expiredActive);
         if (remaining > 0) {
-            for (SandboxCandidate candidate :
-                    findBackendReleaseCandidates(remaining, maxAttempts)) {
-                if (claimBackendRelease(candidate.id(), maxAttempts)) {
+            for (SandboxResource candidate :
+                    repository.findBackendReleaseCandidates(maxAttempts, remaining)) {
+                if (repository.claimBackendRelease(candidate.id(), maxAttempts) == 1) {
                     terminateAndRecord(candidate, maxAttempts, summary);
                 }
             }
@@ -133,102 +114,8 @@ public class SandboxReconciliationJob {
         return summary.toImmutable();
     }
 
-    private List<SandboxCandidate> findExpiredActive(OffsetDateTime staleBefore, int limit) {
-        return jdbc.query(
-                """
-                SELECT id, org_id, user_id, sandbox_type, external_id
-                  FROM sandboxes
-                 WHERE status = ?
-                   AND expires_at IS NOT NULL
-                   AND expires_at < ?
-                 ORDER BY expires_at ASC
-                 LIMIT ?
-                """,
-                this::mapCandidate,
-                STATUS_ACTIVE,
-                staleBefore,
-                limit);
-    }
-
-    private List<SandboxCandidate> findBackendReleaseCandidates(int limit, int maxAttempts) {
-        return jdbc.query(
-                """
-                SELECT id, org_id, user_id, sandbox_type, external_id
-                  FROM sandboxes
-                 WHERE status IN ('evicted', 'released')
-                   AND external_id IS NOT NULL
-                   AND TRIM(external_id) <> ''
-                   AND COALESCE(backend_release_attempts, 0) < ?
-                   AND (
-                        backend_release_status IS NULL
-                        OR backend_release_status IN (?, ?)
-                   )
-                 ORDER BY last_used_at ASC, created_at ASC
-                 LIMIT ?
-                """,
-                this::mapCandidate,
-                maxAttempts,
-                RELEASE_PENDING,
-                RELEASE_FAILED,
-                limit);
-    }
-
-    private SandboxCandidate mapCandidate(ResultSet rs, int rowNum) throws SQLException {
-        return new SandboxCandidate(
-                rs.getObject("id", UUID.class),
-                rs.getObject("org_id", UUID.class),
-                rs.getObject("user_id", UUID.class),
-                rs.getString("sandbox_type"),
-                rs.getString("external_id"));
-    }
-
-    private boolean markExpiredActiveEvicted(UUID id) {
-        int updated =
-                jdbc.update(
-                        """
-                        UPDATE sandboxes
-                           SET status = ?,
-                               last_used_at = ?,
-                               expires_at = ?,
-                               backend_release_status = ?,
-                               backend_release_error = NULL
-                         WHERE id = ?
-                           AND status = ?
-                        """,
-                        STATUS_EVICTED,
-                        OffsetDateTime.now(),
-                        OffsetDateTime.now(),
-                        RELEASE_PENDING,
-                        id,
-                        STATUS_ACTIVE);
-        return updated == 1;
-    }
-
-    private boolean claimBackendRelease(UUID id, int maxAttempts) {
-        int updated =
-                jdbc.update(
-                        """
-                        UPDATE sandboxes
-                           SET backend_release_status = ?,
-                               backend_release_error = NULL
-                         WHERE id = ?
-                           AND status IN ('evicted', 'released')
-                           AND COALESCE(backend_release_attempts, 0) < ?
-                           AND (
-                                backend_release_status IS NULL
-                                OR backend_release_status IN (?, ?)
-                           )
-                        """,
-                        RELEASE_TERMINATING,
-                        id,
-                        maxAttempts,
-                        RELEASE_PENDING,
-                        RELEASE_FAILED);
-        return updated == 1;
-    }
-
     private void terminateAndRecord(
-            SandboxCandidate candidate, int maxAttempts, MutableSummary summary) {
+            SandboxResource candidate, int maxAttempts, MutableSummary summary) {
         SandboxBackendTerminator.TerminationResult result;
         try {
             result = terminator.terminate(candidate.sandboxType(), candidate.externalId());
@@ -261,21 +148,12 @@ public class SandboxReconciliationJob {
     private void recordBackendRelease(UUID id, SandboxBackendTerminator.TerminationResult result) {
         int attemptIncrement = result.attempted() ? 1 : 0;
         OffsetDateTime releasedAt = result.succeeded() ? OffsetDateTime.now() : null;
-        jdbc.update(
-                """
-                UPDATE sandboxes
-                   SET backend_release_status = ?,
-                       backend_release_attempts = COALESCE(backend_release_attempts, 0) + ?,
-                       backend_released_at = CASE WHEN ? THEN ? ELSE backend_released_at END,
-                       backend_release_error = ?
-                 WHERE id = ?
-                """,
+        repository.recordBackendRelease(
+                id,
                 result.status(),
                 attemptIncrement,
-                result.succeeded(),
                 releasedAt,
-                result.succeeded() ? null : truncate(result.message()),
-                id);
+                result.succeeded() ? null : truncate(result.message()));
     }
 
     private static String truncate(String value) {
@@ -294,9 +172,6 @@ public class SandboxReconciliationJob {
             return expiredActive + backendReleased + backendSkipped + backendFailed;
         }
     }
-
-    record SandboxCandidate(
-            UUID id, UUID orgId, UUID userId, String sandboxType, String externalId) {}
 
     private static final class MutableSummary {
         private int expiredActive;

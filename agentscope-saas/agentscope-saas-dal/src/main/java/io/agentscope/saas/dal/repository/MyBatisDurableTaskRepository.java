@@ -9,8 +9,8 @@
  */
 package io.agentscope.saas.dal.repository;
 
-import io.agentscope.saas.dal.mybatis.admin.DurableTaskData;
-import io.agentscope.saas.dal.mybatis.admin.DurableTaskMapper;
+import io.agentscope.saas.dal.mybatis.tenant.DurableTaskData;
+import io.agentscope.saas.dal.mybatis.tenant.DurableTaskMapper;
 import io.agentscope.saas.domain.orchestration.DurableTask;
 import io.agentscope.saas.domain.orchestration.DurableTaskRepository;
 import java.time.OffsetDateTime;

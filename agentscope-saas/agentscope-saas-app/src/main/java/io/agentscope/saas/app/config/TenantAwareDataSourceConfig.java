@@ -28,7 +28,7 @@ import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
-import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy;
+import org.springframework.jdbc.datasource.DelegatingDataSource;
 
 /**
  * Configures the primary {@link DataSource} so every connection checkout sets the PostgreSQL GUC
@@ -36,13 +36,18 @@ import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy;
  * hardened by V9).
  *
  * <p>HikariCP 5.x removed {@code IConnectionCustomizer}, so we wrap the pool in a {@link
- * TransactionAwareDataSourceProxy} subclass that issues {@code SET app.current_org} on each {@code
- * getConnection()}. The GUC is session-scoped and overwritten on every checkout, so pooled
- * connections never inherit a prior tenant. When the holder is empty (Flyway migrations, system
- * calls, login before tenant context is resolved), the GUC is set to the empty string. The V9
- * policies wrap the setting in {@code NULLIF(..., '')}, so both the empty-string and unset cases
- * collapse to NULL and RLS denies all tenant rows (safe default) rather than throwing on the
- * {@code ::uuid} cast. The app DB role must NOT be a superuser/BYPASSRLS.
+ * DelegatingDataSource} subclass that issues {@code SET app.current_org} on each {@code
+ * getConnection()}. This deliberately does not extend {@code TransactionAwareDataSourceProxy}:
+ * MyBatis-Spring unwraps that proxy while building its session factory, which would bypass the GUC
+ * binding. Spring transaction managers already obtain connections through this configured data
+ * source, so the plain delegating wrapper remains transaction-compatible.
+ *
+ * <p>The GUC is session-scoped and overwritten on every checkout, so pooled connections never
+ * inherit a prior tenant. When the holder is empty (Flyway migrations, system calls, login before
+ * tenant context is resolved), the GUC is set to the empty string. The V9 policies wrap the setting
+ * in {@code NULLIF(..., '')}, so both the empty-string and unset cases collapse to NULL and RLS
+ * denies all tenant rows (safe default) rather than throwing on the {@code ::uuid} cast. The app DB
+ * role must NOT be a superuser/BYPASSRLS.
  */
 @Configuration
 public class TenantAwareDataSourceConfig {
@@ -64,10 +69,9 @@ public class TenantAwareDataSourceConfig {
 
     /**
      * Wraps a pool and sets {@code app.current_org} on every {@link #getConnection()} from the
-     * current {@link TenantContextHolder}. Extends {@link TransactionAwareDataSourceProxy} so JPA
-     * transaction synchronization still works.
+     * current {@link TenantContextHolder}.
      */
-    static final class TenantRlsDataSourceProxy extends TransactionAwareDataSourceProxy {
+    static final class TenantRlsDataSourceProxy extends DelegatingDataSource {
 
         TenantRlsDataSourceProxy(DataSource target) {
             super(target);

@@ -9,11 +9,8 @@
  */
 package io.agentscope.saas.app.config;
 
-import io.agentscope.saas.dal.mybatis.type.UuidTypeHandler;
-import java.util.UUID;
 import javax.sql.DataSource;
 import org.apache.ibatis.session.SqlSessionFactory;
-import org.mybatis.spring.SqlSessionFactoryBean;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -27,8 +24,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * MyBatis wiring for cross-tenant operational and pre-authentication queries.
  *
  * <p>Administrative mappers are isolated in a dedicated package and cannot accidentally use the
- * tenant-aware primary data source. Tenant-scoped mappers will use a separate session factory as
- * their bounded contexts migrate from JPA.
+ * tenant-aware primary data source.
  */
 @Configuration
 @MapperScan(
@@ -39,15 +35,7 @@ public class MyBatisDataAccessConfig {
     @Bean
     public SqlSessionFactory adminSqlSessionFactory(
             @Qualifier("adminDataSource") DataSource adminDataSource) throws Exception {
-        org.apache.ibatis.session.Configuration configuration =
-                new org.apache.ibatis.session.Configuration();
-        configuration.setMapUnderscoreToCamelCase(true);
-        configuration.setArgNameBasedConstructorAutoMapping(true);
-        configuration.getTypeHandlerRegistry().register(UUID.class, UuidTypeHandler.class);
-        SqlSessionFactoryBean factory = new SqlSessionFactoryBean();
-        factory.setDataSource(adminDataSource);
-        factory.setConfiguration(configuration);
-        return factory.getObject();
+        return MyBatisSessionFactorySupport.create(adminDataSource);
     }
 
     @Bean

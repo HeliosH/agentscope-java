@@ -7,7 +7,7 @@
  *
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-package io.agentscope.saas.dal.mybatis.admin;
+package io.agentscope.saas.dal.mybatis.tenant;
 
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -18,7 +18,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
-/** MyBatis mapper for durable task read and delivery state. */
+/** Tenant-scoped MyBatis mapper for durable task read and delivery state. */
 public interface DurableTaskMapper {
 
     String TASK_PROJECTION =

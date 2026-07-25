@@ -21,12 +21,18 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.agentscope.saas.app.config.SaasProperties;
+import io.agentscope.saas.app.support.MyBatisRepositoryTestSupport;
+import io.agentscope.saas.dal.mybatis.admin.FileObjectGcMapper;
+import io.agentscope.saas.dal.repository.MyBatisFileObjectGcRepository;
+import io.agentscope.saas.domain.workspace.FileObjectGcRepository;
 import io.agentscope.saas.storage.FileObjectStore;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.transaction.support.TransactionTemplate;
 
 class FileObjectGcJobTest {
 
@@ -65,8 +71,7 @@ class FileObjectGcJobTest {
         properties.getFileStore().setDeletedRetentionDays(1);
         properties.getFileStore().setGcBatchSize(10);
 
-        FileObjectGcJob.GcSummary summary =
-                new FileObjectGcJob(dataSource, provider, properties).collectOnce();
+        FileObjectGcJob.GcSummary summary = job(dataSource, provider, properties).collectOnce();
 
         assertThat(summary.deletedFiles()).isEqualTo(1);
         assertThat(summary.objectsDeleted()).isEqualTo(1);
@@ -110,8 +115,7 @@ class FileObjectGcJobTest {
         properties.getFileStore().setDeletedRetentionDays(30);
         properties.getFileStore().setMaxVersionsPerFile(2);
 
-        FileObjectGcJob.GcSummary summary =
-                new FileObjectGcJob(dataSource, provider, properties).collectOnce();
+        FileObjectGcJob.GcSummary summary = job(dataSource, provider, properties).collectOnce();
 
         assertThat(summary.prunedVersions()).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM file_versions", Long.class))
@@ -137,6 +141,20 @@ class FileObjectGcJobTest {
                 userId,
                 versionNo,
                 objectKey);
+    }
+
+    private static FileObjectGcJob job(
+            DriverManagerDataSource dataSource,
+            ObjectProvider<FileObjectStore> provider,
+            SaasProperties properties) {
+        FileObjectGcRepository repository =
+                new MyBatisFileObjectGcRepository(
+                        MyBatisRepositoryTestSupport.mapper(dataSource, FileObjectGcMapper.class));
+        return new FileObjectGcJob(
+                repository,
+                new TransactionTemplate(new DataSourceTransactionManager(dataSource)),
+                provider,
+                properties);
     }
 
     private static void createSchema(JdbcTemplate jdbc) {
