@@ -15,23 +15,21 @@
  */
 package io.agentscope.saas.storage;
 
+import io.agentscope.saas.dal.mybatis.tenant.BinaryBlobData;
+import io.agentscope.saas.dal.mybatis.tenant.RelationalBlobStorageMapper;
 import java.io.FileNotFoundException;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.util.Objects;
 import java.util.UUID;
-import javax.sql.DataSource;
 
-/** PostgreSQL/H2 BYTEA fallback object store for local development and tests. */
+/** MyBatis-backed PostgreSQL/H2 BYTEA fallback object store for local development and tests. */
 public final class PgFileObjectStore implements FileObjectStore {
 
-    private final DataSource dataSource;
+    private final RelationalBlobStorageMapper mapper;
     private final String table;
 
-    public PgFileObjectStore(DataSource dataSource, String table) {
-        this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
-        this.table = table != null && !table.isBlank() ? table : "file_object_blobs";
+    public PgFileObjectStore(RelationalBlobStorageMapper mapper, String table) {
+        this.mapper = Objects.requireNonNull(mapper, "mapper");
+        this.table = SqlTableName.validate(table, "file_object_blobs");
     }
 
     @Override
@@ -42,73 +40,44 @@ public final class PgFileObjectStore implements FileObjectStore {
     @Override
     public void put(FileObject object) throws Exception {
         Objects.requireNonNull(object, "object");
-        try (Connection conn = dataSource.getConnection()) {
-            String updateSql =
-                    "UPDATE "
-                            + table
-                            + " SET org_id = ?, content_type = ?, size_bytes = ?, sha256 = ?,"
-                            + " data = ?, created_at = NOW() WHERE object_key = ?";
-            try (PreparedStatement ps = conn.prepareStatement(updateSql)) {
-                ps.setObject(1, object.orgId());
-                ps.setString(2, object.contentType());
-                ps.setLong(3, object.content() != null ? object.content().length : 0L);
-                ps.setString(4, object.sha256());
-                ps.setBytes(5, object.content() != null ? object.content() : new byte[0]);
-                ps.setString(6, object.objectKey());
-                int rows = ps.executeUpdate();
-                if (rows > 0) {
-                    return;
-                }
-            }
-            String insertSql =
-                    "INSERT INTO "
-                            + table
-                            + " (object_key, org_id, content_type, size_bytes, sha256, data,"
-                            + " created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())";
-            try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
-                ps.setString(1, object.objectKey());
-                ps.setObject(2, object.orgId());
-                ps.setString(3, object.contentType());
-                ps.setLong(4, object.content() != null ? object.content().length : 0L);
-                ps.setString(5, object.sha256());
-                ps.setBytes(6, object.content() != null ? object.content() : new byte[0]);
-                ps.executeUpdate();
-            }
+        byte[] content = object.content() != null ? object.content() : new byte[0];
+        int updated =
+                mapper.updateFileObject(
+                        table,
+                        object.objectKey(),
+                        object.orgId(),
+                        object.contentType(),
+                        content.length,
+                        object.sha256(),
+                        content);
+        if (updated == 0) {
+            mapper.insertFileObject(
+                    table,
+                    object.objectKey(),
+                    object.orgId(),
+                    object.contentType(),
+                    content.length,
+                    object.sha256(),
+                    content);
         }
     }
 
     @Override
     public byte[] get(UUID orgId, String objectKey) throws Exception {
-        String sql = "SELECT data FROM " + table + " WHERE org_id = ? AND object_key = ?";
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setObject(1, orgId);
-            ps.setString(2, objectKey);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    throw new FileNotFoundException("File object not found: " + objectKey);
-                }
-                return rs.getBytes("data");
-            }
+        BinaryBlobData stored = mapper.findFileObject(table, orgId, objectKey);
+        if (stored == null) {
+            throw new FileNotFoundException("File object not found: " + objectKey);
         }
+        return stored.getData();
     }
 
     @Override
     public void delete(UUID orgId, String objectKey) throws Exception {
-        String sql = "DELETE FROM " + table + " WHERE org_id = ? AND object_key = ?";
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setObject(1, orgId);
-            ps.setString(2, objectKey);
-            ps.executeUpdate();
-        }
+        mapper.deleteFileObject(table, orgId, objectKey);
     }
 
     @Override
     public void healthCheck() throws Exception {
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement ps = conn.prepareStatement("SELECT 1")) {
-            ps.execute();
-        }
+        mapper.healthCheck();
     }
 }

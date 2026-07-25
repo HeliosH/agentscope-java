@@ -19,14 +19,13 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.saas.app.chat.ChatPersistenceService;
-import io.agentscope.saas.core.persistence.entity.ChatMessageEntity;
-import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
-import io.agentscope.saas.core.persistence.repo.ChatMessageRepository;
-import io.agentscope.saas.core.persistence.repo.ChatSessionRepository;
+import io.agentscope.saas.domain.model.ChatMessageEntity;
+import io.agentscope.saas.domain.model.ChatSessionEntity;
+import io.agentscope.saas.domain.repository.ChatMessageRepository;
+import io.agentscope.saas.domain.repository.ChatSessionRepository;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -363,8 +362,7 @@ public class SessionController {
     private EntityPage messagePage(UUID sessionId, Long afterSeq, int limit) {
         int effectiveLimit = limit <= 0 ? 200 : Math.min(limit, 500);
         List<ChatMessageEntity> raw =
-                messageRepository.pageAfterSeq(
-                        sessionId, afterSeq, PageRequest.of(0, effectiveLimit + 1));
+                messageRepository.pageAfterSeq(sessionId, afterSeq, effectiveLimit + 1);
         boolean hasMore = raw.size() > effectiveLimit;
         List<ChatMessageEntity> items =
                 hasMore ? new ArrayList<>(raw.subList(0, effectiveLimit)) : raw;
@@ -375,8 +373,7 @@ public class SessionController {
     private EntityWindow messageWindow(UUID sessionId, Long beforeSeq, int limit) {
         int effectiveLimit = limit <= 0 ? 100 : Math.min(limit, 500);
         List<ChatMessageEntity> raw =
-                messageRepository.pageBeforeSeq(
-                        sessionId, beforeSeq, PageRequest.of(0, effectiveLimit + 1));
+                messageRepository.pageBeforeSeq(sessionId, beforeSeq, effectiveLimit + 1);
         boolean hasMore = raw.size() > effectiveLimit;
         List<ChatMessageEntity> newestFirst =
                 hasMore ? new ArrayList<>(raw.subList(0, effectiveLimit)) : new ArrayList<>(raw);

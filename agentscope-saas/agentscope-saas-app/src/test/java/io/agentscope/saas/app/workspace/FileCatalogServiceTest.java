@@ -25,15 +25,15 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.saas.app.config.SaasProperties;
-import io.agentscope.saas.core.persistence.entity.FileEntity;
-import io.agentscope.saas.core.persistence.entity.FileVersionEntity;
-import io.agentscope.saas.core.persistence.repo.FileAttachmentRepository;
-import io.agentscope.saas.core.persistence.repo.FileRepository;
-import io.agentscope.saas.core.persistence.repo.FileVersionRepository;
-import io.agentscope.saas.core.persistence.repo.OrgRepository;
-import io.agentscope.saas.core.persistence.repo.UserRepository;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
+import io.agentscope.saas.domain.model.FileEntity;
+import io.agentscope.saas.domain.model.FileVersionEntity;
+import io.agentscope.saas.domain.repository.FileAttachmentRepository;
+import io.agentscope.saas.domain.repository.FileRepository;
+import io.agentscope.saas.domain.repository.FileVersionRepository;
+import io.agentscope.saas.domain.repository.OrgRepository;
+import io.agentscope.saas.domain.repository.UserRepository;
 import io.agentscope.saas.storage.FileObject;
 import io.agentscope.saas.storage.FileObjectStore;
 import java.nio.charset.StandardCharsets;
@@ -78,13 +78,9 @@ class FileCatalogServiceTest {
     @BeforeEach
     void configureQuotaLocks() {
         when(orgRepository.lockTenantOrg(any(UUID.class)))
-                .thenReturn(
-                        Optional.of(
-                                mock(io.agentscope.saas.core.persistence.entity.OrgEntity.class)));
+                .thenReturn(Optional.of(mock(io.agentscope.saas.domain.model.OrgEntity.class)));
         when(userRepository.lockTenantUser(any(UUID.class), any(UUID.class)))
-                .thenReturn(
-                        Optional.of(
-                                mock(io.agentscope.saas.core.persistence.entity.UserEntity.class)));
+                .thenReturn(Optional.of(mock(io.agentscope.saas.domain.model.UserEntity.class)));
     }
 
     @AfterEach

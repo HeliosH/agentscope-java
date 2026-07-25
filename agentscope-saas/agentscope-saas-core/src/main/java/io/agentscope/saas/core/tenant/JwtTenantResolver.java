@@ -15,8 +15,8 @@
  */
 package io.agentscope.saas.core.tenant;
 
-import io.agentscope.saas.core.persistence.entity.TierPolicyEntity;
-import io.agentscope.saas.core.persistence.repo.TierPolicyRepository;
+import io.agentscope.saas.domain.model.TierPolicyEntity;
+import io.agentscope.saas.domain.repository.TierPolicyRepository;
 import java.util.Map;
 import org.springframework.stereotype.Component;
 

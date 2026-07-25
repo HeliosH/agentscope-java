@@ -25,7 +25,7 @@ import io.agentscope.harness.agent.filesystem.model.ReadResult;
 import io.agentscope.harness.agent.subagent.AgentSpecLoader;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.WorkspaceMode;
-import io.agentscope.saas.core.persistence.entity.AgentEntity;
+import io.agentscope.saas.domain.model.AgentEntity;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;

@@ -18,8 +18,8 @@ package io.agentscope.saas.core.tenant;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.when;
 
-import io.agentscope.saas.core.persistence.entity.TierPolicyEntity;
-import io.agentscope.saas.core.persistence.repo.TierPolicyRepository;
+import io.agentscope.saas.domain.model.TierPolicyEntity;
+import io.agentscope.saas.domain.repository.TierPolicyRepository;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;

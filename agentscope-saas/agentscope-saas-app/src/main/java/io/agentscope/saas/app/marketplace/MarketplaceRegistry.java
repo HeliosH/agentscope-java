@@ -16,8 +16,8 @@
 package io.agentscope.saas.app.marketplace;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.agentscope.saas.core.persistence.entity.MarketplaceEntity;
-import io.agentscope.saas.core.persistence.repo.MarketplaceRepository;
+import io.agentscope.saas.domain.model.MarketplaceEntity;
+import io.agentscope.saas.domain.repository.MarketplaceRepository;
 import jakarta.annotation.PreDestroy;
 import java.nio.file.Path;
 import java.util.Locale;

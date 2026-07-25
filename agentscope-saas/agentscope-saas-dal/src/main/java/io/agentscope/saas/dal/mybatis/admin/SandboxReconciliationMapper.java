@@ -9,6 +9,8 @@
  */
 package io.agentscope.saas.dal.mybatis.admin;
 
+import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository.SandboxPoolCount;
+import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository.SandboxTypeCount;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -20,6 +22,32 @@ import org.apache.ibatis.annotations.Update;
 
 /** Administrative MyBatis mapper for cross-tenant sandbox reconciliation. */
 public interface SandboxReconciliationMapper {
+
+    @Select(
+            """
+            SELECT sandbox_type, status, COUNT(*) AS count
+              FROM sandboxes
+             GROUP BY sandbox_type, status
+            """)
+    @ConstructorArgs({
+        @Arg(column = "sandbox_type", javaType = String.class),
+        @Arg(column = "status", javaType = String.class),
+        @Arg(column = "count", javaType = long.class)
+    })
+    List<SandboxPoolCount> countByTypeAndStatus();
+
+    @Select(
+            """
+            SELECT sandbox_type, COUNT(*) AS count
+              FROM sandboxes
+             WHERE status = 'active' AND expires_at < #{now}
+             GROUP BY sandbox_type
+            """)
+    @ConstructorArgs({
+        @Arg(column = "sandbox_type", javaType = String.class),
+        @Arg(column = "count", javaType = long.class)
+    })
+    List<SandboxTypeCount> countExpiredActiveByType(@Param("now") OffsetDateTime now);
 
     @Select(
             """

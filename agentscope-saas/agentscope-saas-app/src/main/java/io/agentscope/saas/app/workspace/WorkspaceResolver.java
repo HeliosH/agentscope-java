@@ -17,8 +17,8 @@ package io.agentscope.saas.app.workspace;
 
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
-import io.agentscope.saas.core.persistence.entity.AgentEntity;
-import io.agentscope.saas.core.persistence.repo.AgentRepository;
+import io.agentscope.saas.domain.model.AgentEntity;
+import io.agentscope.saas.domain.repository.AgentRepository;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;

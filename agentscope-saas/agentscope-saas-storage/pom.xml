@@ -31,6 +31,10 @@
     <description>Durable sandbox workspace snapshot storage (PostgreSQL BYTEA RemoteSnapshotClient).</description>
 
     <dependencies>
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-saas-dal</artifactId>
+        </dependency>
         <!-- RemoteSnapshotClient interface -->
         <dependency>
             <groupId>io.agentscope</groupId>

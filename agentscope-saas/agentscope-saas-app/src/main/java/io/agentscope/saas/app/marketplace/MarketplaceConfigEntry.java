@@ -25,7 +25,7 @@ import java.util.Map;
 
 /**
  * One org-scoped marketplace declaration, persisted as the {@code properties} JSONB column of
- * {@link io.agentscope.saas.core.persistence.entity.MarketplaceEntity}. Holds a {@code type}
+ * {@link io.agentscope.saas.domain.model.MarketplaceEntity}. Holds a {@code type}
  * discriminator ({@code "git"} / {@code "nacos"}) plus an open bag of type-specific configuration
  * captured via Jackson's any-setter, so adding a new marketplace implementation does not require
  * changing the schema.

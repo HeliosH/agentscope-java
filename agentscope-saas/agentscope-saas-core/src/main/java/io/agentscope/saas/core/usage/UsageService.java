@@ -15,10 +15,10 @@
  */
 package io.agentscope.saas.core.usage;
 
-import io.agentscope.saas.core.persistence.entity.UsageRecordEntity;
-import io.agentscope.saas.core.persistence.repo.UsageRecordRepository;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
+import io.agentscope.saas.domain.model.UsageRecordEntity;
+import io.agentscope.saas.domain.repository.UsageRecordRepository;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

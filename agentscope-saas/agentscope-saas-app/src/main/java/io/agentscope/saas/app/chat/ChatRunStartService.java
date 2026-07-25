@@ -10,10 +10,10 @@
 package io.agentscope.saas.app.chat;
 
 import io.agentscope.saas.app.config.OrchestrationPolicyFactory;
-import io.agentscope.saas.core.persistence.entity.AgentEntity;
-import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
-import io.agentscope.saas.core.persistence.repo.AgentRepository;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.domain.model.AgentEntity;
+import io.agentscope.saas.domain.model.ChatSessionEntity;
+import io.agentscope.saas.domain.repository.AgentRepository;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
 import java.util.UUID;
 import org.springframework.stereotype.Service;

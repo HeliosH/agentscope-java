@@ -17,10 +17,10 @@ package io.agentscope.saas.app.config;
 
 import io.agentscope.saas.app.workspace.ClamAvFileContentScanner;
 import io.agentscope.saas.app.workspace.FileContentScanner;
+import io.agentscope.saas.dal.mybatis.tenant.RelationalBlobStorageMapper;
 import io.agentscope.saas.storage.FileObjectStore;
 import io.agentscope.saas.storage.MinioFileObjectStoreFactory;
 import io.agentscope.saas.storage.PgFileObjectStore;
-import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -37,7 +37,7 @@ public class FileStoreConfig {
 
     @Bean
     public FileObjectStore fileObjectStore(
-            SaasProperties properties, ObjectProvider<DataSource> dataSourceProvider) {
+            SaasProperties properties, ObjectProvider<RelationalBlobStorageMapper> mapperProvider) {
         SaasProperties.FileStore cfg = properties.getFileStore();
         String backend = cfg.getBackend() == null ? "pg" : cfg.getBackend().trim().toLowerCase();
         if ("minio".equals(backend)) {
@@ -53,12 +53,13 @@ public class FileStoreConfig {
                     m.getRegion(),
                     m.getBucket());
         }
-        DataSource dataSource = dataSourceProvider.getIfAvailable();
-        if (dataSource == null) {
-            throw new IllegalStateException("file-store backend=pg requires a DataSource");
+        RelationalBlobStorageMapper mapper = mapperProvider.getIfAvailable();
+        if (mapper == null) {
+            throw new IllegalStateException(
+                    "file-store backend=pg requires a tenant MyBatis mapper");
         }
         log.info("Using PostgreSQL/H2-backed file object store table={}", cfg.getTable());
-        return new PgFileObjectStore(dataSource, cfg.getTable());
+        return new PgFileObjectStore(mapper, cfg.getTable());
     }
 
     @Bean

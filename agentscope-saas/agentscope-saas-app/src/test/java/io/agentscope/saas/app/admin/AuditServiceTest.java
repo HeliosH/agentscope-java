@@ -22,8 +22,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.agentscope.saas.core.persistence.entity.AuditLogEntity;
-import io.agentscope.saas.core.persistence.repo.AuditLogRepository;
+import io.agentscope.saas.domain.model.AuditLogEntity;
+import io.agentscope.saas.domain.repository.AuditLogRepository;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;

@@ -19,6 +19,7 @@ import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository;
 import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository.SandboxResource;
 import io.agentscope.saas.sandbox.SandboxBackendTerminator;
+import io.agentscope.saas.sandbox.SandboxInventoryMetrics;
 import io.agentscope.saas.sandbox.SandboxMetrics;
 import java.time.OffsetDateTime;
 import java.util.UUID;
@@ -46,17 +47,20 @@ public class SandboxReconciliationJob {
     private final SaasProperties properties;
     private final SandboxBackendTerminator terminator;
     private final SandboxMetrics metrics;
+    private final SandboxInventoryMetrics inventoryMetrics;
 
     @Autowired
     public SandboxReconciliationJob(
             SandboxReconciliationRepository repository,
             SaasProperties properties,
             SandboxBackendTerminator terminator,
-            SandboxMetrics metrics) {
+            SandboxMetrics metrics,
+            SandboxInventoryMetrics inventoryMetrics) {
         this.repository = repository;
         this.properties = properties;
         this.terminator = terminator != null ? terminator : SandboxBackendTerminator.unsupported();
         this.metrics = metrics != null ? metrics : SandboxMetrics.noop();
+        this.inventoryMetrics = inventoryMetrics;
     }
 
     @Scheduled(
@@ -80,6 +84,8 @@ public class SandboxReconciliationJob {
             }
         } catch (RuntimeException e) {
             log.warn("Sandbox reconciliation scan failed: {}", e.getMessage());
+        } finally {
+            refreshInventoryMetrics();
         }
     }
 
@@ -164,6 +170,17 @@ public class SandboxReconciliationJob {
         return normalized.length() <= MAX_ERROR_LENGTH
                 ? normalized
                 : normalized.substring(0, MAX_ERROR_LENGTH);
+    }
+
+    private void refreshInventoryMetrics() {
+        if (inventoryMetrics == null) {
+            return;
+        }
+        try {
+            inventoryMetrics.refresh();
+        } catch (RuntimeException e) {
+            log.warn("Sandbox inventory metrics refresh failed: {}", e.getMessage());
+        }
     }
 
     record ReconciliationSummary(

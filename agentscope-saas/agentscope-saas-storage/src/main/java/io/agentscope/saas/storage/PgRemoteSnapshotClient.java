@@ -16,92 +16,57 @@
 package io.agentscope.saas.storage;
 
 import io.agentscope.harness.agent.sandbox.snapshot.RemoteSnapshotClient;
+import io.agentscope.saas.dal.mybatis.tenant.BinaryBlobData;
+import io.agentscope.saas.dal.mybatis.tenant.RelationalBlobStorageMapper;
 import java.io.ByteArrayInputStream;
 import java.io.FileNotFoundException;
 import java.io.InputStream;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.util.Objects;
-import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * JDBC {@link RemoteSnapshotClient} that stores sandbox workspace tar archives as
+ * MyBatis {@link RemoteSnapshotClient} that stores sandbox workspace tar archives as
  * {@code BYTEA} BLOBs. Works on PostgreSQL and H2 (PostgreSQL mode) via a portable two-step
  * upsert (update-then-insert) so that dev/local H2 verification doesn't require a separate
  * object store.
  *
- * <p>The backing table is created by Flyway, not here (the app runs with
- * {@code hibernate.ddl-auto=validate}).
+ * <p>The backing table is created by Flyway, not by the storage adapter.
  */
 public class PgRemoteSnapshotClient implements RemoteSnapshotClient {
 
     private static final Logger log = LoggerFactory.getLogger(PgRemoteSnapshotClient.class);
 
-    private final DataSource dataSource;
+    private final RelationalBlobStorageMapper mapper;
     private final String table;
 
-    public PgRemoteSnapshotClient(DataSource dataSource, String table) {
-        this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
-        this.table = (table != null && !table.isBlank()) ? table : "agentscope_sandbox_snapshots";
+    public PgRemoteSnapshotClient(RelationalBlobStorageMapper mapper, String table) {
+        this.mapper = Objects.requireNonNull(mapper, "mapper");
+        this.table = SqlTableName.validate(table, "agentscope_sandbox_snapshots");
     }
 
     @Override
     public void upload(String snapshotId, InputStream data) throws Exception {
         byte[] bytes = data.readAllBytes();
         log.info("[snapshot] upload snapshotId={} bytes={}", snapshotId, bytes.length);
-        // Portable upsert: UPDATE first, then INSERT if no matching row existed.
-        try (Connection conn = dataSource.getConnection()) {
-            String updateSql =
-                    "UPDATE " + table + " SET data = ?, created_at = NOW() WHERE snapshot_id = ?";
-            try (PreparedStatement ps = conn.prepareStatement(updateSql)) {
-                ps.setBytes(1, bytes);
-                ps.setString(2, snapshotId);
-                int rows = ps.executeUpdate();
-                if (rows > 0) {
-                    return;
-                }
-            }
-            String insertSql =
-                    "INSERT INTO "
-                            + table
-                            + " (snapshot_id, data, created_at) VALUES (?, ?, NOW())";
-            try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
-                ps.setString(1, snapshotId);
-                ps.setBytes(2, bytes);
-                ps.executeUpdate();
-            }
+        if (mapper.updateSnapshot(table, snapshotId, bytes) == 0) {
+            mapper.insertSnapshot(table, snapshotId, bytes);
         }
     }
 
     @Override
     public InputStream download(String snapshotId) throws Exception {
-        String sql = "SELECT data FROM " + table + " WHERE snapshot_id = ?";
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, snapshotId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    throw new FileNotFoundException("Snapshot not found: " + snapshotId);
-                }
-                return new ByteArrayInputStream(rs.getBytes("data"));
-            }
+        BinaryBlobData stored = mapper.findSnapshot(table, snapshotId);
+        if (stored == null) {
+            throw new FileNotFoundException("Snapshot not found: " + snapshotId);
         }
+        return new ByteArrayInputStream(stored.getData());
     }
 
     @Override
     public boolean exists(String snapshotId) throws Exception {
-        String sql = "SELECT 1 FROM " + table + " WHERE snapshot_id = ?";
-        try (Connection conn = dataSource.getConnection();
-                PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, snapshotId);
-            try (ResultSet rs = ps.executeQuery()) {
-                boolean found = rs.next();
-                log.info("[snapshot] exists snapshotId={} -> {}", snapshotId, found);
-                return found;
-            }
-        }
+        boolean found = mapper.countSnapshot(table, snapshotId) > 0;
+        log.info("[snapshot] exists snapshotId={} -> {}", snapshotId, found);
+        return found;
     }
 }

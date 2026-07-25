@@ -11,6 +11,7 @@ package io.agentscope.saas.app.orchestration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.subagent.task.TaskRunSpec;
@@ -33,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -289,6 +291,13 @@ class PgTaskRepositoryIntegrationTest {
 
     @Test
     void tenantMapperRlsRejectsMismatchedConnectionContext() {
+        String databaseProduct =
+                tenantJdbc.execute(
+                        (ConnectionCallback<String>)
+                                connection -> connection.getMetaData().getDatabaseProductName());
+        assumeTrue(
+                "PostgreSQL".equals(databaseProduct),
+                "PostgreSQL is required to verify row-level security");
         assertThat(tenantJdbc.queryForObject("SELECT current_user", String.class)).isEqualTo("app");
         UUID agentId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();

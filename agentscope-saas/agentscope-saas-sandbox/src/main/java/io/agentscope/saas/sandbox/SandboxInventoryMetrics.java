@@ -15,7 +15,7 @@
  */
 package io.agentscope.saas.sandbox;
 
-import io.agentscope.saas.core.persistence.repo.SandboxRepository;
+import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.MultiGauge;
 import io.micrometer.core.instrument.Tags;
@@ -29,12 +29,13 @@ public class SandboxInventoryMetrics {
 
     private static final String UNKNOWN = "unknown";
 
-    private final SandboxRepository sandboxRepository;
+    private final SandboxReconciliationRepository reconciliationRepository;
     private final MultiGauge poolSize;
     private final MultiGauge expiredActive;
 
-    public SandboxInventoryMetrics(MeterRegistry registry, SandboxRepository sandboxRepository) {
-        this.sandboxRepository = sandboxRepository;
+    public SandboxInventoryMetrics(
+            MeterRegistry registry, SandboxReconciliationRepository reconciliationRepository) {
+        this.reconciliationRepository = reconciliationRepository;
         this.poolSize =
                 MultiGauge.builder("saas.sandbox.pool.size")
                         .description("Sandbox tracking rows grouped by backend type and status")
@@ -47,25 +48,25 @@ public class SandboxInventoryMetrics {
 
     public void refresh() {
         poolSize.register(
-                sandboxRepository.countBySandboxTypeAndStatus().stream()
+                reconciliationRepository.countByTypeAndStatus().stream()
                         .map(
                                 row ->
                                         MultiGauge.Row.of(
                                                 Tags.of(
                                                         "type",
-                                                        normalize(row.getSandboxType()),
+                                                        normalize(row.sandboxType()),
                                                         "status",
-                                                        normalize(row.getStatus())),
-                                                row.getCount()))
+                                                        normalize(row.status())),
+                                                row.count()))
                         .toList(),
                 true);
         expiredActive.register(
-                sandboxRepository.countExpiredActiveBySandboxType(OffsetDateTime.now()).stream()
+                reconciliationRepository.countExpiredActiveByType(OffsetDateTime.now()).stream()
                         .map(
                                 row ->
                                         MultiGauge.Row.of(
-                                                Tags.of("type", normalize(row.getSandboxType())),
-                                                row.getCount()))
+                                                Tags.of("type", normalize(row.sandboxType())),
+                                                row.count()))
                         .toList(),
                 true);
     }

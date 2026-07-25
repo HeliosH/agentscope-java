@@ -19,7 +19,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
-import io.agentscope.saas.core.persistence.repo.SandboxRepository;
+import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository;
+import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository.SandboxPoolCount;
+import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository.SandboxTypeCount;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -32,19 +34,20 @@ import org.mockito.junit.jupiter.MockitoExtension;
 @ExtendWith(MockitoExtension.class)
 class SandboxInventoryMetricsTest {
 
-    @Mock private SandboxRepository sandboxRepository;
+    @Mock private SandboxReconciliationRepository reconciliationRepository;
 
     @Test
     void refreshPublishesPoolAndExpiredActiveGauges() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
-        SandboxInventoryMetrics metrics = new SandboxInventoryMetrics(registry, sandboxRepository);
-        when(sandboxRepository.countBySandboxTypeAndStatus())
+        SandboxInventoryMetrics metrics =
+                new SandboxInventoryMetrics(registry, reconciliationRepository);
+        when(reconciliationRepository.countByTypeAndStatus())
                 .thenReturn(
                         List.of(
-                                new PoolCount("E2B", "active", 2),
-                                new PoolCount("cube", "evicted", 1)));
-        when(sandboxRepository.countExpiredActiveBySandboxType(any(OffsetDateTime.class)))
-                .thenReturn(List.of(new TypeCount("E2B", 1)));
+                                new SandboxPoolCount("E2B", "active", 2),
+                                new SandboxPoolCount("cube", "evicted", 1)));
+        when(reconciliationRepository.countExpiredActiveByType(any(OffsetDateTime.class)))
+                .thenReturn(List.of(new SandboxTypeCount("E2B", 1)));
 
         metrics.refresh();
 
@@ -68,38 +71,5 @@ class SandboxInventoryMetricsTest {
                                 .gauge()
                                 .value())
                 .isEqualTo(1.0d);
-    }
-
-    private record PoolCount(String sandboxType, String status, long count)
-            implements SandboxRepository.SandboxPoolCount {
-
-        @Override
-        public String getSandboxType() {
-            return sandboxType;
-        }
-
-        @Override
-        public String getStatus() {
-            return status;
-        }
-
-        @Override
-        public long getCount() {
-            return count;
-        }
-    }
-
-    private record TypeCount(String sandboxType, long count)
-            implements SandboxRepository.SandboxTypeCount {
-
-        @Override
-        public String getSandboxType() {
-            return sandboxType;
-        }
-
-        @Override
-        public long getCount() {
-            return count;
-        }
     }
 }

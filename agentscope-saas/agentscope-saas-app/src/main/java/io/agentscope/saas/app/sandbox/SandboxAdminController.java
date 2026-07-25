@@ -17,8 +17,8 @@ package io.agentscope.saas.app.sandbox;
 
 import io.agentscope.saas.app.admin.AdminSecurity;
 import io.agentscope.saas.app.admin.AuditService;
-import io.agentscope.saas.core.persistence.entity.SandboxEntity;
-import io.agentscope.saas.core.persistence.repo.SandboxRepository;
+import io.agentscope.saas.domain.model.SandboxEntity;
+import io.agentscope.saas.domain.repository.SandboxRepository;
 import io.agentscope.saas.sandbox.SandboxBackendTerminator;
 import io.agentscope.saas.sandbox.SandboxBroker;
 import java.time.OffsetDateTime;
@@ -26,7 +26,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -140,7 +139,7 @@ public class SandboxAdminController {
                                                         normalizedSandboxType,
                                                         onlyExpired,
                                                         now,
-                                                        PageRequest.of(0, boundedLimit))
+                                                        boundedLimit)
                                                 .stream()
                                                 .map(entity -> toView(entity, now))
                                                 .toList()))

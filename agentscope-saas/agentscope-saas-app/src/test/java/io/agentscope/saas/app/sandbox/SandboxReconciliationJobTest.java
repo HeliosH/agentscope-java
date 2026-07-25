@@ -25,6 +25,7 @@ import io.agentscope.saas.dal.mybatis.admin.SandboxReconciliationMapper;
 import io.agentscope.saas.dal.repository.MyBatisSandboxReconciliationRepository;
 import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository;
 import io.agentscope.saas.sandbox.SandboxBackendTerminator;
+import io.agentscope.saas.sandbox.SandboxInventoryMetrics;
 import io.agentscope.saas.sandbox.SandboxMetrics;
 import java.time.OffsetDateTime;
 import java.util.Map;
@@ -136,8 +137,36 @@ class SandboxReconciliationJobTest {
                 .isEqualTo("configured terminator handles e2b");
     }
 
+    @Test
+    void reportsCommittedInventoryAcrossTenants() {
+        insertSandbox("active", "opensandbox", "os-active", null, 0, -60);
+        insertSandbox("released", "e2b", "e2b-released", "succeeded", 1, -60);
+
+        assertThat(repository.countByTypeAndStatus())
+                .anySatisfy(
+                        count -> {
+                            assertThat(count.sandboxType()).isEqualTo("opensandbox");
+                            assertThat(count.status()).isEqualTo("active");
+                            assertThat(count.count()).isEqualTo(1);
+                        })
+                .anySatisfy(
+                        count -> {
+                            assertThat(count.sandboxType()).isEqualTo("e2b");
+                            assertThat(count.status()).isEqualTo("released");
+                            assertThat(count.count()).isEqualTo(1);
+                        });
+        assertThat(repository.countExpiredActiveByType(OffsetDateTime.now()))
+                .singleElement()
+                .satisfies(
+                        count -> {
+                            assertThat(count.sandboxType()).isEqualTo("opensandbox");
+                            assertThat(count.count()).isEqualTo(1);
+                        });
+    }
+
     private SandboxReconciliationJob jobWithTerminator(SandboxBackendTerminator terminator) {
-        return new SandboxReconciliationJob(repository, properties, terminator, metrics);
+        return new SandboxReconciliationJob(
+                repository, properties, terminator, metrics, mock(SandboxInventoryMetrics.class));
     }
 
     private UUID insertSandbox(

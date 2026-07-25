@@ -17,19 +17,17 @@ package io.agentscope.saas.app.memory;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import io.agentscope.saas.core.persistence.entity.MemoryEventEntity;
-import io.agentscope.saas.core.persistence.repo.MemoryEventRepository;
+import io.agentscope.saas.domain.model.MemoryEventEntity;
+import io.agentscope.saas.domain.repository.MemoryEventRepository;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
-import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.server.ResponseStatusException;
@@ -46,7 +44,7 @@ class MemoryEventsAdminControllerTest {
         UUID userId = UUID.randomUUID();
         MemoryEventEntity event = event(orgId, userId);
         when(repository.findAdminEvents(
-                        eq(orgId), eq(userId), eq("session-1"), eq("failed"), any(Pageable.class)))
+                        eq(orgId), eq(userId), eq("session-1"), eq("failed"), eq(10)))
                 .thenReturn(List.of(event));
 
         var response =
@@ -64,8 +62,7 @@ class MemoryEventsAdminControllerTest {
         assertThat(view.lastError()).isEqualTo("projection down");
         assertThat(view.contentJson()).contains("remember tea");
         verify(repository)
-                .findAdminEvents(
-                        eq(orgId), eq(userId), eq("session-1"), eq("failed"), any(Pageable.class));
+                .findAdminEvents(eq(orgId), eq(userId), eq("session-1"), eq("failed"), eq(10));
     }
 
     @Test

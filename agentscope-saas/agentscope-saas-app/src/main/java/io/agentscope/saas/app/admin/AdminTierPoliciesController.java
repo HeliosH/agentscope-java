@@ -21,8 +21,8 @@ import static io.agentscope.saas.app.admin.AdminSecurity.orgId;
 import static io.agentscope.saas.app.admin.AdminSecurity.requireOrgAdmin;
 import static io.agentscope.saas.app.admin.AdminSecurity.requirePlatformAdmin;
 
-import io.agentscope.saas.core.persistence.entity.TierPolicyEntity;
-import io.agentscope.saas.core.persistence.repo.TierPolicyRepository;
+import io.agentscope.saas.domain.model.TierPolicyEntity;
+import io.agentscope.saas.domain.repository.TierPolicyRepository;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;

@@ -23,7 +23,7 @@ import io.agentscope.saas.app.marketplace.MarketplaceRegistry;
 import io.agentscope.saas.app.marketplace.MarketplacesController;
 import io.agentscope.saas.app.observability.AgentRunMetrics;
 import io.agentscope.saas.app.tools.AgentToolsController;
-import io.agentscope.saas.core.persistence.repo.MarketplaceRepository;
+import io.agentscope.saas.domain.repository.MarketplaceRepository;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;

@@ -17,8 +17,8 @@ package io.agentscope.saas.app.admin;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.agentscope.saas.core.persistence.entity.AuditLogEntity;
-import io.agentscope.saas.core.persistence.repo.AuditLogRepository;
+import io.agentscope.saas.domain.model.AuditLogEntity;
+import io.agentscope.saas.domain.repository.AuditLogRepository;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Locale;

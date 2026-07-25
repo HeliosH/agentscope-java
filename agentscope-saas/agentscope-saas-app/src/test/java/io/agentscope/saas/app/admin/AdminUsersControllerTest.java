@@ -23,9 +23,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import io.agentscope.saas.core.persistence.entity.UserEntity;
-import io.agentscope.saas.core.persistence.repo.TierPolicyRepository;
-import io.agentscope.saas.core.persistence.repo.UserRepository;
+import io.agentscope.saas.domain.model.UserEntity;
+import io.agentscope.saas.domain.repository.TierPolicyRepository;
+import io.agentscope.saas.domain.repository.UserRepository;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;

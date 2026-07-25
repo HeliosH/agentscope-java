@@ -23,9 +23,9 @@ import static io.agentscope.saas.app.admin.AdminSecurity.orgId;
 import static io.agentscope.saas.app.admin.AdminSecurity.parseRequiredUuid;
 import static io.agentscope.saas.app.admin.AdminSecurity.requireOrgAdmin;
 
-import io.agentscope.saas.core.persistence.entity.UserEntity;
-import io.agentscope.saas.core.persistence.repo.TierPolicyRepository;
-import io.agentscope.saas.core.persistence.repo.UserRepository;
+import io.agentscope.saas.domain.model.UserEntity;
+import io.agentscope.saas.domain.repository.TierPolicyRepository;
+import io.agentscope.saas.domain.repository.UserRepository;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -33,7 +33,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -92,7 +91,7 @@ public class AdminUsersController {
                                 ResponseEntity.ok(
                                         users
                                                 .findByOrgIdOrderByCreatedAtDesc(
-                                                        orgId, PageRequest.of(0, boundedLimit))
+                                                        orgId, boundedLimit)
                                                 .stream()
                                                 .map(AdminUsersController::toView)
                                                 .toList()))

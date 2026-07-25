@@ -16,6 +16,9 @@ import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.PlatformTransactionManager;
 
 /** MyBatis wiring for authenticated, tenant-scoped requests protected by PostgreSQL RLS. */
 @Configuration
@@ -34,5 +37,12 @@ public class TenantMyBatisDataAccessConfig {
     public SqlSessionTemplate tenantSqlSessionTemplate(
             @Qualifier("tenantSqlSessionFactory") SqlSessionFactory sessionFactory) {
         return new SqlSessionTemplate(sessionFactory);
+    }
+
+    @Bean
+    @Primary
+    public PlatformTransactionManager transactionManager(
+            @Qualifier("dataSource") DataSource tenantDataSource) {
+        return new DataSourceTransactionManager(tenantDataSource);
     }
 }

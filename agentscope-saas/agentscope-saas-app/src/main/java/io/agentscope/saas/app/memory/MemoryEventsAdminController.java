@@ -16,12 +16,11 @@
 package io.agentscope.saas.app.memory;
 
 import io.agentscope.saas.app.admin.AdminSecurity;
-import io.agentscope.saas.core.persistence.entity.MemoryEventEntity;
-import io.agentscope.saas.core.persistence.repo.MemoryEventRepository;
+import io.agentscope.saas.domain.model.MemoryEventEntity;
+import io.agentscope.saas.domain.repository.MemoryEventRepository;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -91,7 +90,7 @@ public class MemoryEventsAdminController {
                                                         parsedUserId,
                                                         normalizedSessionId,
                                                         normalizedStatus,
-                                                        PageRequest.of(0, boundedLimit))
+                                                        boundedLimit)
                                                 .stream()
                                                 .map(MemoryEventsAdminController::toView)
                                                 .toList()))

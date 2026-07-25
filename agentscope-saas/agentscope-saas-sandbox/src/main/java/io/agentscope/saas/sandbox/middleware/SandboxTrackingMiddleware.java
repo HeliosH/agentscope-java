@@ -39,10 +39,10 @@ import reactor.core.publisher.Flux;
 import reactor.core.scheduler.Schedulers;
 
 /**
- * Tracks active sandbox usage in the database so that quota enforcement
- * ({@link SandboxQuotaMiddleware}) and idle eviction ({@code SandboxEvictionJob}) operate on real
- * data. The framework owns the sandbox lifecycle; this middleware only records the operational
- * row {@code (org, user, session) -> active} for the duration of an agent run.
+ * Tracks active sandbox usage in the database so quota enforcement ({@link
+ * SandboxQuotaMiddleware}) and system reconciliation operate on real data. The framework owns the
+ * sandbox lifecycle; this middleware only records the operational row {@code (org, user, session)
+ * -> active} for the duration of an agent run.
  *
  * <p>Ordering: this runs after {@link SandboxQuotaMiddleware} (which gates on the count) and around
  * the framework's sandbox-lifecycle middleware, so a row exists while the sandbox is in use and is

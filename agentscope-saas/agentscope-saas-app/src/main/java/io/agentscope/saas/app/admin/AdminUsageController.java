@@ -20,7 +20,7 @@ import static io.agentscope.saas.app.admin.AdminSecurity.orgId;
 import static io.agentscope.saas.app.admin.AdminSecurity.parseOptionalUuid;
 import static io.agentscope.saas.app.admin.AdminSecurity.requireOrgAdmin;
 
-import io.agentscope.saas.core.persistence.repo.UsageRecordRepository;
+import io.agentscope.saas.domain.repository.UsageRecordRepository;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;

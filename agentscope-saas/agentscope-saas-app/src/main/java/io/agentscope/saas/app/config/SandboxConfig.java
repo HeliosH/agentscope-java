@@ -24,8 +24,8 @@ import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerFilesystemSpec;
 import io.agentscope.harness.agent.sandbox.snapshot.RemoteSnapshotSpec;
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
+import io.agentscope.saas.dal.mybatis.tenant.RelationalBlobStorageMapper;
 import io.agentscope.saas.storage.PgRemoteSnapshotClient;
-import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -56,12 +56,12 @@ public class SandboxConfig {
     public SandboxFilesystemSpec sandboxFilesystemSpec(
             SaasProperties properties,
             ObjectProvider<SandboxExecutionGuard> guardProvider,
-            ObjectProvider<DataSource> dataSourceProvider) {
+            ObjectProvider<RelationalBlobStorageMapper> blobMapperProvider) {
 
         SaasProperties.Sandbox sb = properties.getSandbox();
         IsolationScope scope = IsolationScope.valueOf(sb.getIsolationScope());
 
-        SandboxSnapshotSpec snapshotSpec = buildSnapshotSpec(sb, dataSourceProvider);
+        SandboxSnapshotSpec snapshotSpec = buildSnapshotSpec(sb, blobMapperProvider);
 
         SandboxFilesystemSpec spec =
                 switch (sb.getType()) {
@@ -236,7 +236,8 @@ public class SandboxConfig {
      * </ul>
      */
     private SandboxSnapshotSpec buildSnapshotSpec(
-            SaasProperties.Sandbox sb, ObjectProvider<DataSource> dataSourceProvider) {
+            SaasProperties.Sandbox sb,
+            ObjectProvider<RelationalBlobStorageMapper> blobMapperProvider) {
         if (!sb.getSnapshot().isEnabled()) {
             log.warn(
                     "Sandbox snapshot persistence is DISABLED — workspace files (incl. MEMORY.md) "
@@ -256,13 +257,14 @@ public class SandboxConfig {
                             m.getBucket(),
                             m.getKeyPrefix()));
         }
-        DataSource ds = dataSourceProvider.getIfAvailable();
-        if (ds == null) {
+        RelationalBlobStorageMapper mapper = blobMapperProvider.getIfAvailable();
+        if (mapper == null) {
             log.warn(
-                    "Sandbox snapshot persistence requested (backend=pg) but no DataSource is "
-                            + "available; workspace persistence is disabled.");
+                    "Sandbox snapshot persistence requested (backend=pg) but no tenant MyBatis "
+                            + "mapper is available; workspace persistence is disabled.");
             return null;
         }
-        return new RemoteSnapshotSpec(new PgRemoteSnapshotClient(ds, sb.getSnapshot().getTable()));
+        return new RemoteSnapshotSpec(
+                new PgRemoteSnapshotClient(mapper, sb.getSnapshot().getTable()));
     }
 }

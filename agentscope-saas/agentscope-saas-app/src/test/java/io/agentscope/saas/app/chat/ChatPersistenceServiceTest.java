@@ -23,12 +23,12 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.agentscope.saas.core.persistence.entity.ChatMessageEntity;
-import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
-import io.agentscope.saas.core.persistence.repo.AgentRepository;
-import io.agentscope.saas.core.persistence.repo.ChatMessageRepository;
-import io.agentscope.saas.core.persistence.repo.ChatSessionRepository;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.domain.model.ChatMessageEntity;
+import io.agentscope.saas.domain.model.ChatSessionEntity;
+import io.agentscope.saas.domain.repository.AgentRepository;
+import io.agentscope.saas.domain.repository.ChatMessageRepository;
+import io.agentscope.saas.domain.repository.ChatSessionRepository;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -55,7 +55,7 @@ class ChatPersistenceServiceTest {
         when(sessionRepository.save(any(ChatSessionEntity.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
         when(messageRepository.maxSeq(sessionId)).thenReturn(0L, 1L);
-        when(messageRepository.save(any(ChatMessageEntity.class)))
+        when(messageRepository.saveAndFlush(any(ChatMessageEntity.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
 
         ChatMessageEntity first =

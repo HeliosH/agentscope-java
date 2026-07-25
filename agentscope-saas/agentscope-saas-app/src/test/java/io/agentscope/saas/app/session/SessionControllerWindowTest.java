@@ -21,16 +21,15 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.saas.app.chat.ChatPersistenceService;
-import io.agentscope.saas.core.persistence.entity.ChatMessageEntity;
-import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
-import io.agentscope.saas.core.persistence.repo.ChatMessageRepository;
-import io.agentscope.saas.core.persistence.repo.ChatSessionRepository;
+import io.agentscope.saas.domain.model.ChatMessageEntity;
+import io.agentscope.saas.domain.model.ChatSessionEntity;
+import io.agentscope.saas.domain.repository.ChatMessageRepository;
+import io.agentscope.saas.domain.repository.ChatSessionRepository;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
-import org.springframework.data.domain.Pageable;
 import org.springframework.security.oauth2.jwt.Jwt;
 
 class SessionControllerWindowTest {
@@ -54,12 +53,12 @@ class SessionControllerWindowTest {
         when(messages.pageBeforeSeq(
                         org.mockito.ArgumentMatchers.eq(sessionId),
                         org.mockito.ArgumentMatchers.isNull(),
-                        org.mockito.ArgumentMatchers.any(Pageable.class)))
+                        org.mockito.ArgumentMatchers.eq(4)))
                 .thenReturn(List.of(message(5), message(4), message(3), message(2)));
         when(messages.pageBeforeSeq(
                         org.mockito.ArgumentMatchers.eq(sessionId),
                         org.mockito.ArgumentMatchers.eq(3L),
-                        org.mockito.ArgumentMatchers.any(Pageable.class)))
+                        org.mockito.ArgumentMatchers.eq(4)))
                 .thenReturn(List.of(message(2), message(1)));
 
         SessionController.TurnWindow latest =

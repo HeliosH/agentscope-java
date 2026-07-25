@@ -18,16 +18,34 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
-/** Incremental architecture guard for the DDD and MyBatis migration. */
+/** Architecture guard for the completed DDD and MyBatis persistence boundary. */
 class DataAccessArchitectureTest {
 
     @Test
-    void applicationBusinessCodeCannotUseJdbcTemplate() throws IOException {
-        Path sourceRoot = Path.of("src/main/java");
+    void productionCodeCannotUseJdbcTemplate() throws IOException {
+        Path sourceRoot = Path.of("..");
         Set<String> users =
                 javaFiles(sourceRoot).stream()
+                        .filter(file -> portablePath(file).contains("/src/main/java/"))
                         .filter(DataAccessArchitectureTest::importsJdbcTemplate)
                         .map(sourceRoot::relativize)
+                        .map(DataAccessArchitectureTest::portablePath)
+                        .collect(Collectors.toSet());
+
+        assertThat(users).isEmpty();
+    }
+
+    @Test
+    void applicationBusinessCodeCannotDependDirectlyOnDal() throws IOException {
+        Path applicationRoot = Path.of("src/main/java/io/agentscope/saas/app");
+        Set<String> users =
+                javaFiles(applicationRoot).stream()
+                        .filter(
+                                file ->
+                                        !portablePath(applicationRoot.relativize(file))
+                                                .startsWith("config/"))
+                        .filter(file -> read(file).contains("import io.agentscope.saas.dal."))
+                        .map(applicationRoot::relativize)
                         .map(DataAccessArchitectureTest::portablePath)
                         .collect(Collectors.toSet());
 
@@ -84,10 +102,11 @@ class DataAccessArchitectureTest {
     }
 
     @Test
-    void orchestrationCannotDependOnLegacyPersistenceModels() throws IOException {
-        Path orchestrationRoot = Path.of("../agentscope-saas-orchestration/src/main/java");
+    void productionCodeCannotDependOnJpaOrLegacyPersistencePackages() throws IOException {
+        Path saasRoot = Path.of("..");
 
-        assertThat(javaFiles(orchestrationRoot))
+        assertThat(javaFiles(saasRoot))
+                .filteredOn(file -> portablePath(file).contains("/src/main/java/"))
                 .allSatisfy(
                         file ->
                                 assertThat(read(file))
@@ -99,12 +118,54 @@ class DataAccessArchitectureTest {
     }
 
     @Test
-    void legacyJpaRepositoryCountCannotIncrease() throws IOException {
-        Path repositoryRoot =
-                Path.of(
-                        "../agentscope-saas-core/src/main/java/io/agentscope/saas/core/persistence/repo");
+    void rawJavaSqlIsLimitedToMyBatisTypeHandlersAndTenantConnectionSetup() throws IOException {
+        Path saasRoot = Path.of("..");
+        Set<String> users =
+                javaFiles(saasRoot).stream()
+                        .filter(file -> portablePath(file).contains("/src/main/java/"))
+                        .filter(file -> read(file).contains("import java.sql."))
+                        .map(saasRoot::relativize)
+                        .map(DataAccessArchitectureTest::portablePath)
+                        .collect(Collectors.toSet());
 
-        assertThat(javaFiles(repositoryRoot)).hasSizeLessThanOrEqualTo(14);
+        assertThat(users)
+                .containsExactlyInAnyOrder(
+                        "agentscope-saas-app/src/main/java/io/agentscope/saas/app/config/"
+                                + "TenantAwareDataSourceConfig.java",
+                        "agentscope-saas-dal/src/main/java/io/agentscope/saas/dal/mybatis/type/"
+                                + "JsonTypeHandler.java",
+                        "agentscope-saas-dal/src/main/java/io/agentscope/saas/dal/mybatis/type/"
+                                + "UuidTypeHandler.java");
+    }
+
+    @Test
+    void saasModulesCannotDeclareJpaInfrastructure() throws IOException {
+        Path saasRoot = Path.of("..");
+        try (var files = Files.walk(saasRoot)) {
+            Set<Path> poms =
+                    files.filter(path -> path.getFileName().toString().equals("pom.xml"))
+                            .collect(Collectors.toSet());
+            assertThat(poms)
+                    .allSatisfy(
+                            pom ->
+                                    assertThat(read(pom))
+                                            .doesNotContain("spring-boot-starter-data-jpa"));
+        }
+
+        Path resources = Path.of("src/main/resources");
+        try (var files = Files.walk(resources)) {
+            Set<Path> yamlFiles =
+                    files.filter(
+                                    path ->
+                                            path.toString().endsWith(".yml")
+                                                    || path.toString().endsWith(".yaml"))
+                            .collect(Collectors.toSet());
+            assertThat(yamlFiles)
+                    .allSatisfy(
+                            yaml ->
+                                    assertThat(read(yaml))
+                                            .doesNotContain("  jpa:", "hibernate:", "spring.jpa"));
+        }
     }
 
     @Test
@@ -141,7 +202,10 @@ class DataAccessArchitectureTest {
     }
 
     private static boolean importsJdbcTemplate(Path file) {
-        return read(file).contains("import org.springframework.jdbc.core.JdbcTemplate;");
+        String source = read(file);
+        return source.contains("import org.springframework.jdbc.core.JdbcTemplate;")
+                || source.contains(
+                        "import org.springframework.jdbc.core.named.NamedParameterJdbcTemplate;");
     }
 
     private static String portablePath(Path path) {

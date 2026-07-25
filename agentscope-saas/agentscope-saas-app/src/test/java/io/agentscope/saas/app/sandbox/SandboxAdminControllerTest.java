@@ -24,8 +24,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import io.agentscope.saas.core.persistence.entity.SandboxEntity;
-import io.agentscope.saas.core.persistence.repo.SandboxRepository;
+import io.agentscope.saas.domain.model.SandboxEntity;
+import io.agentscope.saas.domain.repository.SandboxRepository;
 import io.agentscope.saas.sandbox.SandboxBackendTerminator;
 import io.agentscope.saas.sandbox.SandboxBroker;
 import java.time.OffsetDateTime;
@@ -33,7 +33,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
-import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.server.ResponseStatusException;
@@ -58,7 +57,7 @@ class SandboxAdminControllerTest {
                         eq("e2b"),
                         eq(true),
                         any(OffsetDateTime.class),
-                        any(Pageable.class)))
+                        eq(10)))
                 .thenReturn(List.of(sandbox));
 
         var response =
@@ -83,7 +82,7 @@ class SandboxAdminControllerTest {
                         eq("e2b"),
                         eq(true),
                         any(OffsetDateTime.class),
-                        any(Pageable.class));
+                        eq(10));
     }
 
     @Test

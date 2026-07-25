@@ -16,6 +16,10 @@ import java.util.UUID;
 /** Persistence port for cross-tenant sandbox resource reconciliation. */
 public interface SandboxReconciliationRepository {
 
+    List<SandboxPoolCount> countByTypeAndStatus();
+
+    List<SandboxTypeCount> countExpiredActiveByType(OffsetDateTime now);
+
     List<SandboxResource> findExpiredActive(OffsetDateTime staleBefore, int limit);
 
     List<SandboxResource> findBackendReleaseCandidates(int maxAttempts, int limit);
@@ -33,4 +37,8 @@ public interface SandboxReconciliationRepository {
 
     record SandboxResource(
             UUID id, UUID orgId, UUID userId, String sandboxType, String externalId) {}
+
+    record SandboxPoolCount(String sandboxType, String status, long count) {}
+
+    record SandboxTypeCount(String sandboxType, long count) {}
 }

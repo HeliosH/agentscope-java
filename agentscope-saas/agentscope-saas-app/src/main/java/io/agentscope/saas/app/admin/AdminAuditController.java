@@ -21,12 +21,11 @@ import static io.agentscope.saas.app.admin.AdminSecurity.orgId;
 import static io.agentscope.saas.app.admin.AdminSecurity.parseOptionalUuid;
 import static io.agentscope.saas.app.admin.AdminSecurity.requireOrgAdmin;
 
-import io.agentscope.saas.core.persistence.entity.AuditLogEntity;
-import io.agentscope.saas.core.persistence.repo.AuditLogRepository;
+import io.agentscope.saas.domain.model.AuditLogEntity;
+import io.agentscope.saas.domain.repository.AuditLogRepository;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -82,7 +81,7 @@ public class AdminAuditController {
                                                         actorId,
                                                         normalizedAction,
                                                         normalizedResourcePrefix,
-                                                        PageRequest.of(0, boundedLimit))
+                                                        boundedLimit)
                                                 .stream()
                                                 .map(AdminAuditController::toView)
                                                 .toList()))

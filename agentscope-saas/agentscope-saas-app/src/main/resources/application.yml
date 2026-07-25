@@ -22,14 +22,6 @@ spring:
     username: ${SAAS_DB_USER:app}
     password: ${SAAS_DB_PASSWORD:agentscope}
     driver-class-name: org.postgresql.Driver
-  jpa:
-    open-in-view: false
-    hibernate:
-      ddl-auto: validate
-    properties:
-      hibernate:
-        jdbc:
-          time_zone: UTC
   # --- Flyway (PostgreSQL migrations) ---
   # Flyway uses the @FlywayDataSource-qualified admin DataSource (AdminDataSourceConfig), which
   # connects as the superuser `agentscope` — required because V6/V8/V9 ENABLE ROW LEVEL SECURITY

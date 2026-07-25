@@ -19,13 +19,13 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.TextBlock;
-import io.agentscope.saas.core.persistence.entity.AgentEntity;
-import io.agentscope.saas.core.persistence.entity.ChatMessageEntity;
-import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
-import io.agentscope.saas.core.persistence.repo.AgentRepository;
-import io.agentscope.saas.core.persistence.repo.ChatMessageRepository;
-import io.agentscope.saas.core.persistence.repo.ChatSessionRepository;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.domain.model.AgentEntity;
+import io.agentscope.saas.domain.model.ChatMessageEntity;
+import io.agentscope.saas.domain.model.ChatSessionEntity;
+import io.agentscope.saas.domain.repository.AgentRepository;
+import io.agentscope.saas.domain.repository.ChatMessageRepository;
+import io.agentscope.saas.domain.repository.ChatSessionRepository;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -144,8 +144,7 @@ public class ChatPersistenceService {
                         agentId,
                         "user",
                         List.of(TextBlock.builder().text(content == null ? "" : content).build()));
-        // The durable Run is inserted through MyBatis in the same transaction and references this
-        // row, so make the JPA write visible before crossing the persistence boundary.
+        // The durable Run is inserted in the same transaction and references this message row.
         ChatMessageEntity saved = messageRepository.saveAndFlush(msg);
         touchSession(saved.getSessionId(), content);
         return saved;

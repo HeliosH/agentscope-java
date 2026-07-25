@@ -28,6 +28,16 @@ public class MyBatisSandboxReconciliationRepository implements SandboxReconcilia
     }
 
     @Override
+    public List<SandboxPoolCount> countByTypeAndStatus() {
+        return mapper.countByTypeAndStatus();
+    }
+
+    @Override
+    public List<SandboxTypeCount> countExpiredActiveByType(OffsetDateTime now) {
+        return mapper.countExpiredActiveByType(now);
+    }
+
+    @Override
     public List<SandboxResource> findExpiredActive(OffsetDateTime staleBefore, int limit) {
         return mapper.findExpiredActive(staleBefore, limit).stream().map(this::toDomain).toList();
     }
