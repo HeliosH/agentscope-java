@@ -3351,6 +3351,24 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
     }
 
     /**
+     * Replaces the complete permission policy for the session and rebuilds its cached engine.
+     * Durable runtimes use this to restore the immutable policy snapshot captured when a Run was
+     * created, so deployment configuration changes cannot expand an in-flight child agent's
+     * privileges.
+     */
+    public void setPermissionContext(RuntimeContext ctx, PermissionContextState permissionContext) {
+        Objects.requireNonNull(permissionContext, "permissionContext must not be null");
+        String userId = ctx != null ? ctx.getUserId() : null;
+        String sessionId = ctx != null ? ctx.getSessionId() : null;
+        String sid = (sessionId == null || sessionId.isBlank()) ? defaultSessionId : sessionId;
+        String slot = slotKey(userId, sid);
+        AgentState state = getAgentState(userId, sid);
+        state.setPermissionContext(permissionContext);
+        permissionEngineCache.put(slot, new PermissionEngine(permissionContext));
+        saveAgentState(userId, sid);
+    }
+
+    /**
      * Returns the current {@link PermissionMode} for the given {@code (userId, sessionId)} session.
      *
      * @param userId user identity for the slot (may be {@code null})

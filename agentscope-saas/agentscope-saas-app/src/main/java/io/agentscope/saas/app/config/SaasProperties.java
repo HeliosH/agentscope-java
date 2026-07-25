@@ -1198,6 +1198,20 @@ public class SaasProperties {
         private int workerConcurrency = 4;
         private long workerExecutionTimeoutSeconds = 900;
 
+        /** Enforces immutable Run/Task token, cost, model-call, and wall-clock budgets. */
+        private boolean budgetEnforcementEnabled = true;
+
+        private long maxRunTokens = 200_000;
+        private long maxRunCostMicros = 0;
+        private int maxRunModelCalls = 200;
+        private long maxRunDurationSeconds = 3_600;
+        private long maxTaskTokens = 80_000;
+        private long maxTaskCostMicros = 0;
+        private int maxTaskModelCalls = 80;
+        private long maxTaskDurationSeconds = 900;
+        private long inputTokenCostMicrosPerMillion = 0;
+        private long outputTokenCostMicrosPerMillion = 0;
+
         public boolean isEnabled() {
             return enabled;
         }
@@ -1340,6 +1354,94 @@ public class SaasProperties {
 
         public void setWorkerExecutionTimeoutSeconds(long workerExecutionTimeoutSeconds) {
             this.workerExecutionTimeoutSeconds = workerExecutionTimeoutSeconds;
+        }
+
+        public boolean isBudgetEnforcementEnabled() {
+            return budgetEnforcementEnabled;
+        }
+
+        public void setBudgetEnforcementEnabled(boolean budgetEnforcementEnabled) {
+            this.budgetEnforcementEnabled = budgetEnforcementEnabled;
+        }
+
+        public long getMaxRunTokens() {
+            return maxRunTokens;
+        }
+
+        public void setMaxRunTokens(long maxRunTokens) {
+            this.maxRunTokens = maxRunTokens;
+        }
+
+        public long getMaxRunCostMicros() {
+            return maxRunCostMicros;
+        }
+
+        public void setMaxRunCostMicros(long maxRunCostMicros) {
+            this.maxRunCostMicros = maxRunCostMicros;
+        }
+
+        public int getMaxRunModelCalls() {
+            return maxRunModelCalls;
+        }
+
+        public void setMaxRunModelCalls(int maxRunModelCalls) {
+            this.maxRunModelCalls = maxRunModelCalls;
+        }
+
+        public long getMaxRunDurationSeconds() {
+            return maxRunDurationSeconds;
+        }
+
+        public void setMaxRunDurationSeconds(long maxRunDurationSeconds) {
+            this.maxRunDurationSeconds = maxRunDurationSeconds;
+        }
+
+        public long getMaxTaskTokens() {
+            return maxTaskTokens;
+        }
+
+        public void setMaxTaskTokens(long maxTaskTokens) {
+            this.maxTaskTokens = maxTaskTokens;
+        }
+
+        public long getMaxTaskCostMicros() {
+            return maxTaskCostMicros;
+        }
+
+        public void setMaxTaskCostMicros(long maxTaskCostMicros) {
+            this.maxTaskCostMicros = maxTaskCostMicros;
+        }
+
+        public int getMaxTaskModelCalls() {
+            return maxTaskModelCalls;
+        }
+
+        public void setMaxTaskModelCalls(int maxTaskModelCalls) {
+            this.maxTaskModelCalls = maxTaskModelCalls;
+        }
+
+        public long getMaxTaskDurationSeconds() {
+            return maxTaskDurationSeconds;
+        }
+
+        public void setMaxTaskDurationSeconds(long maxTaskDurationSeconds) {
+            this.maxTaskDurationSeconds = maxTaskDurationSeconds;
+        }
+
+        public long getInputTokenCostMicrosPerMillion() {
+            return inputTokenCostMicrosPerMillion;
+        }
+
+        public void setInputTokenCostMicrosPerMillion(long value) {
+            this.inputTokenCostMicrosPerMillion = value;
+        }
+
+        public long getOutputTokenCostMicrosPerMillion() {
+            return outputTokenCostMicrosPerMillion;
+        }
+
+        public void setOutputTokenCostMicrosPerMillion(long value) {
+            this.outputTokenCostMicrosPerMillion = value;
         }
     }
 

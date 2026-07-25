@@ -80,11 +80,11 @@ class RunOrchestrationServiceTest {
         ArgumentCaptor<OrchestrationOutboxEntity> outboxCaptor =
                 ArgumentCaptor.forClass(OrchestrationOutboxEntity.class);
         verify(runRepository).save(runCaptor.capture());
-        verify(taskRepository).save(taskCaptor.capture());
+        verify(taskRepository, org.mockito.Mockito.times(2)).save(taskCaptor.capture());
         verify(agentRunRepository).save(agentRunCaptor.capture());
         verify(attemptRepository).save(attemptCaptor.capture());
-        verify(eventRepository, org.mockito.Mockito.times(3)).save(eventCaptor.capture());
-        verify(outboxRepository, org.mockito.Mockito.times(3)).save(outboxCaptor.capture());
+        verify(eventRepository, org.mockito.Mockito.times(4)).save(eventCaptor.capture());
+        verify(outboxRepository, org.mockito.Mockito.times(4)).save(outboxCaptor.capture());
 
         AssistantRunEntity run = runCaptor.getValue();
         TaskNodeEntity task = taskCaptor.getValue();
@@ -102,14 +102,16 @@ class RunOrchestrationServiceTest {
                 .isEqualTo(RunOrchestrationService.ATTEMPT_RUNNING);
         assertThat(eventCaptor.getAllValues())
                 .extracting(RunEventEntity::getSeq)
-                .containsExactly(1L, 2L, 3L);
+                .containsExactly(1L, 2L, 3L, 4L);
         assertThat(eventCaptor.getAllValues())
                 .extracting(RunEventEntity::getEventType)
-                .containsExactly("RUN_CREATED", "RUN_STARTED", "TASK_STARTED");
-        assertThat(run.getNextEventSeq()).isEqualTo(3);
+                .containsExactly(
+                        "RUN_CREATED", "RUN_STARTED", "TASK_STARTED", "AGENT_PERMISSION_SNAPSHOT");
+        assertThat(run.getNextEventSeq()).isEqualTo(4);
         assertThat(outboxCaptor.getAllValues())
                 .extracting(OrchestrationOutboxEntity::getEventType)
-                .containsExactly("RUN_CREATED", "RUN_STARTED", "TASK_STARTED");
+                .containsExactly(
+                        "RUN_CREATED", "RUN_STARTED", "TASK_STARTED", "AGENT_PERMISSION_SNAPSHOT");
         assertThat(outboxCaptor.getAllValues())
                 .allSatisfy(
                         outbox -> {

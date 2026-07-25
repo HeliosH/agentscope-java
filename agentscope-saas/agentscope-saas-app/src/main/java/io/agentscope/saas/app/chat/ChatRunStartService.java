@@ -9,6 +9,7 @@
  */
 package io.agentscope.saas.app.chat;
 
+import io.agentscope.saas.app.config.OrchestrationPolicyFactory;
 import io.agentscope.saas.core.persistence.entity.AgentEntity;
 import io.agentscope.saas.core.persistence.entity.ChatSessionEntity;
 import io.agentscope.saas.core.persistence.repo.AgentRepository;
@@ -25,14 +26,17 @@ public class ChatRunStartService {
     private final ChatPersistenceService persistence;
     private final AgentRepository agentRepository;
     private final RunOrchestrationService orchestration;
+    private final OrchestrationPolicyFactory policyFactory;
 
     public ChatRunStartService(
             ChatPersistenceService persistence,
             AgentRepository agentRepository,
-            RunOrchestrationService orchestration) {
+            RunOrchestrationService orchestration,
+            OrchestrationPolicyFactory policyFactory) {
         this.persistence = persistence;
         this.agentRepository = agentRepository;
         this.orchestration = orchestration;
+        this.policyFactory = policyFactory;
     }
 
     /**
@@ -75,7 +79,8 @@ public class ChatRunStartService {
                         session.getId(),
                         userMessage.getId(),
                         message,
-                        requestId);
+                        requestId,
+                        policyFactory.runPolicy());
         return new StartedRun(
                 locked.getId(),
                 session.getId(),

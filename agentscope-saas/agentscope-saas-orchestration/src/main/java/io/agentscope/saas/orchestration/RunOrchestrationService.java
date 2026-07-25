@@ -96,7 +96,14 @@ public class RunOrchestrationService {
             UUID sessionId,
             UUID triggerMessageId,
             String userMessage) {
-        return createDirectRun(tenant, agentId, sessionId, triggerMessageId, userMessage, null);
+        return createDirectRun(
+                tenant,
+                agentId,
+                sessionId,
+                triggerMessageId,
+                userMessage,
+                null,
+                RunPolicy.unlimited());
     }
 
     /** Creates a direct Run, optionally protected by a caller-provided idempotency key. */
@@ -108,8 +115,29 @@ public class RunOrchestrationService {
             UUID triggerMessageId,
             String userMessage,
             String idempotencyKey) {
+        return createDirectRun(
+                tenant,
+                agentId,
+                sessionId,
+                triggerMessageId,
+                userMessage,
+                idempotencyKey,
+                RunPolicy.unlimited());
+    }
+
+    /** Creates a direct Run with immutable resource and permission governance snapshots. */
+    @Transactional
+    public RunHandle createDirectRun(
+            TenantContext tenant,
+            UUID agentId,
+            UUID sessionId,
+            UUID triggerMessageId,
+            String userMessage,
+            String idempotencyKey,
+            RunPolicy requestedPolicy) {
         UUID orgId = uuid(tenant.orgId(), "orgId");
         UUID userId = uuid(tenant.userId(), "userId");
+        RunPolicy policy = requestedPolicy != null ? requestedPolicy : RunPolicy.unlimited();
         String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
         if (normalizedKey != null) {
             Optional<AssistantRunEntity> existing =
@@ -135,6 +163,10 @@ public class RunOrchestrationService {
         run.setStatus(RUN_RUNNING);
         run.setCancelRequested(false);
         run.setNextEventSeq(0);
+        run.setTokenBudget(positiveLimit(policy.runTokenBudget()));
+        run.setCostBudgetMicros(positiveLimit(policy.runCostBudgetMicros()));
+        run.setModelCallBudget(positiveLimit(policy.runModelCallBudget()));
+        run.setDeadlineAt(deadline(now, policy.runTimeoutSeconds()));
         run.setStartedAt(now);
         run.setUpdatedAt(now);
         run = runRepository.save(run);
@@ -155,6 +187,10 @@ public class RunOrchestrationService {
         root.setMaxAttempts(MAX_COORDINATOR_ATTEMPTS);
         root.setRetryMode("IDEMPOTENT");
         root.setRetryBaseSeconds(2);
+        root.setTokenBudget(positiveLimit(policy.taskTokenBudget()));
+        root.setCostBudgetMicros(positiveLimit(policy.taskCostBudgetMicros()));
+        root.setModelCallBudget(positiveLimit(policy.taskModelCallBudget()));
+        root.setDeadlineAt(deadline(now, policy.taskTimeoutSeconds()));
         root.setUpdatedAt(now);
         taskRepository.save(root);
 
@@ -167,6 +203,11 @@ public class RunOrchestrationService {
         agentRun.setStatus(RUN_RUNNING);
         agentRun.setDepth(0);
         agentRun.setContextPolicy("FRESH");
+        PermissionSnapshotIntegrity.Snapshot permissionSnapshot =
+                PermissionSnapshotIntegrity.canonicalize(
+                        validJsonObject(policy.permissionSnapshotJson()));
+        agentRun.setPermissionSnapshotJson(permissionSnapshot.json());
+        agentRun.setPermissionSnapshotHash(permissionSnapshot.hash());
         agentRun.setUpdatedAt(now);
         agentRunRepository.save(agentRun);
 
@@ -189,6 +230,17 @@ public class RunOrchestrationService {
         appendEvent(run, root.getId(), "RUN_CREATED", "{\"mode\":\"DIRECT\"}");
         appendEvent(run, root.getId(), "RUN_STARTED", "{}");
         appendEvent(run, root.getId(), "TASK_STARTED", "{}");
+        appendEvent(
+                run,
+                root.getId(),
+                "AGENT_PERMISSION_SNAPSHOT",
+                JsonUtils.getJsonCodec()
+                        .toJson(
+                                Map.of(
+                                        "agentRunId",
+                                        agentRun.getId().toString(),
+                                        "snapshotHash",
+                                        valueOrEmpty(agentRun.getPermissionSnapshotHash()))));
         return new RunHandle(
                 run.getId(),
                 root.getId(),
@@ -312,6 +364,10 @@ public class RunOrchestrationService {
         task.setMaxAttempts(3);
         task.setRetryMode("IDEMPOTENT");
         task.setRetryBaseSeconds(2);
+        task.setTokenBudget(positiveLimit(policy.taskTokenBudget()));
+        task.setCostBudgetMicros(positiveLimit(policy.taskCostBudgetMicros()));
+        task.setModelCallBudget(positiveLimit(policy.taskModelCallBudget()));
+        task.setDeadlineAt(deadline(now, policy.taskTimeoutSeconds()));
         task.setUpdatedAt(now);
         taskRepository.save(task);
 
@@ -325,6 +381,8 @@ public class RunOrchestrationService {
         child.setStatus("READY");
         child.setDepth(parentAgentRun.getDepth() + 1);
         child.setContextPolicy("FRESH_RELEVANT");
+        child.setPermissionSnapshotJson(parentAgentRun.getPermissionSnapshotJson());
+        child.setPermissionSnapshotHash(parentAgentRun.getPermissionSnapshotHash());
         child.setUpdatedAt(now);
         agentRunRepository.save(child);
 
@@ -336,6 +394,19 @@ public class RunOrchestrationService {
                 "TASK_READY",
                 JsonUtils.getJsonCodec()
                         .toJson(Map.of("taskId", taskKey, "agentType", subagentType)));
+        appendEvent(
+                run,
+                task.getId(),
+                "SUBAGENT_PERMISSION_INHERITED",
+                JsonUtils.getJsonCodec()
+                        .toJson(
+                                Map.of(
+                                        "parentAgentRunId",
+                                        parentAgentRun.getId().toString(),
+                                        "childAgentRunId",
+                                        child.getId().toString(),
+                                        "snapshotHash",
+                                        valueOrEmpty(child.getPermissionSnapshotHash()))));
         return new SubagentTaskHandle(task.getId(), child.getId(), task.getStatus(), false);
     }
 
@@ -755,6 +826,13 @@ public class RunOrchestrationService {
                 run.isCancelRequested(),
                 run.getFailureCode(),
                 run.getFailureMessage(),
+                run.getTokenBudget(),
+                run.getConsumedTokens(),
+                run.getCostBudgetMicros(),
+                run.getConsumedCostMicros(),
+                run.getModelCallBudget(),
+                run.getConsumedModelCalls(),
+                run.getDeadlineAt(),
                 run.getCreatedAt(),
                 run.getStartedAt(),
                 run.getCompletedAt());
@@ -768,6 +846,13 @@ public class RunOrchestrationService {
                 task.getTaskType(),
                 task.getStatus(),
                 task.getWorkspaceMode(),
+                task.getTokenBudget(),
+                task.getConsumedTokens(),
+                task.getCostBudgetMicros(),
+                task.getConsumedCostMicros(),
+                task.getModelCallBudget(),
+                task.getConsumedModelCalls(),
+                task.getDeadlineAt(),
                 task.getCreatedAt(),
                 task.getCompletedAt());
     }
@@ -840,6 +925,22 @@ public class RunOrchestrationService {
         return candidate;
     }
 
+    private static Long positiveLimit(long value) {
+        return value > 0 ? value : null;
+    }
+
+    private static Integer positiveLimit(int value) {
+        return value > 0 ? value : null;
+    }
+
+    private static OffsetDateTime deadline(OffsetDateTime now, long timeoutSeconds) {
+        return timeoutSeconds > 0 ? now.plusSeconds(timeoutSeconds) : null;
+    }
+
+    private static String valueOrEmpty(String value) {
+        return value != null ? value : "";
+    }
+
     private static boolean isTerminalTaskStatus(String status) {
         return TASK_SUCCEEDED.equals(status)
                 || TASK_FAILED.equals(status)
@@ -868,11 +969,62 @@ public class RunOrchestrationService {
 
     public record SubagentTaskHandle(UUID taskId, UUID agentRunId, String status, boolean reused) {}
 
-    public record SubagentPolicy(int maxDepth, int maxChildrenPerAgent, int maxTasksPerRun) {
+    public record SubagentPolicy(
+            int maxDepth,
+            int maxChildrenPerAgent,
+            int maxTasksPerRun,
+            long taskTokenBudget,
+            long taskCostBudgetMicros,
+            int taskModelCallBudget,
+            long taskTimeoutSeconds) {
+
+        public SubagentPolicy(int maxDepth, int maxChildrenPerAgent, int maxTasksPerRun) {
+            this(maxDepth, maxChildrenPerAgent, maxTasksPerRun, 0, 0, 0, 0);
+        }
+
         public SubagentPolicy {
             if (maxDepth < 1 || maxChildrenPerAgent < 1 || maxTasksPerRun < 1) {
                 throw new IllegalArgumentException("Subagent policy limits must be positive");
             }
+            if (taskTokenBudget < 0
+                    || taskCostBudgetMicros < 0
+                    || taskModelCallBudget < 0
+                    || taskTimeoutSeconds < 0) {
+                throw new IllegalArgumentException("Subagent resource limits cannot be negative");
+            }
+        }
+    }
+
+    public record RunPolicy(
+            long runTokenBudget,
+            long runCostBudgetMicros,
+            int runModelCallBudget,
+            long runTimeoutSeconds,
+            long taskTokenBudget,
+            long taskCostBudgetMicros,
+            int taskModelCallBudget,
+            long taskTimeoutSeconds,
+            String permissionSnapshotJson) {
+
+        public RunPolicy {
+            if (runTokenBudget < 0
+                    || runCostBudgetMicros < 0
+                    || runModelCallBudget < 0
+                    || runTimeoutSeconds < 0
+                    || taskTokenBudget < 0
+                    || taskCostBudgetMicros < 0
+                    || taskModelCallBudget < 0
+                    || taskTimeoutSeconds < 0) {
+                throw new IllegalArgumentException("Run resource limits cannot be negative");
+            }
+            permissionSnapshotJson =
+                    permissionSnapshotJson == null || permissionSnapshotJson.isBlank()
+                            ? "{}"
+                            : permissionSnapshotJson;
+        }
+
+        public static RunPolicy unlimited() {
+            return new RunPolicy(0, 0, 0, 0, 0, 0, 0, 0, "{}");
         }
     }
 
@@ -885,6 +1037,13 @@ public class RunOrchestrationService {
             boolean cancelRequested,
             String failureCode,
             String failureMessage,
+            Long tokenBudget,
+            long consumedTokens,
+            Long costBudgetMicros,
+            long consumedCostMicros,
+            Integer modelCallBudget,
+            int consumedModelCalls,
+            OffsetDateTime deadlineAt,
             OffsetDateTime createdAt,
             OffsetDateTime startedAt,
             OffsetDateTime completedAt) {}
@@ -896,6 +1055,13 @@ public class RunOrchestrationService {
             String taskType,
             String status,
             String workspaceMode,
+            Long tokenBudget,
+            long consumedTokens,
+            Long costBudgetMicros,
+            long consumedCostMicros,
+            Integer modelCallBudget,
+            int consumedModelCalls,
+            OffsetDateTime deadlineAt,
             OffsetDateTime createdAt,
             OffsetDateTime completedAt) {}
 

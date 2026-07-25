@@ -190,6 +190,19 @@ saas:
     scheduler-heartbeat-seconds: ${SAAS_ORCHESTRATION_SCHEDULER_HEARTBEAT_SECONDS:20}
     worker-concurrency: ${SAAS_ORCHESTRATION_WORKER_CONCURRENCY:4}
     worker-execution-timeout-seconds: ${SAAS_ORCHESTRATION_WORKER_EXECUTION_TIMEOUT_SECONDS:900}
+    budget-enforcement-enabled: ${SAAS_ORCHESTRATION_BUDGET_ENFORCEMENT_ENABLED:true}
+    max-run-tokens: ${SAAS_ORCHESTRATION_MAX_RUN_TOKENS:200000}
+    max-run-cost-micros: ${SAAS_ORCHESTRATION_MAX_RUN_COST_MICROS:0}
+    max-run-model-calls: ${SAAS_ORCHESTRATION_MAX_RUN_MODEL_CALLS:200}
+    max-run-duration-seconds: ${SAAS_ORCHESTRATION_MAX_RUN_DURATION_SECONDS:3600}
+    max-task-tokens: ${SAAS_ORCHESTRATION_MAX_TASK_TOKENS:80000}
+    max-task-cost-micros: ${SAAS_ORCHESTRATION_MAX_TASK_COST_MICROS:0}
+    max-task-model-calls: ${SAAS_ORCHESTRATION_MAX_TASK_MODEL_CALLS:80}
+    max-task-duration-seconds: ${SAAS_ORCHESTRATION_MAX_TASK_DURATION_SECONDS:900}
+    deadline-sweep-fixed-delay-seconds: ${SAAS_ORCHESTRATION_DEADLINE_SWEEP_FIXED_DELAY_SECONDS:5}
+    # Internal model deployments may leave price rates at zero while retaining token limits.
+    input-token-cost-micros-per-million: ${SAAS_ORCHESTRATION_INPUT_TOKEN_COST_MICROS_PER_MILLION:0}
+    output-token-cost-micros-per-million: ${SAAS_ORCHESTRATION_OUTPUT_TOKEN_COST_MICROS_PER_MILLION:0}
   subagents:
     # Deployment choice only. durable requires orchestration + scheduler; users cannot select it.
     execution-mode: ${SAAS_SUBAGENTS_EXECUTION_MODE:workspace}

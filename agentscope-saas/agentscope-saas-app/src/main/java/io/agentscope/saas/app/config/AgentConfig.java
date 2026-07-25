@@ -15,6 +15,7 @@
  */
 package io.agentscope.saas.app.config;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.memory.mem0.Mem0Client;
 import io.agentscope.core.model.Model;
@@ -37,6 +38,8 @@ import io.agentscope.saas.app.memory.MemoryLedger;
 import io.agentscope.saas.app.memory.SaasLongTermMemoryMiddleware;
 import io.agentscope.saas.app.observability.AgentRunMetrics;
 import io.agentscope.saas.app.observability.AgentTelemetryMiddleware;
+import io.agentscope.saas.app.orchestration.OrchestrationGovernanceMiddleware;
+import io.agentscope.saas.app.orchestration.OrchestrationGovernanceService;
 import io.agentscope.saas.app.orchestration.PgTaskRepository;
 import io.agentscope.saas.app.org.OrgToolsConfigService;
 import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
@@ -78,6 +81,7 @@ public class AgentConfig {
             AgentStateStore agentStateStore,
             RateLimiter rateLimiter,
             UsageService usageService,
+            ObjectMapper objectMapper,
             SaasProperties properties,
             ObjectProvider<SandboxFilesystemSpec> sandboxSpecProvider,
             ObjectProvider<SandboxBroker> sandboxBrokerProvider,
@@ -89,6 +93,7 @@ public class AgentConfig {
             ObjectProvider<WorkspaceProjectionCatalogSink> workspaceProjectionCatalogSinkProvider,
             ObjectProvider<MemoryConsolidator.ConsolidationSink> consolidationSinkProvider,
             ObjectProvider<AgentRunMetrics> agentRunMetricsProvider,
+            OrchestrationGovernanceService orchestrationGovernance,
             ObjectProvider<PgTaskRepository> pgTaskRepositoryProvider) {
 
         SaasProperties.Agent agentCfg = properties.getAgent();
@@ -120,6 +125,9 @@ public class AgentConfig {
                         .middleware(
                                 new RateLimitMiddleware(
                                         rateLimiter, rl.getMaxRequests(), rl.getWindowSeconds()))
+                        .middleware(
+                                new OrchestrationGovernanceMiddleware(
+                                        orchestrationGovernance, objectMapper))
                         .middleware(new UsageMeteringMiddleware(usageService));
 
         if (properties.getSubagents().isDurable()) {

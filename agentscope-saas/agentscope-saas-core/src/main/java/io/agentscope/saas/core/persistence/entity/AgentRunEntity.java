@@ -16,6 +16,8 @@ import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 /** Execution identity of one coordinator or worker agent for a durable task node. */
 @Entity
@@ -52,6 +54,13 @@ public class AgentRunEntity {
 
     @Column(name = "context_policy", nullable = false)
     private String contextPolicy;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "permission_snapshot_json", nullable = false)
+    private String permissionSnapshotJson;
+
+    @Column(name = "permission_snapshot_hash")
+    private String permissionSnapshotHash;
 
     @Column(name = "created_at", insertable = false, updatable = false)
     private OffsetDateTime createdAt;
@@ -144,6 +153,22 @@ public class AgentRunEntity {
 
     public void setContextPolicy(String contextPolicy) {
         this.contextPolicy = contextPolicy;
+    }
+
+    public String getPermissionSnapshotJson() {
+        return permissionSnapshotJson;
+    }
+
+    public void setPermissionSnapshotJson(String permissionSnapshotJson) {
+        this.permissionSnapshotJson = permissionSnapshotJson;
+    }
+
+    public String getPermissionSnapshotHash() {
+        return permissionSnapshotHash;
+    }
+
+    public void setPermissionSnapshotHash(String permissionSnapshotHash) {
+        this.permissionSnapshotHash = permissionSnapshotHash;
     }
 
     public OffsetDateTime getCreatedAt() {

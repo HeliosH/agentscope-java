@@ -309,10 +309,16 @@ public class PgTaskRepository implements TaskRepository {
 
     private RunOrchestrationService.SubagentPolicy subagentPolicy() {
         SaasProperties.Subagents subagents = properties.getSubagents();
+        SaasProperties.Orchestration orchestration = properties.getOrchestration();
+        boolean governed = orchestration.isBudgetEnforcementEnabled();
         return new RunOrchestrationService.SubagentPolicy(
                 subagents.getMaxDepth(),
                 subagents.getMaxChildrenPerAgent(),
-                subagents.getMaxTasksPerRun());
+                subagents.getMaxTasksPerRun(),
+                governed ? Math.max(0, orchestration.getMaxTaskTokens()) : 0,
+                governed ? Math.max(0, orchestration.getMaxTaskCostMicros()) : 0,
+                governed ? Math.max(0, orchestration.getMaxTaskModelCalls()) : 0,
+                governed ? Math.max(0, orchestration.getMaxTaskDurationSeconds()) : 0);
     }
 
     private static UUID optionalUuid(String value, String field) {

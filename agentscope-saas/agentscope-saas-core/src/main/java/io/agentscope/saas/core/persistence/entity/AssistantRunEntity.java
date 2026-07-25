@@ -62,6 +62,27 @@ public class AssistantRunEntity {
     @Column(name = "failure_message")
     private String failureMessage;
 
+    @Column(name = "token_budget")
+    private Long tokenBudget;
+
+    @Column(name = "consumed_tokens", nullable = false)
+    private long consumedTokens;
+
+    @Column(name = "cost_budget_micros")
+    private Long costBudgetMicros;
+
+    @Column(name = "consumed_cost_micros", nullable = false)
+    private long consumedCostMicros;
+
+    @Column(name = "model_call_budget")
+    private Integer modelCallBudget;
+
+    @Column(name = "consumed_model_calls", nullable = false)
+    private int consumedModelCalls;
+
+    @Column(name = "deadline_at")
+    private OffsetDateTime deadlineAt;
+
     @Column(name = "started_at")
     private OffsetDateTime startedAt;
 
@@ -180,6 +201,62 @@ public class AssistantRunEntity {
 
     public void setFailureMessage(String failureMessage) {
         this.failureMessage = failureMessage;
+    }
+
+    public Long getTokenBudget() {
+        return tokenBudget;
+    }
+
+    public void setTokenBudget(Long tokenBudget) {
+        this.tokenBudget = tokenBudget;
+    }
+
+    public long getConsumedTokens() {
+        return consumedTokens;
+    }
+
+    public void setConsumedTokens(long consumedTokens) {
+        this.consumedTokens = consumedTokens;
+    }
+
+    public Long getCostBudgetMicros() {
+        return costBudgetMicros;
+    }
+
+    public void setCostBudgetMicros(Long costBudgetMicros) {
+        this.costBudgetMicros = costBudgetMicros;
+    }
+
+    public long getConsumedCostMicros() {
+        return consumedCostMicros;
+    }
+
+    public void setConsumedCostMicros(long consumedCostMicros) {
+        this.consumedCostMicros = consumedCostMicros;
+    }
+
+    public Integer getModelCallBudget() {
+        return modelCallBudget;
+    }
+
+    public void setModelCallBudget(Integer modelCallBudget) {
+        this.modelCallBudget = modelCallBudget;
+    }
+
+    public int getConsumedModelCalls() {
+        return consumedModelCalls;
+    }
+
+    public void setConsumedModelCalls(int consumedModelCalls) {
+        this.consumedModelCalls = consumedModelCalls;
+    }
+
+    public OffsetDateTime getDeadlineAt() {
+        return deadlineAt;
+    }
+
+    public void setDeadlineAt(OffsetDateTime deadlineAt) {
+        this.deadlineAt = deadlineAt;
     }
 
     public OffsetDateTime getStartedAt() {
