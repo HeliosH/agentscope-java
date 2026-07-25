@@ -16,11 +16,20 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import io.agentscope.saas.app.config.SaasProperties;
+import io.agentscope.saas.dal.mybatis.admin.OrchestrationOutboxMapper;
+import io.agentscope.saas.dal.mybatis.type.UuidTypeHandler;
+import io.agentscope.saas.dal.repository.MyBatisOrchestrationOutboxRepository;
 import io.agentscope.saas.orchestration.OrchestrationEventDispatcher;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 import javax.sql.DataSource;
+import org.apache.ibatis.mapping.Environment;
+import org.apache.ibatis.session.Configuration;
+import org.apache.ibatis.session.SqlSession;
+import org.apache.ibatis.session.SqlSessionFactoryBuilder;
+import org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;
 import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -31,10 +40,12 @@ class OrchestrationOutboxPublisherTest {
     private SaasProperties properties;
     private OrchestrationEventDispatcher dispatcher;
     private OrchestrationOutboxPublisher publisher;
+    private SqlSession sqlSession;
 
     @BeforeEach
     void setUp() {
-        jdbc = new JdbcTemplate(dataSource());
+        DataSource dataSource = dataSource();
+        jdbc = new JdbcTemplate(dataSource);
         jdbc.execute(
                 """
                 CREATE TABLE orchestration_outbox (
@@ -61,7 +72,24 @@ class OrchestrationOutboxPublisherTest {
         properties.getOrchestration().setOutboxRetryBaseSeconds(2);
         properties.getOrchestration().setOutboxRetryMaxSeconds(30);
         dispatcher = mock(OrchestrationEventDispatcher.class);
-        publisher = new OrchestrationOutboxPublisher(jdbc, properties, dispatcher, "test-worker");
+        Configuration configuration =
+                new Configuration(
+                        new Environment("test", new JdbcTransactionFactory(), dataSource));
+        configuration.setMapUnderscoreToCamelCase(true);
+        configuration.setArgNameBasedConstructorAutoMapping(true);
+        configuration.getTypeHandlerRegistry().register(UUID.class, UuidTypeHandler.class);
+        configuration.addMapper(OrchestrationOutboxMapper.class);
+        sqlSession = new SqlSessionFactoryBuilder().build(configuration).openSession(true);
+        var repository =
+                new MyBatisOrchestrationOutboxRepository(
+                        sqlSession.getMapper(OrchestrationOutboxMapper.class));
+        publisher =
+                new OrchestrationOutboxPublisher(repository, properties, dispatcher, "test-worker");
+    }
+
+    @AfterEach
+    void tearDown() {
+        sqlSession.close();
     }
 
     @Test

@@ -42,7 +42,15 @@
         <!-- SaaS modules -->
         <dependency>
             <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-saas-domain</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.agentscope</groupId>
             <artifactId>agentscope-saas-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-saas-dal</artifactId>
         </dependency>
         <dependency>
             <groupId>io.agentscope</groupId>
@@ -140,7 +148,16 @@
             <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
 
-        <!-- Persistence: JPA + Flyway. Postgres in prod, H2 for local smoke test. -->
+        <!-- Persistence migration: MyBatis is the only middleware permitted in the DAL.
+             Legacy JPA remains temporarily while bounded contexts migrate behind domain ports. -->
+        <dependency>
+            <groupId>org.mybatis</groupId>
+            <artifactId>mybatis</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.mybatis</groupId>
+            <artifactId>mybatis-spring</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>

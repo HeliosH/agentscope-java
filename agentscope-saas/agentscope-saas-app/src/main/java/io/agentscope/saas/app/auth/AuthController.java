@@ -15,10 +15,11 @@
  */
 package io.agentscope.saas.app.auth;
 
-import io.agentscope.saas.core.persistence.entity.OrgEntity;
-import io.agentscope.saas.core.persistence.entity.UserEntity;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantResolver;
+import io.agentscope.saas.domain.auth.AuthIdentityRepository;
+import io.agentscope.saas.domain.auth.Organization;
+import io.agentscope.saas.domain.auth.UserAccount;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
@@ -59,17 +60,17 @@ public class AuthController {
     /** Slug of the org self-registered users are placed into (seeded by V2__seed.sql). */
     private static final String DEFAULT_ORG_SLUG = "demo";
 
-    private final AuthBootstrapRepository bootstrapRepository;
+    private final AuthIdentityRepository identityRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final TenantResolver tenantResolver;
 
     public AuthController(
-            AuthBootstrapRepository bootstrapRepository,
+            AuthIdentityRepository identityRepository,
             PasswordEncoder passwordEncoder,
             JwtService jwtService,
             TenantResolver tenantResolver) {
-        this.bootstrapRepository = bootstrapRepository;
+        this.identityRepository = identityRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.tenantResolver = tenantResolver;
@@ -100,47 +101,47 @@ public class AuthController {
             return ResponseEntity.badRequest()
                     .body((Object) Map.of("error", "email and password required"));
         }
-        if (bootstrapRepository.findUserByEmail(request.email()).isPresent()) {
+        if (identityRepository.findUserByEmail(request.email()).isPresent()) {
             return ResponseEntity.status(HttpStatus.CONFLICT)
                     .body((Object) Map.of("error", "email already registered"));
         }
-        OrgEntity org =
-                bootstrapRepository
-                        .findOrgBySlug(DEFAULT_ORG_SLUG)
+        Organization org =
+                identityRepository
+                        .findOrganizationBySlug(DEFAULT_ORG_SLUG)
                         .orElseThrow(
                                 () ->
                                         new IllegalStateException(
                                                 "Default org '"
                                                         + DEFAULT_ORG_SLUG
                                                         + "' not seeded"));
-        UserEntity user = new UserEntity();
-        user.setId(UUID.randomUUID());
-        user.setOrgId(org.getId());
-        user.setEmail(request.email());
-        user.setDisplayName(
-                request.displayName() == null || request.displayName().isBlank()
-                        ? request.email()
-                        : request.displayName());
-        user.setPasswordHash(passwordEncoder.encode(request.password()));
-        user.setRole("member");
-        user.setTier("standard");
-        UserEntity saved = bootstrapRepository.saveUser(user);
+        UserAccount saved =
+                identityRepository.saveUser(
+                        new UserAccount(
+                                UUID.randomUUID(),
+                                org.id(),
+                                request.email(),
+                                request.displayName() == null || request.displayName().isBlank()
+                                        ? request.email()
+                                        : request.displayName(),
+                                passwordEncoder.encode(request.password()),
+                                "member",
+                                "standard"));
         String token =
                 jwtService.issue(
-                        saved.getId().toString(),
-                        saved.getOrgId().toString(),
-                        saved.getEmail(),
-                        saved.getRole(),
-                        saved.getTier());
+                        saved.id().toString(),
+                        saved.orgId().toString(),
+                        saved.email(),
+                        saved.role(),
+                        saved.tier());
         return ResponseEntity.ok(
                 (Object)
                         new LoginResponse(
                                 token,
-                                saved.getId().toString(),
-                                saved.getOrgId().toString(),
-                                saved.getEmail(),
-                                saved.getRole(),
-                                saved.getTier()));
+                                saved.id().toString(),
+                                saved.orgId().toString(),
+                                saved.email(),
+                                saved.role(),
+                                saved.tier()));
     }
 
     private ResponseEntity<Object> doLogin(LoginRequest request) {
@@ -148,29 +149,29 @@ public class AuthController {
             return ResponseEntity.badRequest()
                     .body((Object) Map.of("error", "email and password required"));
         }
-        UserEntity user = bootstrapRepository.findUserByEmail(request.email()).orElse(null);
+        UserAccount user = identityRepository.findUserByEmail(request.email()).orElse(null);
         if (user == null
-                || user.getPasswordHash() == null
-                || !passwordEncoder.matches(request.password(), user.getPasswordHash())) {
+                || user.passwordHash() == null
+                || !passwordEncoder.matches(request.password(), user.passwordHash())) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body((Object) Map.of("error", "invalid credentials"));
         }
         String token =
                 jwtService.issue(
-                        user.getId().toString(),
-                        user.getOrgId().toString(),
-                        user.getEmail(),
-                        user.getRole(),
-                        user.getTier());
+                        user.id().toString(),
+                        user.orgId().toString(),
+                        user.email(),
+                        user.role(),
+                        user.tier());
         return ResponseEntity.ok(
                 (Object)
                         new LoginResponse(
                                 token,
-                                user.getId().toString(),
-                                user.getOrgId().toString(),
-                                user.getEmail(),
-                                user.getRole(),
-                                user.getTier()));
+                                user.id().toString(),
+                                user.orgId().toString(),
+                                user.email(),
+                                user.role(),
+                                user.tier()));
     }
 
     @GetMapping("/me")

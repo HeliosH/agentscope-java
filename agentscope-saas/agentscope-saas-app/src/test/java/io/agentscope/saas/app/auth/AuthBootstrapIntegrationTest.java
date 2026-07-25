@@ -28,12 +28,11 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 
 /**
  * End-to-end auth on the {@code local} H2 profile: exercises the Phase F4 bootstrap bypass path —
- * {@link AuthBootstrapRepository} over the admin (RLS-bypass) DataSource. Register then login must
- * both succeed and return a signed JWT, proving the pre-tenant-context queries (find user by email,
- * find org by slug, insert user) route through the admin DataSource rather than the RLS-wrapped
- * primary (which would deny all rows with no {@code app.current_org} set). On H2 there is no RLS, so
- * this validates wiring + the JdbcTemplate/RowMapper path; the DB-enforced isolation is verified
- * separately on PostgreSQL.
+ * the MyBatis identity adapter over the admin (RLS-bypass) DataSource. Register then login must both
+ * succeed and return a signed JWT, proving the pre-tenant-context queries route through the admin
+ * DataSource rather than the RLS-wrapped primary. On H2 there is no RLS, so this validates the
+ * domain-port, DAL-adapter, and MyBatis wiring; DB-enforced isolation is verified separately on
+ * PostgreSQL.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("local")

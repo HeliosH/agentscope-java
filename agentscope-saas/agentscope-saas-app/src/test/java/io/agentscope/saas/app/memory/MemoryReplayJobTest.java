@@ -26,10 +26,20 @@ import io.agentscope.core.memory.mem0.Mem0AddRequest;
 import io.agentscope.core.memory.mem0.Mem0AddResponse;
 import io.agentscope.core.memory.mem0.Mem0Client;
 import io.agentscope.saas.app.config.SaasProperties;
+import io.agentscope.saas.dal.mybatis.admin.MemoryProjectionMapper;
+import io.agentscope.saas.dal.mybatis.type.UuidTypeHandler;
+import io.agentscope.saas.dal.repository.MyBatisMemoryProjectionRepository;
+import io.agentscope.saas.domain.memory.MemoryProjectionEvent;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 import javax.sql.DataSource;
+import org.apache.ibatis.mapping.Environment;
+import org.apache.ibatis.session.Configuration;
+import org.apache.ibatis.session.SqlSession;
+import org.apache.ibatis.session.SqlSessionFactoryBuilder;
+import org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;
 import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -40,10 +50,12 @@ class MemoryReplayJobTest {
     private JdbcTemplate jdbc;
     private Mem0Client mem0;
     private MemoryReplayJob job;
+    private SqlSession sqlSession;
 
     @BeforeEach
     void setUp() {
-        jdbc = new JdbcTemplate(dataSource());
+        DataSource dataSource = dataSource();
+        jdbc = new JdbcTemplate(dataSource);
         jdbc.execute(
                 """
                 CREATE TABLE memory_events (
@@ -70,7 +82,23 @@ class MemoryReplayJobTest {
         properties.getLtm().setReplayBatchSize(10);
         properties.getLtm().setReplayMaxAttempts(3);
         properties.getLtm().setReplayStaleSeconds(60);
-        job = new MemoryReplayJob(jdbc, new ObjectMapper(), properties, mem0);
+        Configuration configuration =
+                new Configuration(
+                        new Environment("test", new JdbcTransactionFactory(), dataSource));
+        configuration.setMapUnderscoreToCamelCase(true);
+        configuration.setArgNameBasedConstructorAutoMapping(true);
+        configuration.getTypeHandlerRegistry().register(UUID.class, UuidTypeHandler.class);
+        configuration.addMapper(MemoryProjectionMapper.class);
+        sqlSession = new SqlSessionFactoryBuilder().build(configuration).openSession(true);
+        var repository =
+                new MyBatisMemoryProjectionRepository(
+                        sqlSession.getMapper(MemoryProjectionMapper.class));
+        job = new MemoryReplayJob(repository, new ObjectMapper(), properties, mem0);
+    }
+
+    @AfterEach
+    void tearDown() {
+        sqlSession.close();
     }
 
     @Test
@@ -105,8 +133,8 @@ class MemoryReplayJobTest {
         UUID id = UUID.randomUUID();
         UUID orgId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
-        MemoryReplayJob.Candidate candidate =
-                new MemoryReplayJob.Candidate(
+        MemoryProjectionEvent candidate =
+                new MemoryProjectionEvent(
                         id,
                         orgId,
                         userId,

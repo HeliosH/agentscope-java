@@ -40,11 +40,15 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.deploy.skip>true</maven.deploy.skip>
         <spring.boot.version>4.0.4</spring.boot.version>
+        <mybatis.version>3.5.19</mybatis.version>
+        <mybatis.spring.version>3.0.5</mybatis.spring.version>
     </properties>
 
     <modules>
+        <module>agentscope-saas-domain</module>
         <module>agentscope-saas-core</module>
         <module>agentscope-saas-orchestration</module>
+        <module>agentscope-saas-dal</module>
         <module>agentscope-saas-storage</module>
         <module>agentscope-saas-sandbox</module>
         <module>agentscope-saas-app</module>
@@ -61,7 +65,17 @@
             </dependency>
             <dependency>
                 <groupId>io.agentscope</groupId>
+                <artifactId>agentscope-saas-domain</artifactId>
+                <version>${revision}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.agentscope</groupId>
                 <artifactId>agentscope-saas-core</artifactId>
+                <version>${revision}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.agentscope</groupId>
+                <artifactId>agentscope-saas-dal</artifactId>
                 <version>${revision}</version>
             </dependency>
             <dependency>
@@ -78,6 +92,16 @@
                 <groupId>io.agentscope</groupId>
                 <artifactId>agentscope-saas-storage</artifactId>
                 <version>${revision}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.mybatis</groupId>
+                <artifactId>mybatis</artifactId>
+                <version>${mybatis.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.mybatis</groupId>
+                <artifactId>mybatis-spring</artifactId>
+                <version>${mybatis.spring.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

@@ -19,48 +19,34 @@ import io.agentscope.harness.agent.subagent.task.TaskRunSpec;
 import io.agentscope.harness.agent.subagent.task.TaskStatus;
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.domain.orchestration.DurableTask;
+import io.agentscope.saas.domain.orchestration.DurableTaskRepository;
+import io.agentscope.saas.domain.orchestration.DurableTaskRepository.TaskScope;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
 import io.agentscope.saas.sandbox.SandboxRuntimeAttributes;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import javax.sql.DataSource;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /** PostgreSQL-backed bridge for Harness background subagent tools. */
 @Component
 public class PgTaskRepository implements TaskRepository {
 
-    private static final String TASK_QUERY =
-            """
-            SELECT t.id, t.run_id, r.agent_id, t.external_task_id, t.status, t.output_json,
-                   t.last_error_message, t.created_at, t.completed_at, t.delivered_at,
-                   COALESCE(ar.agent_type, 'assistant') AS agent_type
-              FROM task_nodes t
-              JOIN assistant_runs r ON r.id = t.run_id
-              LEFT JOIN agent_runs ar ON ar.id = t.owner_agent_run_id
-             WHERE t.org_id = ? AND r.user_id = ? AND r.session_id = ?
-               AND t.external_task_id IS NOT NULL
-            """;
-
-    private final JdbcTemplate jdbc;
+    private final DurableTaskRepository taskRepository;
     private final ObjectMapper objectMapper;
     private final RunOrchestrationService orchestration;
     private final SaasProperties properties;
 
     public PgTaskRepository(
-            @Qualifier("adminDataSource") DataSource dataSource,
+            DurableTaskRepository taskRepository,
             ObjectMapper objectMapper,
             RunOrchestrationService orchestration,
             SaasProperties properties) {
-        this.jdbc = new JdbcTemplate(dataSource);
+        this.taskRepository = taskRepository;
         this.objectMapper = objectMapper;
         this.orchestration = orchestration;
         this.properties = properties;
@@ -69,16 +55,10 @@ public class PgTaskRepository implements TaskRepository {
     @Override
     public BackgroundTask getTask(RuntimeContext rc, String sessionId, String taskId) {
         Scope scope = scope(rc, sessionId);
-        List<TaskRow> rows =
-                jdbc.query(
-                        TASK_QUERY
-                                + " AND t.external_task_id = ? ORDER BY t.created_at DESC LIMIT 1",
-                        this::mapRow,
-                        scope.orgId(),
-                        scope.userId(),
-                        scope.sessionId(),
-                        required(taskId, "taskId"));
-        return rows.isEmpty() ? null : toBackgroundTask(rows.get(0));
+        return taskRepository
+                .findLatest(scope.taskScope(), required(taskId, "taskId"))
+                .map(this::toBackgroundTask)
+                .orElse(null);
     }
 
     @Override
@@ -139,14 +119,7 @@ public class PgTaskRepository implements TaskRepository {
     public Collection<BackgroundTask> listTasks(
             RuntimeContext rc, String sessionId, TaskStatus filter) {
         Scope scope = scope(rc, sessionId);
-        return jdbc
-                .query(
-                        TASK_QUERY + " ORDER BY t.created_at ASC",
-                        this::mapRow,
-                        scope.orgId(),
-                        scope.userId(),
-                        scope.sessionId())
-                .stream()
+        return taskRepository.findAll(scope.taskScope()).stream()
                 .filter(row -> filter == null || taskStatus(row.status()) == filter)
                 .map(this::toBackgroundTask)
                 .toList();
@@ -155,7 +128,7 @@ public class PgTaskRepository implements TaskRepository {
     @Override
     public boolean cancelTask(RuntimeContext rc, String sessionId, String taskId) {
         Scope scope = scope(rc, sessionId);
-        TaskRow row = findRow(scope, taskId);
+        DurableTask row = findRow(scope, taskId);
         if (row == null || taskStatus(row.status()).isTerminal()) {
             return row != null;
         }
@@ -166,17 +139,7 @@ public class PgTaskRepository implements TaskRepository {
     @Override
     public List<TaskDelivery> findPendingDeliveries(RuntimeContext rc, String sessionId) {
         Scope scope = scope(rc, sessionId);
-        return jdbc
-                .query(
-                        TASK_QUERY
-                                + " AND t.status IN"
-                                + " ('SUCCEEDED','FAILED','CANCELLED','MANUAL_ACTION') AND"
-                                + " t.delivered_at IS NULL ORDER BY t.completed_at ASC",
-                        this::mapRow,
-                        scope.orgId(),
-                        scope.userId(),
-                        scope.sessionId())
-                .stream()
+        return taskRepository.findPendingDeliveries(scope.taskScope()).stream()
                 .map(
                         row -> {
                             TaskStatus status = taskStatus(row.status());
@@ -197,54 +160,24 @@ public class PgTaskRepository implements TaskRepository {
     @Override
     public void markDelivered(RuntimeContext rc, String sessionId, String taskId) {
         Scope scope = scope(rc, sessionId);
-        jdbc.update(
-                "UPDATE task_nodes SET delivered_at = COALESCE(delivered_at, ?) WHERE id IN ("
-                        + "SELECT t.id FROM task_nodes t JOIN assistant_runs r ON r.id = t.run_id "
-                        + "WHERE t.org_id = ? AND r.user_id = ? AND r.session_id = ? "
-                        + "AND t.external_task_id = ?)",
-                OffsetDateTime.now(),
-                scope.orgId(),
-                scope.userId(),
-                scope.sessionId(),
-                required(taskId, "taskId"));
+        taskRepository.markDelivered(
+                scope.taskScope(), required(taskId, "taskId"), OffsetDateTime.now());
     }
 
     @Override
     public boolean isDelivered(RuntimeContext rc, String sessionId, String taskId) {
         Scope scope = scope(rc, sessionId);
-        TaskRow row = findRow(scope, taskId);
+        DurableTask row = findRow(scope, taskId);
         return row != null && row.deliveredAt() != null;
     }
 
-    private TaskRow findRow(Scope scope, String taskId) {
-        List<TaskRow> rows =
-                jdbc.query(
-                        TASK_QUERY
-                                + " AND t.external_task_id = ? ORDER BY t.created_at DESC LIMIT 1",
-                        this::mapRow,
-                        scope.orgId(),
-                        scope.userId(),
-                        scope.sessionId(),
-                        required(taskId, "taskId"));
-        return rows.isEmpty() ? null : rows.get(0);
+    private DurableTask findRow(Scope scope, String taskId) {
+        return taskRepository
+                .findLatest(scope.taskScope(), required(taskId, "taskId"))
+                .orElse(null);
     }
 
-    private TaskRow mapRow(ResultSet rs, int rowNum) throws SQLException {
-        return new TaskRow(
-                rs.getObject("id", UUID.class),
-                rs.getObject("run_id", UUID.class),
-                rs.getObject("agent_id", UUID.class),
-                rs.getString("external_task_id"),
-                rs.getString("agent_type"),
-                rs.getString("status"),
-                rs.getString("output_json"),
-                rs.getString("last_error_message"),
-                rs.getObject("created_at", OffsetDateTime.class),
-                rs.getObject("completed_at", OffsetDateTime.class),
-                rs.getObject("delivered_at", OffsetDateTime.class));
-    }
-
-    private BackgroundTask toBackgroundTask(TaskRow row) {
+    private BackgroundTask toBackgroundTask(DurableTask row) {
         CompletableFuture<String> future = new CompletableFuture<>();
         switch (taskStatus(row.status())) {
             case COMPLETED -> future.complete(result(row));
@@ -262,7 +195,7 @@ public class PgTaskRepository implements TaskRepository {
         return new BackgroundTask(row.externalTaskId(), row.agentType(), future);
     }
 
-    private String result(TaskRow row) {
+    private String result(DurableTask row) {
         try {
             JsonNode node = objectMapper.readTree(row.outputJson());
             if (node.isTextual()) {
@@ -332,18 +265,9 @@ public class PgTaskRepository implements TaskRepository {
         }
     }
 
-    private record Scope(TenantContext tenant, UUID orgId, UUID userId, UUID sessionId) {}
-
-    private record TaskRow(
-            UUID id,
-            UUID runId,
-            UUID agentId,
-            String externalTaskId,
-            String agentType,
-            String status,
-            String outputJson,
-            String errorMessage,
-            OffsetDateTime createdAt,
-            OffsetDateTime completedAt,
-            OffsetDateTime deliveredAt) {}
+    private record Scope(TenantContext tenant, UUID orgId, UUID userId, UUID sessionId) {
+        private TaskScope taskScope() {
+            return new TaskScope(orgId, userId, sessionId);
+        }
+    }
 }

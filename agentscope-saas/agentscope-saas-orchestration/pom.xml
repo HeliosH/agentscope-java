@@ -33,6 +33,10 @@
     <dependencies>
         <dependency>
             <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-saas-domain</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.agentscope</groupId>
             <artifactId>agentscope-saas-core</artifactId>
         </dependency>
         <dependency>

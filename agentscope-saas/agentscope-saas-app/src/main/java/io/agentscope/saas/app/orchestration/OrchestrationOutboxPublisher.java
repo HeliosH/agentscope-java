@@ -10,20 +10,16 @@
 package io.agentscope.saas.app.orchestration;
 
 import io.agentscope.saas.app.config.SaasProperties;
+import io.agentscope.saas.domain.orchestration.OrchestrationOutboxMessage;
+import io.agentscope.saas.domain.orchestration.OrchestrationOutboxRepository;
 import io.agentscope.saas.orchestration.OrchestrationEventDispatcher;
 import io.agentscope.saas.orchestration.OrchestrationEventDispatcher.OutboxEvent;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.time.OffsetDateTime;
-import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
-import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -34,29 +30,25 @@ public class OrchestrationOutboxPublisher {
     private static final Logger log = LoggerFactory.getLogger(OrchestrationOutboxPublisher.class);
     private static final int MAX_ERROR_LENGTH = 2000;
 
-    private final JdbcTemplate jdbc;
+    private final OrchestrationOutboxRepository outboxRepository;
     private final SaasProperties properties;
     private final OrchestrationEventDispatcher dispatcher;
     private final String workerId;
 
     @Autowired
     public OrchestrationOutboxPublisher(
-            @Qualifier("adminDataSource") DataSource adminDataSource,
+            OrchestrationOutboxRepository outboxRepository,
             SaasProperties properties,
             OrchestrationEventDispatcher dispatcher) {
-        this(
-                new JdbcTemplate(adminDataSource),
-                properties,
-                dispatcher,
-                "outbox-" + UUID.randomUUID());
+        this(outboxRepository, properties, dispatcher, "outbox-" + UUID.randomUUID());
     }
 
     OrchestrationOutboxPublisher(
-            JdbcTemplate jdbc,
+            OrchestrationOutboxRepository outboxRepository,
             SaasProperties properties,
             OrchestrationEventDispatcher dispatcher,
             String workerId) {
-        this.jdbc = jdbc;
+        this.outboxRepository = outboxRepository;
         this.properties = properties;
         this.dispatcher = dispatcher;
         this.workerId = workerId;
@@ -94,14 +86,15 @@ public class OrchestrationOutboxPublisher {
         OffsetDateTime now = OffsetDateTime.now();
 
         MutableSummary summary = new MutableSummary();
-        for (Candidate candidate : loadCandidates(now, batchSize, maxAttempts)) {
+        for (OrchestrationOutboxMessage candidate :
+                outboxRepository.findClaimable(now, batchSize, maxAttempts)) {
             if (!claim(candidate.id(), now, leaseSeconds, maxAttempts)) {
                 continue;
             }
             summary.claimed++;
             int attemptNo = candidate.attempts() + 1;
             try {
-                dispatcher.dispatch(candidate.toEvent());
+                dispatcher.dispatch(toEvent(candidate));
                 markPublished(candidate.id());
                 summary.published++;
             } catch (Exception e) {
@@ -123,80 +116,13 @@ public class OrchestrationOutboxPublisher {
         return summary.toImmutable();
     }
 
-    private List<Candidate> loadCandidates(OffsetDateTime now, int batchSize, int maxAttempts) {
-        return jdbc.query(
-                """
-                SELECT id, org_id, aggregate_id, aggregate_type, event_type, payload_json,
-                       created_at, attempts
-                  FROM orchestration_outbox
-                 WHERE published_at IS NULL
-                   AND dead_lettered_at IS NULL
-                   AND attempts < ?
-                   AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-                   AND (locked_until IS NULL OR locked_until < ?)
-                 ORDER BY created_at ASC, id ASC
-                 LIMIT ?
-                """,
-                this::mapCandidate,
-                maxAttempts,
-                now,
-                now,
-                batchSize);
-    }
-
-    private Candidate mapCandidate(ResultSet rs, int rowNum) throws SQLException {
-        return new Candidate(
-                rs.getObject("id", UUID.class),
-                rs.getObject("org_id", UUID.class),
-                rs.getObject("aggregate_id", UUID.class),
-                rs.getString("aggregate_type"),
-                rs.getString("event_type"),
-                rs.getString("payload_json"),
-                rs.getObject("created_at", OffsetDateTime.class),
-                rs.getInt("attempts"));
-    }
-
     private boolean claim(UUID id, OffsetDateTime now, long leaseSeconds, int maxAttempts) {
-        int updated =
-                jdbc.update(
-                        """
-                        UPDATE orchestration_outbox
-                           SET locked_by = ?,
-                               locked_until = ?,
-                               attempts = attempts + 1,
-                               last_error = NULL
-                         WHERE id = ?
-                           AND published_at IS NULL
-                           AND dead_lettered_at IS NULL
-                           AND attempts < ?
-                           AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-                           AND (locked_until IS NULL OR locked_until < ?)
-                        """,
-                        workerId,
-                        now.plusSeconds(leaseSeconds),
-                        id,
-                        maxAttempts,
-                        now,
-                        now);
-        return updated == 1;
+        return outboxRepository.claim(
+                id, workerId, now, now.plusSeconds(leaseSeconds), maxAttempts);
     }
 
     private void markPublished(UUID id) {
-        jdbc.update(
-                """
-                UPDATE orchestration_outbox
-                   SET published_at = ?,
-                       locked_by = NULL,
-                       locked_until = NULL,
-                       next_attempt_at = NULL,
-                       last_error = NULL
-                 WHERE id = ?
-                   AND locked_by = ?
-                   AND published_at IS NULL
-                """,
-                OffsetDateTime.now(),
-                id,
-                workerId);
+        outboxRepository.markPublished(id, workerId, OffsetDateTime.now());
     }
 
     private void markFailed(UUID id, int attemptNo, int maxAttempts, Throwable error) {
@@ -204,23 +130,8 @@ public class OrchestrationOutboxPublisher {
         OffsetDateTime now = OffsetDateTime.now();
         OffsetDateTime nextAttempt =
                 exhausted ? null : now.plusSeconds(retryDelaySeconds(attemptNo));
-        jdbc.update(
-                """
-                UPDATE orchestration_outbox
-                   SET locked_by = NULL,
-                       locked_until = NULL,
-                       next_attempt_at = ?,
-                       dead_lettered_at = ?,
-                       last_error = ?
-                 WHERE id = ?
-                   AND locked_by = ?
-                   AND published_at IS NULL
-                """,
-                nextAttempt,
-                exhausted ? now : null,
-                truncate(errorMessage(error)),
-                id,
-                workerId);
+        outboxRepository.markFailed(
+                id, workerId, nextAttempt, exhausted ? now : null, truncate(errorMessage(error)));
     }
 
     long retryDelaySeconds(int attemptNo) {
@@ -243,20 +154,15 @@ public class OrchestrationOutboxPublisher {
         return value.length() <= MAX_ERROR_LENGTH ? value : value.substring(0, MAX_ERROR_LENGTH);
     }
 
-    record Candidate(
-            UUID id,
-            UUID orgId,
-            UUID aggregateId,
-            String aggregateType,
-            String eventType,
-            String payloadJson,
-            OffsetDateTime createdAt,
-            int attempts) {
-
-        OutboxEvent toEvent() {
-            return new OutboxEvent(
-                    id, orgId, aggregateId, aggregateType, eventType, payloadJson, createdAt);
-        }
+    private static OutboxEvent toEvent(OrchestrationOutboxMessage message) {
+        return new OutboxEvent(
+                message.id(),
+                message.orgId(),
+                message.aggregateId(),
+                message.aggregateType(),
+                message.eventType(),
+                message.payloadJson(),
+                message.createdAt());
     }
 
     public record DeliverySummary(int claimed, int published, int failed, int deadLettered) {}

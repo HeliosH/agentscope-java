@@ -31,7 +31,8 @@ import org.springframework.context.annotation.Configuration;
  * {@code agentscope} role and does <strong>not</strong> set the RLS GUC {@code app.current_org}, so
  * it bypasses Row-Level Security. Used ONLY for bootstrap queries that run before a tenant context
  * exists (login/register — see {@link
- * io.agentscope.saas.app.auth.AuthBootstrapRepository}). Every authenticated request continues to
+ * io.agentscope.saas.dal.repository.MyBatisAuthIdentityRepository}). Every authenticated request
+ * continues to
  * use the {@code @Primary} RLS-wrapped {@link DataSource} from {@link TenantAwareDataSourceConfig}.
  *
  * <p>The bypass is explicit and narrow by design: there is no routing layer, so an empty tenant

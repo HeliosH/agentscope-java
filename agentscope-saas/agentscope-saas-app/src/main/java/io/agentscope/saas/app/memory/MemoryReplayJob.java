@@ -22,19 +22,15 @@ import io.agentscope.core.memory.mem0.Mem0AddRequest;
 import io.agentscope.core.memory.mem0.Mem0Client;
 import io.agentscope.core.memory.mem0.Mem0Message;
 import io.agentscope.saas.app.config.SaasProperties;
-import java.sql.ResultSet;
-import java.sql.SQLException;
+import io.agentscope.saas.domain.memory.MemoryProjectionEvent;
+import io.agentscope.saas.domain.memory.MemoryProjectionRepository;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
-import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -51,37 +47,27 @@ public class MemoryReplayJob {
 
     private static final Logger log = LoggerFactory.getLogger(MemoryReplayJob.class);
 
-    private static final String SOURCE_MEM0 = "mem0";
-    private static final String EVENT_CONVERSATION = "conversation";
-    private static final String STATUS_PENDING = "pending";
-    private static final String STATUS_FAILED = "failed";
-    private static final String STATUS_SYNCING = "syncing";
-    private static final String STATUS_SYNCED = "synced";
     private static final int MAX_ERROR_LENGTH = 2000;
 
-    private final JdbcTemplate jdbc;
+    private final MemoryProjectionRepository repository;
     private final ObjectMapper objectMapper;
     private final SaasProperties properties;
     private final Mem0Client mem0Client;
 
     @Autowired
     public MemoryReplayJob(
-            @Qualifier("adminDataSource") DataSource adminDataSource,
+            MemoryProjectionRepository repository,
             ObjectMapper objectMapper,
             SaasProperties properties) {
-        this(
-                new JdbcTemplate(adminDataSource),
-                objectMapper,
-                properties,
-                buildClient(properties.getLtm()));
+        this(repository, objectMapper, properties, buildClient(properties.getLtm()));
     }
 
     MemoryReplayJob(
-            JdbcTemplate jdbc,
+            MemoryProjectionRepository repository,
             ObjectMapper objectMapper,
             SaasProperties properties,
             Mem0Client mem0Client) {
-        this.jdbc = jdbc;
+        this.repository = repository;
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.mem0Client = mem0Client;
@@ -113,18 +99,20 @@ public class MemoryReplayJob {
         int maxAttempts = Math.max(1, ltm.getReplayMaxAttempts());
         OffsetDateTime staleBefore =
                 OffsetDateTime.now().minusSeconds(Math.max(1L, ltm.getReplayStaleSeconds()));
-        List<Candidate> candidates = loadCandidates(batchSize, maxAttempts, staleBefore);
+        List<MemoryProjectionEvent> candidates =
+                repository.findReplayable(batchSize, maxAttempts, staleBefore);
         int replayed = 0;
-        for (Candidate candidate : candidates) {
-            if (!claim(candidate.id())) {
+        for (MemoryProjectionEvent candidate : candidates) {
+            if (!repository.claim(candidate.id(), maxAttempts, staleBefore, OffsetDateTime.now())) {
                 continue;
             }
             try {
                 mem0Client.add(toAddRequest(candidate)).block();
-                markSynced(candidate.id());
+                repository.markSynced(candidate.id(), OffsetDateTime.now());
                 replayed++;
             } catch (Exception e) {
-                markFailed(candidate.id(), e);
+                repository.markFailed(
+                        candidate.id(), truncate(errorMessage(e)), OffsetDateTime.now());
                 log.warn(
                         "Memory replay failed for event {} org={} user={}: {}",
                         candidate.id(),
@@ -136,96 +124,7 @@ public class MemoryReplayJob {
         return replayed;
     }
 
-    private List<Candidate> loadCandidates(
-            int batchSize, int maxAttempts, OffsetDateTime staleBefore) {
-        String sql =
-                """
-                SELECT id, org_id, user_id, agent_id, session_id, content_json, metadata_json
-                  FROM memory_events
-                 WHERE source = ?
-                   AND event_type = ?
-                   AND sync_attempts < ?
-                   AND (
-                        sync_status IN (?, ?)
-                        OR (sync_status = ? AND updated_at < ?)
-                   )
-                 ORDER BY created_at ASC
-                 LIMIT ?
-                """;
-        return jdbc.query(
-                sql,
-                this::mapCandidate,
-                SOURCE_MEM0,
-                EVENT_CONVERSATION,
-                maxAttempts,
-                STATUS_PENDING,
-                STATUS_FAILED,
-                STATUS_SYNCING,
-                staleBefore,
-                batchSize);
-    }
-
-    private Candidate mapCandidate(ResultSet rs, int rowNum) throws SQLException {
-        return new Candidate(
-                rs.getObject("id", UUID.class),
-                rs.getObject("org_id", UUID.class),
-                rs.getObject("user_id", UUID.class),
-                rs.getString("agent_id"),
-                rs.getString("session_id"),
-                rs.getString("content_json"),
-                rs.getString("metadata_json"));
-    }
-
-    private boolean claim(UUID id) {
-        int updated =
-                jdbc.update(
-                        """
-                        UPDATE memory_events
-                           SET sync_status = ?, last_error = NULL, updated_at = ?
-                         WHERE id = ?
-                           AND sync_status <> ?
-                        """,
-                        STATUS_SYNCING,
-                        OffsetDateTime.now(),
-                        id,
-                        STATUS_SYNCED);
-        return updated == 1;
-    }
-
-    private void markSynced(UUID id) {
-        jdbc.update(
-                """
-                UPDATE memory_events
-                   SET sync_status = ?,
-                       sync_attempts = sync_attempts + 1,
-                       synced_at = ?,
-                       last_error = NULL,
-                       updated_at = ?
-                 WHERE id = ?
-                """,
-                STATUS_SYNCED,
-                OffsetDateTime.now(),
-                OffsetDateTime.now(),
-                id);
-    }
-
-    private void markFailed(UUID id, Throwable error) {
-        jdbc.update(
-                """
-                UPDATE memory_events
-                   SET sync_status = ?,
-                       sync_attempts = sync_attempts + 1,
-                       last_error = ?,
-                       updated_at = ?
-                 WHERE id = ?
-                """,
-                STATUS_FAILED,
-                truncate(errorMessage(error)),
-                OffsetDateTime.now(),
-                id);
-    }
-
-    Mem0AddRequest toAddRequest(Candidate candidate) {
+    Mem0AddRequest toAddRequest(MemoryProjectionEvent candidate) {
         return Mem0AddRequest.builder()
                 .messages(parseMessages(candidate.contentJson()))
                 .agentId(candidate.agentId())
@@ -263,7 +162,7 @@ public class MemoryReplayJob {
         }
     }
 
-    private Map<String, Object> parseMetadata(Candidate candidate) {
+    private Map<String, Object> parseMetadata(MemoryProjectionEvent candidate) {
         try {
             if (candidate.metadataJson() == null || candidate.metadataJson().isBlank()) {
                 return Map.of("org_id", candidate.orgId().toString());
@@ -314,13 +213,4 @@ public class MemoryReplayJob {
         }
         return value.substring(0, MAX_ERROR_LENGTH);
     }
-
-    record Candidate(
-            UUID id,
-            UUID orgId,
-            UUID userId,
-            String agentId,
-            String sessionId,
-            String contentJson,
-            String metadataJson) {}
 }
