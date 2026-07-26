@@ -40,6 +40,7 @@ class SandboxLeaseServiceTest {
                         new ActiveSandboxDeployment(
                                 "OpenSandbox",
                                 "runtime:latest",
+                                java.util.Set.of(SandboxCapability.SNAPSHOT),
                                 "{\"capabilities\":[\"SNAPSHOT\"]}"),
                         "worker-1",
                         expiresAt);

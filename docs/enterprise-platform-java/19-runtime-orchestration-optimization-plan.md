@@ -1,6 +1,6 @@
 # 19. 企业智能助手运行框架优化落地方案
 
-> 状态：Phase 0-2 已完成；Phase 3 已完成编排沙箱租约持久化闭环，Provider 能力校验与 Attempt 隔离工作区继续实施
+> 状态：Phase 0-2 已完成；Phase 3 已完成编排沙箱租约持久化和部署能力基线校验，Attempt 隔离工作区继续实施
 >
 > 适用范围：`agentscope-saas` 企业智能助手运行时
 >
@@ -705,7 +705,9 @@ saas:
 - 已接通 `PROVISIONING -> ACTIVE -> RELEASED`、心跳续租和创建失败终态，Provider
   sandbox id、镜像/模板、能力快照和租约归属均持久化到 `sandbox_leases`；
 - 沙箱租约写入失败时，编排任务在创建 Provider 资源前失败关闭，避免产生不可追踪资源；
-- 待完成 Provider 启动能力基线校验、Attempt 独立工作区、checkpoint/Artifact 发布和
+- 已增加部署级 `required-capabilities` 能力基线，能力名称无效或活动 Provider 不满足时
+  Spring 启动失败，不静默回退或运行时切换 Provider；
+- 待完成 Provider 连接健康检查、Attempt 独立工作区、checkpoint/Artifact 发布和
   `sandbox_leases` 跨租户 reconciliation。
 
 ### Phase 4：计划、验证和前端，8-10 个工作日

@@ -28,10 +28,13 @@ import io.agentscope.harness.agent.sandbox.snapshot.RemoteSnapshotSpec;
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
 import io.agentscope.saas.dal.mybatis.tenant.RelationalBlobStorageMapper;
 import io.agentscope.saas.sandbox.ActiveSandboxDeployment;
+import io.agentscope.saas.sandbox.SandboxCapability;
 import io.agentscope.saas.storage.PgRemoteSnapshotClient;
 import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -58,38 +61,50 @@ public class SandboxConfig {
     public ActiveSandboxDeployment activeSandboxDeployment(
             SaasProperties properties, ObjectMapper objectMapper) {
         SaasProperties.Sandbox sandbox = properties.getSandbox();
-        String provider = sandbox.getType().trim().toLowerCase();
-        Set<String> capabilities = new LinkedHashSet<>();
+        if (sandbox.getType() == null || sandbox.getType().isBlank()) {
+            throw new IllegalStateException("saas.sandbox.type must be configured");
+        }
+        String provider = sandbox.getType().trim().toLowerCase(Locale.ROOT);
+        Set<SandboxCapability> capabilities = new LinkedHashSet<>();
         if (sandbox.getSnapshot().isEnabled()) {
-            capabilities.add("SNAPSHOT");
+            capabilities.add(SandboxCapability.SNAPSHOT);
         }
         String imageOrTemplate =
                 switch (provider) {
                     case "docker" -> {
-                        capabilities.add("RESOURCE_LIMITS");
-                        capabilities.add("CUSTOM_IMAGE");
+                        capabilities.add(SandboxCapability.RESOURCE_LIMITS);
+                        capabilities.add(SandboxCapability.CUSTOM_IMAGE);
                         yield sandbox.getImage();
                     }
                     case "e2b" -> {
-                        capabilities.add("CUSTOM_TEMPLATE");
+                        capabilities.add(SandboxCapability.CUSTOM_TEMPLATE);
                         yield sandbox.getE2bTemplateId();
                     }
                     case "cube" -> {
-                        capabilities.add("CUSTOM_TEMPLATE");
+                        capabilities.add(SandboxCapability.CUSTOM_TEMPLATE);
                         yield sandbox.getCubeTemplateId();
                     }
                     case "opensandbox" -> {
-                        capabilities.add("RESOURCE_LIMITS");
-                        capabilities.add("CUSTOM_IMAGE");
+                        capabilities.add(SandboxCapability.RESOURCE_LIMITS);
+                        capabilities.add(SandboxCapability.CUSTOM_IMAGE);
                         yield openSandboxImage(sandbox);
                     }
                     default -> throw new IllegalStateException("Unknown sandbox type: " + provider);
                 };
+        Set<SandboxCapability> requiredCapabilities =
+                sandbox.getRequiredCapabilities().stream()
+                        .filter(value -> value != null && !value.isBlank())
+                        .map(SandboxCapability::parse)
+                        .collect(Collectors.toUnmodifiableSet());
         try {
-            return new ActiveSandboxDeployment(
-                    provider,
-                    imageOrTemplate,
-                    objectMapper.writeValueAsString(Map.of("capabilities", capabilities)));
+            ActiveSandboxDeployment deployment =
+                    new ActiveSandboxDeployment(
+                            provider,
+                            imageOrTemplate,
+                            capabilities,
+                            objectMapper.writeValueAsString(Map.of("capabilities", capabilities)));
+            deployment.require(requiredCapabilities);
+            return deployment;
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Unable to serialize sandbox capabilities", e);
         }

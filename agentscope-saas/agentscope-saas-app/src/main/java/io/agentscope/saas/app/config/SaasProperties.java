@@ -458,6 +458,12 @@ public class SaasProperties {
         /** CPU count per sandbox ({@code null} = unlimited, type=docker only). */
         private Long cpuCount;
 
+        /**
+         * Provider-neutral capabilities required by this deployment. The application fails to
+         * start when the selected provider cannot guarantee one of these capabilities.
+         */
+        private List<String> requiredCapabilities = List.of();
+
         /** Idle TTL in seconds before a sandbox is eligible for eviction. */
         private int idleTtlSeconds = 600;
 
@@ -756,6 +762,15 @@ public class SaasProperties {
 
         public void setCpuCount(Long cpuCount) {
             this.cpuCount = cpuCount;
+        }
+
+        public List<String> getRequiredCapabilities() {
+            return requiredCapabilities;
+        }
+
+        public void setRequiredCapabilities(List<String> requiredCapabilities) {
+            this.requiredCapabilities =
+                    requiredCapabilities == null ? List.of() : List.copyOf(requiredCapabilities);
         }
 
         public int getIdleTtlSeconds() {

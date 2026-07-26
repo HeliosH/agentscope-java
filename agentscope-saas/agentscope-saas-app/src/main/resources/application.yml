@@ -91,6 +91,7 @@ saas:
     isolation-scope: ${SAAS_SANDBOX_ISOLATION_SCOPE:USER}
     memory-limit-bytes: ${SAAS_SANDBOX_MEMORY_BYTES:}
     cpu-count: ${SAAS_SANDBOX_CPU_COUNT:}
+    required-capabilities: ${SAAS_SANDBOX_REQUIRED_CAPABILITIES:}
     idle-ttl-seconds: ${SAAS_SANDBOX_IDLE_TTL:600}
     execution-guard-max-wait-seconds: ${SAAS_SANDBOX_GUARD_MAX_WAIT_SECONDS:60}
     execution-guard-lease-ttl-seconds: ${SAAS_SANDBOX_GUARD_LEASE_TTL_SECONDS:1800}

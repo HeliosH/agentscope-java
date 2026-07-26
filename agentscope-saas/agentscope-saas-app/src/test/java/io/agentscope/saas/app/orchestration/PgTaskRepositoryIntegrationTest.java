@@ -152,6 +152,8 @@ class PgTaskRepositoryIntegrationTest {
                         new ActiveSandboxDeployment(
                                 "opensandbox",
                                 "runtime:latest",
+                                java.util.Set.of(
+                                        io.agentscope.saas.sandbox.SandboxCapability.SNAPSHOT),
                                 "{\"capabilities\":[\"SNAPSHOT\"]}"),
                         "worker-integration",
                         java.time.OffsetDateTime.now().plusMinutes(1));

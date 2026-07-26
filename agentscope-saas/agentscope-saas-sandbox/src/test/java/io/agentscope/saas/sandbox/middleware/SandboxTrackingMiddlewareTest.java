@@ -202,7 +202,8 @@ class SandboxTrackingMiddlewareTest {
     @Test
     void persistsAndReleasesOrchestrationLeaseForRunAttempt() {
         ActiveSandboxDeployment deployment =
-                new ActiveSandboxDeployment("e2b", "base", "{\"capabilities\":[]}");
+                new ActiveSandboxDeployment(
+                        "e2b", "base", java.util.Set.of(), "{\"capabilities\":[]}");
         middleware =
                 new SandboxTrackingMiddleware(
                         broker, "e2b", 60, SandboxMetrics.noop(), leaseService, deployment);
