@@ -181,6 +181,7 @@ public class DurableTaskWorker {
     private ExecutionRequest toRequest(TaskLease lease) {
         return new ExecutionRequest(
                 lease.attemptId(),
+                workerId,
                 lease.orgId(),
                 lease.runId(),
                 lease.taskId(),

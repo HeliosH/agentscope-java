@@ -65,7 +65,15 @@ public class ChatRunStartService {
         if (existing.isPresent()) {
             var run = existing.get();
             return new StartedRun(
-                    locked.getId(), run.sessionId(), null, run.id(), null, run.status(), true);
+                    locked.getId(),
+                    run.sessionId(),
+                    null,
+                    run.id(),
+                    null,
+                    null,
+                    null,
+                    run.status(),
+                    true);
         }
 
         ChatSessionEntity session =
@@ -87,6 +95,8 @@ public class ChatRunStartService {
                 userMessage.getId(),
                 run.runId(),
                 run.rootAgentRunId(),
+                run.rootTaskId(),
+                run.rootAttemptId(),
                 RunOrchestrationService.RUN_RUNNING,
                 run.reused());
     }
@@ -97,6 +107,8 @@ public class ChatRunStartService {
             UUID triggerMessageId,
             UUID runId,
             UUID rootAgentRunId,
+            UUID rootTaskId,
+            UUID rootAttemptId,
             String status,
             boolean reused) {}
 }

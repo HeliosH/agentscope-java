@@ -96,3 +96,5 @@ MyBatis 已覆盖以下关系数据：
 - 租户数据与管理任务使用明确隔离的 MyBatis Session；
 - H2 全量测试与真实 PostgreSQL/RLS 集成测试通过；
 - 架构测试能够阻止上述约束被后续变更破坏。
+- 编排沙箱租约遵循同一边界：`SandboxLeaseRepository` 位于领域层，租约状态转换由
+  sandbox 应用服务负责，SQL 与 Data Object 仅存在于 DAL 的 tenant MyBatis 适配器中。

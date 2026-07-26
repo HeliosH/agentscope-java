@@ -15,6 +15,8 @@
  */
 package io.agentscope.saas.app.config;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.extensions.sandbox.cube.CubeFilesystemSpec;
 import io.agentscope.extensions.sandbox.e2b.E2bFilesystemSpec;
 import io.agentscope.extensions.sandbox.opensandbox.OpenSandboxFilesystemSpec;
@@ -25,7 +27,11 @@ import io.agentscope.harness.agent.sandbox.impl.docker.DockerFilesystemSpec;
 import io.agentscope.harness.agent.sandbox.snapshot.RemoteSnapshotSpec;
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
 import io.agentscope.saas.dal.mybatis.tenant.RelationalBlobStorageMapper;
+import io.agentscope.saas.sandbox.ActiveSandboxDeployment;
 import io.agentscope.saas.storage.PgRemoteSnapshotClient;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -47,6 +53,47 @@ import org.springframework.context.annotation.Configuration;
 public class SandboxConfig {
 
     private static final Logger log = LoggerFactory.getLogger(SandboxConfig.class);
+
+    @Bean
+    public ActiveSandboxDeployment activeSandboxDeployment(
+            SaasProperties properties, ObjectMapper objectMapper) {
+        SaasProperties.Sandbox sandbox = properties.getSandbox();
+        String provider = sandbox.getType().trim().toLowerCase();
+        Set<String> capabilities = new LinkedHashSet<>();
+        if (sandbox.getSnapshot().isEnabled()) {
+            capabilities.add("SNAPSHOT");
+        }
+        String imageOrTemplate =
+                switch (provider) {
+                    case "docker" -> {
+                        capabilities.add("RESOURCE_LIMITS");
+                        capabilities.add("CUSTOM_IMAGE");
+                        yield sandbox.getImage();
+                    }
+                    case "e2b" -> {
+                        capabilities.add("CUSTOM_TEMPLATE");
+                        yield sandbox.getE2bTemplateId();
+                    }
+                    case "cube" -> {
+                        capabilities.add("CUSTOM_TEMPLATE");
+                        yield sandbox.getCubeTemplateId();
+                    }
+                    case "opensandbox" -> {
+                        capabilities.add("RESOURCE_LIMITS");
+                        capabilities.add("CUSTOM_IMAGE");
+                        yield openSandboxImage(sandbox);
+                    }
+                    default -> throw new IllegalStateException("Unknown sandbox type: " + provider);
+                };
+        try {
+            return new ActiveSandboxDeployment(
+                    provider,
+                    imageOrTemplate,
+                    objectMapper.writeValueAsString(Map.of("capabilities", capabilities)));
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Unable to serialize sandbox capabilities", e);
+        }
+    }
 
     /**
      * Creates the sandbox filesystem spec from configuration properties. Supports

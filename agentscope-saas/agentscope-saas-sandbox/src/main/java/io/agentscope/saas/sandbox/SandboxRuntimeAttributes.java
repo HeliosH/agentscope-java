@@ -19,6 +19,10 @@ package io.agentscope.saas.sandbox;
 public final class SandboxRuntimeAttributes {
 
     public static final String ATTR_AGENT_ID = "saas.agentId";
+    public static final String ATTR_RUN_ID = "assistantRunId";
+    public static final String ATTR_TASK_ID = "saas.taskId";
+    public static final String ATTR_ATTEMPT_ID = "saas.attemptId";
+    public static final String ATTR_LEASE_OWNER = "saas.leaseOwner";
 
     private SandboxRuntimeAttributes() {}
 }

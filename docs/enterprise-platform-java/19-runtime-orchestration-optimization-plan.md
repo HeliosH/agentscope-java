@@ -1,6 +1,6 @@
 # 19. 企业智能助手运行框架优化落地方案
 
-> 状态：Phase 0-2 已完成；可靠调度、持久化子 Agent、父协调器续跑、预算治理和权限快照已落地
+> 状态：Phase 0-2 已完成；Phase 3 已完成编排沙箱租约持久化闭环，Provider 能力校验与 Attempt 隔离工作区继续实施
 >
 > 适用范围：`agentscope-saas` 企业智能助手运行时
 >
@@ -694,6 +694,19 @@ saas:
 - 实现 Provider 资源 reconciliation 和受控部署切换流程。
 
 验收：同一应用制品和同一套任务不改业务代码，可在不同环境通过部署配置使用不同 Provider；每套部署只连接一个 Provider；用户界面和 API 行为一致。同用户并行写任务不互相覆盖，沙箱释放后文件仍可读取。
+
+当前落地进度：
+
+- 已通过同一 `SandboxFilesystemSpec` 装配路径支持 Docker、E2B、CubeSandbox 和
+  OpenSandbox，由部署配置选择唯一活动 Provider；
+- 已建立 `SandboxLeaseRepository` 领域端口、MyBatis tenant Mapper 和 Repository
+  Adapter，应用层和 Middleware 不直接访问 DAL；
+- 已将 `runId + taskId + attemptId + workerId` 传播到沙箱运行上下文；
+- 已接通 `PROVISIONING -> ACTIVE -> RELEASED`、心跳续租和创建失败终态，Provider
+  sandbox id、镜像/模板、能力快照和租约归属均持久化到 `sandbox_leases`；
+- 沙箱租约写入失败时，编排任务在创建 Provider 资源前失败关闭，避免产生不可追踪资源；
+- 待完成 Provider 启动能力基线校验、Attempt 独立工作区、checkpoint/Artifact 发布和
+  `sandbox_leases` 跨租户 reconciliation。
 
 ### Phase 4：计划、验证和前端，8-10 个工作日
 

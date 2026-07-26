@@ -19,6 +19,7 @@ public interface DurableTaskExecutor {
 
     record ExecutionRequest(
             UUID attemptId,
+            String leaseOwner,
             UUID orgId,
             UUID runId,
             UUID taskId,

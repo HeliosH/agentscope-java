@@ -19,6 +19,8 @@ import io.agentscope.harness.agent.subagent.task.TaskStatus;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
+import io.agentscope.saas.sandbox.ActiveSandboxDeployment;
+import io.agentscope.saas.sandbox.SandboxLeaseService;
 import io.agentscope.saas.sandbox.SandboxRuntimeAttributes;
 import java.time.Duration;
 import java.util.List;
@@ -59,6 +61,7 @@ class PgTaskRepositoryIntegrationTest {
     @Autowired RunOrchestrationService runs;
     @Autowired DurableTaskLeaseService leases;
     @Autowired DurableTaskWorker worker;
+    @Autowired SandboxLeaseService sandboxLeases;
 
     @Autowired
     PgTaskRepositoryIntegrationTest(
@@ -130,6 +133,56 @@ class PgTaskRepositoryIntegrationTest {
         tasks.markDelivered(context, sessionId.toString(), "task_research");
         assertThat(tasks.findPendingDeliveries(context, sessionId.toString())).isEmpty();
         assertThat(tasks.isDelivered(context, sessionId.toString(), "task_research")).isTrue();
+    }
+
+    @Test
+    void orchestrationSandboxLeasePersistsAttemptLifecycleThroughMyBatis() {
+        UUID agentId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        seedAgentAndSession(agentId, sessionId);
+        TenantContext tenant = tenant();
+        var run = runs.createDirectRun(tenant, agentId, sessionId, null, "Lease lifecycle");
+        var lease =
+                sandboxLeases.begin(
+                        ORG_ID,
+                        USER_ID,
+                        run.runId(),
+                        run.rootTaskId(),
+                        run.rootAttemptId(),
+                        new ActiveSandboxDeployment(
+                                "opensandbox",
+                                "runtime:latest",
+                                "{\"capabilities\":[\"SNAPSHOT\"]}"),
+                        "worker-integration",
+                        java.time.OffsetDateTime.now().plusMinutes(1));
+
+        assertThat(
+                        sandboxLeases
+                                .findByAttemptId(ORG_ID, run.rootAttemptId())
+                                .orElseThrow()
+                                .status())
+                .isEqualTo("PROVISIONING");
+        assertThat(
+                        sandboxLeases.activate(
+                                lease,
+                                "provider-1",
+                                "{\"state\":\"ready\"}",
+                                java.time.OffsetDateTime.now().plusMinutes(2)))
+                .isTrue();
+        assertThat(sandboxLeases.findByAttemptId(ORG_ID, run.rootAttemptId()).orElseThrow())
+                .satisfies(
+                        stored -> {
+                            assertThat(stored.status()).isEqualTo("ACTIVE");
+                            assertThat(stored.providerSandboxId()).isEqualTo("provider-1");
+                            assertThat(stored.leaseOwner()).isEqualTo("worker-integration");
+                        });
+        assertThat(sandboxLeases.release(lease)).isTrue();
+        assertThat(
+                        sandboxLeases
+                                .findByAttemptId(ORG_ID, run.rootAttemptId())
+                                .orElseThrow()
+                                .status())
+                .isEqualTo("RELEASED");
     }
 
     @Test

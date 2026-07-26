@@ -21,8 +21,11 @@ import io.agentscope.harness.agent.sandbox.SandboxLifecycleObserver;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.sandbox.SandboxBroker;
 import io.agentscope.saas.sandbox.SandboxExternalIds;
+import io.agentscope.saas.sandbox.SandboxLeaseContext;
+import io.agentscope.saas.sandbox.SandboxLeaseService;
 import io.agentscope.saas.sandbox.SandboxMetrics;
 import io.agentscope.saas.sandbox.SandboxTrackingContext;
+import java.time.OffsetDateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,21 +37,35 @@ final class MeteredSandboxLifecycleObserver implements SandboxLifecycleObserver 
     private final String sandboxType;
     private final SandboxMetrics metrics;
     private final SandboxBroker broker;
+    private final SandboxLeaseService leaseService;
+    private final long idleTtlSeconds;
 
     MeteredSandboxLifecycleObserver(String sandboxType, SandboxMetrics metrics) {
-        this(sandboxType, metrics, null);
+        this(sandboxType, metrics, null, null, 60);
     }
 
     MeteredSandboxLifecycleObserver(
             String sandboxType, SandboxMetrics metrics, SandboxBroker broker) {
+        this(sandboxType, metrics, broker, null, 60);
+    }
+
+    MeteredSandboxLifecycleObserver(
+            String sandboxType,
+            SandboxMetrics metrics,
+            SandboxBroker broker,
+            SandboxLeaseService leaseService,
+            long idleTtlSeconds) {
         this.sandboxType = sandboxType;
         this.metrics = metrics != null ? metrics : SandboxMetrics.noop();
         this.broker = broker;
+        this.leaseService = leaseService;
+        this.idleTtlSeconds = Math.max(1L, idleTtlSeconds);
     }
 
     @Override
     public void onAcquireStartFailure(RuntimeContext runtimeContext, Exception error) {
         metrics.acquireStartFailed(sandboxType);
+        failOrchestrationLease(runtimeContext, error);
     }
 
     @Override
@@ -57,6 +74,7 @@ final class MeteredSandboxLifecycleObserver implements SandboxLifecycleObserver 
         metrics.recordAcquireStart(
                 sandboxType, source != null ? source.metricTag() : null, durationNanos);
         updateExternalId(runtimeContext);
+        activateOrchestrationLease(runtimeContext);
     }
 
     @Override
@@ -116,5 +134,54 @@ final class MeteredSandboxLifecycleObserver implements SandboxLifecycleObserver 
         } finally {
             TenantContextHolder.setOrgId(previous);
         }
+    }
+
+    private void activateOrchestrationLease(RuntimeContext runtimeContext) {
+        if (leaseService == null || runtimeContext == null) {
+            return;
+        }
+        SandboxLeaseContext lease = runtimeContext.get(SandboxLeaseContext.class);
+        if (lease == null) {
+            return;
+        }
+        String externalId = SandboxExternalIds.fromRuntimeContext(runtimeContext).orElse(null);
+        withTenant(
+                lease,
+                () ->
+                        leaseService.activate(
+                                lease,
+                                externalId,
+                                "{}",
+                                OffsetDateTime.now().plusSeconds(idleTtlSeconds)));
+    }
+
+    private void failOrchestrationLease(RuntimeContext runtimeContext, Exception error) {
+        if (leaseService == null || runtimeContext == null) {
+            return;
+        }
+        SandboxLeaseContext lease = runtimeContext.get(SandboxLeaseContext.class);
+        if (lease != null) {
+            withTenant(lease, () -> leaseService.provisioningFailed(lease, error));
+        }
+    }
+
+    private void withTenant(SandboxLeaseContext lease, LeaseOperation operation) {
+        String previous = TenantContextHolder.getOrgId();
+        TenantContextHolder.setOrgId(lease.orgId().toString());
+        try {
+            operation.run();
+        } catch (Exception e) {
+            log.warn(
+                    "Failed to update orchestration sandbox lease {}: {}",
+                    lease.leaseId(),
+                    e.getMessage());
+        } finally {
+            TenantContextHolder.setOrgId(previous);
+        }
+    }
+
+    @FunctionalInterface
+    private interface LeaseOperation {
+        void run();
     }
 }

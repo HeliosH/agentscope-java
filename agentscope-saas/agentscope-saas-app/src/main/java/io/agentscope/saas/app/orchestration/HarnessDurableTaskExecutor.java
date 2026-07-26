@@ -87,6 +87,16 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
                                 request.agentId().toString())
                         .put(RunOrchestrationService.ATTR_RUN_ID, request.runId().toString())
                         .put(
+                                io.agentscope.saas.sandbox.SandboxRuntimeAttributes.ATTR_TASK_ID,
+                                request.taskId().toString())
+                        .put(
+                                io.agentscope.saas.sandbox.SandboxRuntimeAttributes.ATTR_ATTEMPT_ID,
+                                request.attemptId().toString())
+                        .put(
+                                io.agentscope.saas.sandbox.SandboxRuntimeAttributes
+                                        .ATTR_LEASE_OWNER,
+                                request.leaseOwner())
+                        .put(
                                 RunOrchestrationService.ATTR_AGENT_RUN_ID,
                                 request.agentRunId() != null
                                         ? request.agentRunId().toString()

@@ -80,6 +80,7 @@ class HarnessDurableTaskExecutorTest {
         ExecutionRequest request =
                 new ExecutionRequest(
                         UUID.randomUUID(),
+                        "worker-test",
                         orgId,
                         runId,
                         UUID.randomUUID(),
@@ -136,6 +137,7 @@ class HarnessDurableTaskExecutorTest {
         ExecutionRequest request =
                 new ExecutionRequest(
                         UUID.randomUUID(),
+                        "worker-test",
                         orgId,
                         runId,
                         UUID.randomUUID(),

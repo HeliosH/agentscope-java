@@ -223,6 +223,8 @@ public class SaasChatController {
                                         started.triggerMessageId(),
                                         started.runId(),
                                         started.rootAgentRunId(),
+                                        started.rootTaskId(),
+                                        started.rootAttemptId(),
                                         started.status(),
                                         started.reused());
                             }
@@ -243,6 +245,8 @@ public class SaasChatController {
                                     null,
                                     null,
                                     null,
+                                    null,
+                                    null,
                                     false);
                         })
                 .subscribeOn(Schedulers.boundedElastic())
@@ -259,7 +263,16 @@ public class SaasChatController {
         return runAgent(
                 tenant,
                 request,
-                new ResolvedRun(null, UUID.fromString(sessionId), null, null, null, null, false),
+                new ResolvedRun(
+                        null,
+                        UUID.fromString(sessionId),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        false),
                 false);
     }
 
@@ -291,6 +304,20 @@ public class SaasChatController {
                                 resolved.rootAgentRunId() != null
                                         ? resolved.rootAgentRunId().toString()
                                         : null)
+                        .put(
+                                io.agentscope.saas.sandbox.SandboxRuntimeAttributes.ATTR_TASK_ID,
+                                resolved.rootTaskId() != null
+                                        ? resolved.rootTaskId().toString()
+                                        : null)
+                        .put(
+                                io.agentscope.saas.sandbox.SandboxRuntimeAttributes.ATTR_ATTEMPT_ID,
+                                resolved.rootAttemptId() != null
+                                        ? resolved.rootAttemptId().toString()
+                                        : null)
+                        .put(
+                                io.agentscope.saas.sandbox.SandboxRuntimeAttributes
+                                        .ATTR_LEASE_OWNER,
+                                resolved.rootAttemptId() != null ? "direct:" + durableRunId : null)
                         .put(TenantContext.class, tenant)
                         .put(TenantContext.ATTR_KEY, tenant)
                         .build();
@@ -686,6 +713,8 @@ public class SaasChatController {
             UUID triggerMessageId,
             UUID runId,
             UUID rootAgentRunId,
+            UUID rootTaskId,
+            UUID rootAttemptId,
             String status,
             boolean reused) {}
 

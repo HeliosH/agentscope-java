@@ -49,7 +49,9 @@ import io.agentscope.saas.core.middleware.UsageMeteringMiddleware;
 import io.agentscope.saas.core.ratelimit.RateLimiter;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.usage.UsageService;
+import io.agentscope.saas.sandbox.ActiveSandboxDeployment;
 import io.agentscope.saas.sandbox.SandboxBroker;
+import io.agentscope.saas.sandbox.SandboxLeaseService;
 import io.agentscope.saas.sandbox.SandboxMetrics;
 import io.agentscope.saas.sandbox.middleware.SandboxQuotaMiddleware;
 import io.agentscope.saas.sandbox.middleware.SandboxTrackingMiddleware;
@@ -85,6 +87,8 @@ public class AgentConfig {
             SaasProperties properties,
             ObjectProvider<SandboxFilesystemSpec> sandboxSpecProvider,
             ObjectProvider<SandboxBroker> sandboxBrokerProvider,
+            ObjectProvider<SandboxLeaseService> sandboxLeaseServiceProvider,
+            ObjectProvider<ActiveSandboxDeployment> activeSandboxDeploymentProvider,
             ObjectProvider<SandboxMetrics> sandboxMetricsProvider,
             ObjectProvider<BaseStore> workspaceStoreProvider,
             McpClientRegistry mcpClientRegistry,
@@ -177,9 +181,15 @@ public class AgentConfig {
             SandboxMetrics sandboxMetrics =
                     sandboxMetricsProvider.getIfAvailable(SandboxMetrics::noop);
             SandboxBroker broker = sandboxBrokerProvider.getIfAvailable();
+            SandboxLeaseService leaseService = sandboxLeaseServiceProvider.getIfAvailable();
+            ActiveSandboxDeployment deployment = activeSandboxDeploymentProvider.getIfAvailable();
             builder.sandboxLifecycleObserver(
                     new MeteredSandboxLifecycleObserver(
-                            properties.getSandbox().getType(), sandboxMetrics, broker));
+                            properties.getSandbox().getType(),
+                            sandboxMetrics,
+                            broker,
+                            leaseService,
+                            properties.getSandbox().getIdleTtlSeconds()));
             // F3-S2: when a BaseStore (Redis/Oss) is available, wire a remote projection so
             // workspace files (MEMORY.md, skills, …) stay readable/writable between calls. Without
             // this, SandboxBackedFilesystem throws "No active sandbox" on out-of-call IO (the
@@ -207,7 +217,9 @@ public class AgentConfig {
                                 broker,
                                 properties.getSandbox().getType(),
                                 properties.getSandbox().getIdleTtlSeconds(),
-                                sandboxMetrics));
+                                sandboxMetrics,
+                                leaseService,
+                                deployment));
             }
             // Skill self-evolution (Phase B): with a workspace filesystem present, let the agent
             // propose/promote skills from its own runs and run the background curator that

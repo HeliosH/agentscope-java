@@ -26,6 +26,8 @@ import io.agentscope.harness.agent.sandbox.SandboxAcquireResult.AcquisitionSourc
 import io.agentscope.harness.agent.sandbox.SandboxState;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.sandbox.SandboxBroker;
+import io.agentscope.saas.sandbox.SandboxLeaseContext;
+import io.agentscope.saas.sandbox.SandboxLeaseService;
 import io.agentscope.saas.sandbox.SandboxMetrics;
 import io.agentscope.saas.sandbox.SandboxTrackingContext;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -85,6 +87,42 @@ class MeteredSandboxLifecycleObserverTest {
         observer.onAcquireStartSucceeded(ctx, AcquisitionSource.CREATE, 1L);
 
         verify(broker).updateExternalId(trackingId, "provider-sandbox-1");
+        assertThat(TenantContextHolder.getOrgId()).isNull();
+    }
+
+    @Test
+    void activatesAndFailsOrchestrationLeaseThroughLifecycleCallbacks() {
+        UUID orgId = UUID.randomUUID();
+        SandboxLeaseContext lease = new SandboxLeaseContext(UUID.randomUUID(), orgId);
+        SandboxLeaseService leaseService = mock(SandboxLeaseService.class);
+        ProviderState state = new ProviderState();
+        state.setSandboxId("provider-sandbox-2");
+        Sandbox sandbox = mock(Sandbox.class);
+        org.mockito.Mockito.when(sandbox.getState()).thenReturn(state);
+        RuntimeContext ctx =
+                RuntimeContext.builder()
+                        .put(SandboxLeaseContext.class, lease)
+                        .put(Sandbox.class, sandbox)
+                        .build();
+        MeteredSandboxLifecycleObserver observer =
+                new MeteredSandboxLifecycleObserver(
+                        "opensandbox",
+                        new SandboxMetrics(new SimpleMeterRegistry()),
+                        null,
+                        leaseService,
+                        90);
+
+        observer.onAcquireStartSucceeded(ctx, AcquisitionSource.CREATE, 1L);
+        IllegalStateException failure = new IllegalStateException("unavailable");
+        observer.onAcquireStartFailure(ctx, failure);
+
+        verify(leaseService)
+                .activate(
+                        org.mockito.ArgumentMatchers.eq(lease),
+                        org.mockito.ArgumentMatchers.eq("provider-sandbox-2"),
+                        org.mockito.ArgumentMatchers.eq("{}"),
+                        org.mockito.ArgumentMatchers.any());
+        verify(leaseService).provisioningFailed(lease, failure);
         assertThat(TenantContextHolder.getOrgId()).isNull();
     }
 

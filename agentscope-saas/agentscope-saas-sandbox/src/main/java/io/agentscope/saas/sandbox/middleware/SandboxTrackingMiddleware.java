@@ -23,8 +23,11 @@ import io.agentscope.core.middleware.MiddlewareBase;
 import io.agentscope.saas.core.ratelimit.QuotaExceededException;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
+import io.agentscope.saas.sandbox.ActiveSandboxDeployment;
 import io.agentscope.saas.sandbox.SandboxBroker;
 import io.agentscope.saas.sandbox.SandboxExternalIds;
+import io.agentscope.saas.sandbox.SandboxLeaseContext;
+import io.agentscope.saas.sandbox.SandboxLeaseService;
 import io.agentscope.saas.sandbox.SandboxMetrics;
 import io.agentscope.saas.sandbox.SandboxRuntimeAttributes;
 import io.agentscope.saas.sandbox.SandboxTrackingContext;
@@ -56,18 +59,32 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
     private final String sandboxType;
     private final long idleTtlSeconds;
     private final SandboxMetrics metrics;
+    private final SandboxLeaseService leaseService;
+    private final ActiveSandboxDeployment deployment;
 
     public SandboxTrackingMiddleware(
             SandboxBroker broker, String sandboxType, long idleTtlSeconds) {
-        this(broker, sandboxType, idleTtlSeconds, SandboxMetrics.noop());
+        this(broker, sandboxType, idleTtlSeconds, SandboxMetrics.noop(), null, null);
     }
 
     public SandboxTrackingMiddleware(
             SandboxBroker broker, String sandboxType, long idleTtlSeconds, SandboxMetrics metrics) {
+        this(broker, sandboxType, idleTtlSeconds, metrics, null, null);
+    }
+
+    public SandboxTrackingMiddleware(
+            SandboxBroker broker,
+            String sandboxType,
+            long idleTtlSeconds,
+            SandboxMetrics metrics,
+            SandboxLeaseService leaseService,
+            ActiveSandboxDeployment deployment) {
         this.broker = broker;
         this.sandboxType = sandboxType;
         this.idleTtlSeconds = idleTtlSeconds;
         this.metrics = metrics != null ? metrics : SandboxMetrics.noop();
+        this.leaseService = leaseService;
+        this.deployment = deployment;
     }
 
     @Override
@@ -96,6 +113,7 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
         String sessionId = ctx.getSessionId();
         String externalId = SandboxExternalIds.fromRuntimeContext(ctx).orElse(sessionId);
         AtomicReference<UUID> trackingId = new AtomicReference<>();
+        AtomicReference<SandboxLeaseContext> orchestrationLease = new AtomicReference<>();
         AtomicReference<Disposable> heartbeat = new AtomicReference<>();
         long ttlSeconds = Math.max(1L, idleTtlSeconds);
         long startedAtNanos = System.nanoTime();
@@ -124,10 +142,22 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
             log.warn("Failed to register active sandbox tracking row: {}", e.getMessage());
         }
 
+        try {
+            SandboxLeaseContext lease = beginOrchestrationLease(ctx, orgId, userId, ttlSeconds);
+            if (lease != null) {
+                orchestrationLease.set(lease);
+                ctx.put(SandboxLeaseContext.class, lease);
+            }
+        } catch (RuntimeException e) {
+            releaseTrackingRow(trackingId.get(), tc.orgId());
+            throw e;
+        }
+
         Flux<AgentEvent> downstream;
         try {
             downstream = next.apply(input);
         } catch (RuntimeException e) {
+            releaseOrchestrationLease(orchestrationLease.get(), tc.orgId());
             releaseTrackingRow(trackingId.get(), tc.orgId());
             throw e;
         }
@@ -135,7 +165,12 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
         return downstream
                 .doOnSubscribe(
                         subscription ->
-                                startHeartbeat(heartbeat, trackingId.get(), tc.orgId(), ttlSeconds))
+                                startHeartbeat(
+                                        heartbeat,
+                                        trackingId.get(),
+                                        orchestrationLease.get(),
+                                        tc.orgId(),
+                                        ttlSeconds))
                 .doFinally(
                         signal -> {
                             metrics.recordRun(
@@ -144,8 +179,35 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
                             if (d != null) {
                                 d.dispose();
                             }
+                            releaseOrchestrationLease(orchestrationLease.get(), tc.orgId());
                             releaseTrackingRow(trackingId.get(), tc.orgId());
                         });
+    }
+
+    private SandboxLeaseContext beginOrchestrationLease(
+            RuntimeContext ctx, UUID orgId, UUID userId, long ttlSeconds) {
+        if (leaseService == null || deployment == null) {
+            return null;
+        }
+        UUID runId = parseOptionalUuid(ctx.get(SandboxRuntimeAttributes.ATTR_RUN_ID));
+        if (runId == null) {
+            return null;
+        }
+        UUID taskId = parseOptionalUuid(ctx.get(SandboxRuntimeAttributes.ATTR_TASK_ID));
+        UUID attemptId = parseOptionalUuid(ctx.get(SandboxRuntimeAttributes.ATTR_ATTEMPT_ID));
+        String leaseOwner = stringValue(ctx.get(SandboxRuntimeAttributes.ATTR_LEASE_OWNER));
+        return withTenantOrg(
+                orgId.toString(),
+                () ->
+                        leaseService.begin(
+                                orgId,
+                                userId,
+                                runId,
+                                taskId,
+                                attemptId,
+                                deployment,
+                                leaseOwner,
+                                OffsetDateTime.now().plusSeconds(ttlSeconds)));
     }
 
     private void releaseTrackingRow(UUID id, String orgId) {
@@ -166,15 +228,19 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
     }
 
     private void startHeartbeat(
-            AtomicReference<Disposable> heartbeat, UUID id, String orgId, long ttlSeconds) {
-        if (id == null) {
+            AtomicReference<Disposable> heartbeat,
+            UUID id,
+            SandboxLeaseContext orchestrationLease,
+            String orgId,
+            long ttlSeconds) {
+        if (id == null && orchestrationLease == null) {
             return;
         }
         long periodSeconds = Math.max(1L, ttlSeconds / 2L);
         Disposable disposable =
                 Schedulers.parallel()
                         .schedulePeriodically(
-                                () -> refreshLease(id, orgId, ttlSeconds),
+                                () -> refreshLease(id, orchestrationLease, orgId, ttlSeconds),
                                 periodSeconds,
                                 periodSeconds,
                                 java.util.concurrent.TimeUnit.SECONDS);
@@ -184,17 +250,43 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
         }
     }
 
-    private void refreshLease(UUID id, String orgId, long ttlSeconds) {
+    private void refreshLease(
+            UUID id, SandboxLeaseContext orchestrationLease, String orgId, long ttlSeconds) {
         try {
             withTenantOrg(
                     orgId,
                     () -> {
-                        broker.refreshLease(id, OffsetDateTime.now().plusSeconds(ttlSeconds));
+                        OffsetDateTime expiresAt = OffsetDateTime.now().plusSeconds(ttlSeconds);
+                        if (id != null) {
+                            broker.refreshLease(id, expiresAt);
+                        }
+                        if (orchestrationLease != null && leaseService != null) {
+                            leaseService.heartbeat(orchestrationLease, expiresAt);
+                        }
                         return null;
                     });
         } catch (Exception e) {
             metrics.trackingLeaseRefreshFailed(sandboxType);
             log.warn("Failed to refresh sandbox tracking lease {}: {}", id, e.getMessage());
+        }
+    }
+
+    private void releaseOrchestrationLease(SandboxLeaseContext lease, String orgId) {
+        if (lease == null || leaseService == null) {
+            return;
+        }
+        try {
+            withTenantOrg(
+                    orgId,
+                    () -> {
+                        leaseService.release(lease);
+                        return null;
+                    });
+        } catch (Exception e) {
+            log.warn(
+                    "Failed to release orchestration sandbox lease {}: {}",
+                    lease.leaseId(),
+                    e.getMessage());
         }
     }
 
@@ -224,6 +316,10 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
             log.warn("Ignoring invalid sandbox tracking agent id: {}", s);
             return null;
         }
+    }
+
+    private static String stringValue(Object value) {
+        return value == null || value.toString().isBlank() ? null : value.toString().trim();
     }
 
     private static <T> T withTenantOrg(String orgId, TenantOperation<T> operation) {

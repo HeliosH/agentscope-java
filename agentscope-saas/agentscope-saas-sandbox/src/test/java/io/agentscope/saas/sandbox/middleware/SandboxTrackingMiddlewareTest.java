@@ -34,7 +34,10 @@ import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxState;
 import io.agentscope.saas.core.ratelimit.QuotaExceededException;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.sandbox.ActiveSandboxDeployment;
 import io.agentscope.saas.sandbox.SandboxBroker;
+import io.agentscope.saas.sandbox.SandboxLeaseContext;
+import io.agentscope.saas.sandbox.SandboxLeaseService;
 import io.agentscope.saas.sandbox.SandboxMetrics;
 import io.agentscope.saas.sandbox.SandboxRuntimeAttributes;
 import io.agentscope.saas.sandbox.SandboxTrackingContext;
@@ -59,6 +62,7 @@ class SandboxTrackingMiddlewareTest {
     private static final UUID AGENT_ID = UUID.fromString("00000000-0000-0000-0000-000000000003");
 
     @Mock private SandboxBroker broker;
+    @Mock private SandboxLeaseService leaseService;
     @Mock private Agent agent;
     @Mock private Function<AgentInput, Flux<AgentEvent>> next;
 
@@ -193,6 +197,51 @@ class SandboxTrackingMiddlewareTest {
                         eq("provider-sandbox-1"),
                         any(OffsetDateTime.class),
                         eq(1));
+    }
+
+    @Test
+    void persistsAndReleasesOrchestrationLeaseForRunAttempt() {
+        ActiveSandboxDeployment deployment =
+                new ActiveSandboxDeployment("e2b", "base", "{\"capabilities\":[]}");
+        middleware =
+                new SandboxTrackingMiddleware(
+                        broker, "e2b", 60, SandboxMetrics.noop(), leaseService, deployment);
+        RuntimeContext ctx = tenantContext();
+        UUID runId = UUID.randomUUID();
+        UUID taskId = UUID.randomUUID();
+        UUID attemptId = UUID.randomUUID();
+        ctx.put(SandboxRuntimeAttributes.ATTR_RUN_ID, runId.toString());
+        ctx.put(SandboxRuntimeAttributes.ATTR_TASK_ID, taskId.toString());
+        ctx.put(SandboxRuntimeAttributes.ATTR_ATTEMPT_ID, attemptId.toString());
+        ctx.put(SandboxRuntimeAttributes.ATTR_LEASE_OWNER, "worker-1");
+        UUID trackingId = UUID.randomUUID();
+        SandboxLeaseContext lease = new SandboxLeaseContext(UUID.randomUUID(), ORG_ID);
+        when(broker.registerActive(
+                        any(UUID.class),
+                        any(UUID.class),
+                        any(UUID.class),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        any(OffsetDateTime.class),
+                        anyInt()))
+                .thenReturn(trackingId);
+        when(leaseService.begin(
+                        eq(ORG_ID),
+                        eq(USER_ID),
+                        eq(runId),
+                        eq(taskId),
+                        eq(attemptId),
+                        eq(deployment),
+                        eq("worker-1"),
+                        any(OffsetDateTime.class)))
+                .thenReturn(lease);
+        when(next.apply(any())).thenReturn(Flux.empty());
+
+        middleware.onAgent(agent, ctx, new AgentInput(Collections.emptyList()), next).blockLast();
+
+        assertThat(ctx.get(SandboxLeaseContext.class)).isEqualTo(lease);
+        verify(leaseService).release(lease);
     }
 
     private static RuntimeContext tenantContext() {
