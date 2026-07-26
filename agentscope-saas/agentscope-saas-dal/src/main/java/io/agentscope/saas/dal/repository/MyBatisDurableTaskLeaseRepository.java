@@ -13,6 +13,7 @@ import io.agentscope.saas.dal.mybatis.admin.DurableTaskLeaseMapper;
 import io.agentscope.saas.dal.mybatis.admin.TaskLeaseAttemptData;
 import io.agentscope.saas.dal.mybatis.admin.TaskLeaseCandidateData;
 import io.agentscope.saas.domain.orchestration.DurableTaskLeaseRepository;
+import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -270,6 +271,7 @@ public class MyBatisDurableTaskLeaseRepository implements DurableTaskLeaseReposi
                 data.tokenQuota(),
                 data.title(),
                 data.inputJson(),
+                WorkspaceIsolationMode.fromStorage(data.workspaceMode()),
                 data.maxAttempts(),
                 data.retryMode(),
                 data.retryBaseSeconds(),

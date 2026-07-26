@@ -23,6 +23,7 @@ import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewTas
 import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.RunAttempt;
 import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.RunEvent;
 import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.TaskNode;
+import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -336,7 +337,7 @@ public class RunOrchestrationService {
                         "{}",
                         "{}",
                         "[]",
-                        "ISOLATED_ATTEMPT",
+                        WorkspaceIsolationMode.ATTEMPT_ISOLATED.name(),
                         3,
                         "IDEMPOTENT",
                         2,

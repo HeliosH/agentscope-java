@@ -9,6 +9,7 @@
  */
 package io.agentscope.saas.orchestration;
 
+import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
 import java.util.UUID;
 
 /** Provider-neutral execution port consumed by the durable task worker. */
@@ -34,7 +35,16 @@ public interface DurableTaskExecutor {
             int maxSandboxes,
             long tokenQuota,
             String title,
-            String inputJson) {}
+            String inputJson,
+            WorkspaceIsolationMode workspaceIsolationMode) {
+
+        public ExecutionRequest {
+            workspaceIsolationMode =
+                    workspaceIsolationMode != null
+                            ? workspaceIsolationMode
+                            : WorkspaceIsolationMode.NONE;
+        }
+    }
 
     record ExecutionResult(String outputJson) {
         public ExecutionResult {

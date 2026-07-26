@@ -1,6 +1,7 @@
 # 19. 企业智能助手运行框架优化落地方案
 
-> 状态：Phase 0-2 已完成；Phase 3 已完成编排沙箱租约持久化和部署能力基线校验，Attempt 隔离工作区继续实施
+> 状态：Phase 0-2 已完成；Phase 3 已完成编排沙箱租约、部署能力基线和 Attempt
+> 工作区隔离控制链路，checkpoint/Artifact 继续实施
 >
 > 适用范围：`agentscope-saas` 企业智能助手运行时
 >
@@ -707,8 +708,13 @@ saas:
 - 沙箱租约写入失败时，编排任务在创建 Provider 资源前失败关闭，避免产生不可追踪资源；
 - 已增加部署级 `required-capabilities` 能力基线，能力名称无效或活动 Provider 不满足时
   Spring 启动失败，不静默回退或运行时切换 Provider；
-- 待完成 Provider 连接健康检查、Attempt 独立工作区、checkpoint/Artifact 发布和
-  `sandbox_leases` 跨租户 reconciliation。
+- 已建立 Provider 无关的 `WorkspaceIsolationMode` 领域策略，兼容历史存储值，并通过
+  MyBatis 管理查询、领域端口、Worker 和执行请求完整传播，不由应用层直接读取 DAL；
+- 已支持编排层按 Run/Attempt 生成显式隔离键并覆盖部署默认共享范围；并行子任务和重试
+  Attempt 不再复用用户级工作区，交互式协调任务仍保留部署配置的默认范围；
+- `USER_SHARED_READ_ONLY` 在只读适配器完成前失败关闭，避免把只读语义降级为共享写；
+- 待完成 Provider 连接健康检查、checkpoint/Artifact 发布和 `sandbox_leases` 跨租户
+  reconciliation。
 
 ### Phase 4：计划、验证和前端，8-10 个工作日
 

@@ -184,6 +184,34 @@ class SandboxManagerIsolationTest {
     }
 
     @Test
+    void explicitIsolationOverrideTakesPrecedenceOverConfiguredUserScope() throws Exception {
+        AtomicReference<SandboxIsolationKey> capturedKey = new AtomicReference<>();
+        SandboxExecutionGuard guard =
+                key -> {
+                    capturedKey.set(key);
+                    return SandboxLease.noop();
+                };
+        manager = new SandboxManager(client, stateStore, AGENT_ID, guard);
+        when(stateStore.load(any())).thenReturn(Optional.empty());
+        when(client.create(any(), any(), any())).thenReturn(freshSandbox);
+
+        RuntimeContext rtx =
+                RuntimeContext.builder()
+                        .userId("shared-user")
+                        .put(
+                                SandboxIsolationOverride.class,
+                                new SandboxIsolationOverride("attempt/attempt-42"))
+                        .build();
+        SandboxContext sCtx = SandboxContext.builder().isolationScope(IsolationScope.USER).build();
+
+        SandboxAcquireResult result = manager.acquire(sCtx, rtx);
+
+        assertSame(freshSandbox, result.getSandbox());
+        assertEquals(IsolationScope.SESSION, capturedKey.get().getScope());
+        assertEquals("attempt/attempt-42", capturedKey.get().getValue());
+    }
+
+    @Test
     void userScope_missingUserId_createsFreshSession() throws Exception {
         when(client.create(any(), any(), any())).thenReturn(freshSandbox);
 

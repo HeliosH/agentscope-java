@@ -18,12 +18,14 @@ import static org.mockito.Mockito.when;
 
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.orchestration.DurableTaskLeaseService.TaskLease;
+import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
 import io.agentscope.saas.orchestration.DurableTaskExecutor;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class DurableTaskWorkerTest {
 
@@ -55,7 +57,11 @@ class DurableTaskWorkerTest {
         assertThat(worker.pollOnce()).isEqualTo(1);
 
         verify(leases).start(lease.attemptId(), "worker-test");
-        verify(executor).execute(any());
+        ArgumentCaptor<DurableTaskExecutor.ExecutionRequest> request =
+                ArgumentCaptor.forClass(DurableTaskExecutor.ExecutionRequest.class);
+        verify(executor).execute(request.capture());
+        assertThat(request.getValue().workspaceIsolationMode())
+                .isEqualTo(WorkspaceIsolationMode.ATTEMPT_ISOLATED);
         verify(leases).succeed(lease.attemptId(), "worker-test", "{\"summary\":\"done\"}");
     }
 
@@ -93,6 +99,7 @@ class DurableTaskWorkerTest {
                 "worker-test",
                 OffsetDateTime.now().plusMinutes(1),
                 "Generate report",
-                "{\"prompt\":\"Generate report\"}");
+                "{\"prompt\":\"Generate report\"}",
+                WorkspaceIsolationMode.ATTEMPT_ISOLATED);
     }
 }

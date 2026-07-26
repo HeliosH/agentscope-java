@@ -115,6 +115,7 @@ public interface DurableTaskLeaseRepository {
             long tokenQuota,
             String title,
             String inputJson,
+            WorkspaceIsolationMode workspaceIsolationMode,
             int maxAttempts,
             String retryMode,
             int retryBaseSeconds,

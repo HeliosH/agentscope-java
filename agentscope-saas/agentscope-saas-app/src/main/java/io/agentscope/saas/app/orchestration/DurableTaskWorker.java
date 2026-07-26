@@ -196,7 +196,8 @@ public class DurableTaskWorker {
                 lease.maxSandboxes(),
                 lease.tokenQuota(),
                 lease.title(),
-                lease.inputJson());
+                lease.inputJson(),
+                lease.workspaceIsolationMode());
     }
 
     private boolean enabled() {

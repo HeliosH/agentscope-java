@@ -20,6 +20,7 @@ import io.agentscope.saas.app.support.MyBatisRepositoryTestSupport;
 import io.agentscope.saas.app.support.TestDatabaseMapper;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
+import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
 import io.agentscope.saas.sandbox.ActiveSandboxDeployment;
 import io.agentscope.saas.sandbox.SandboxLeaseService;
@@ -114,6 +115,8 @@ class PgTaskRepositoryIntegrationTest {
         assertThat(lease.agentType()).isEqualTo("researcher");
         assertThat(lease.subSessionId()).isEqualTo("sub-research");
         assertThat(lease.agentRunId()).isNotNull();
+        assertThat(lease.workspaceIsolationMode())
+                .isEqualTo(WorkspaceIsolationMode.ATTEMPT_ISOLATED);
         assertThat(leases.start(lease.attemptId(), "worker-pg-task")).isTrue();
         assertThat(
                         leases.succeed(

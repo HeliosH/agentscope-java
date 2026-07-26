@@ -19,6 +19,7 @@ import io.agentscope.saas.domain.orchestration.DurableTaskLeaseRepository.NewAtt
 import io.agentscope.saas.domain.orchestration.DurableTaskLeaseRepository.NewOutboxEvent;
 import io.agentscope.saas.domain.orchestration.DurableTaskLeaseRepository.NewRunEvent;
 import io.agentscope.saas.domain.orchestration.DurableTaskLeaseRepository.TaskCandidate;
+import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -207,7 +208,8 @@ public class DurableTaskLeaseService {
                 workerId,
                 expiresAt,
                 candidate.title(),
-                candidate.inputJson());
+                candidate.inputJson(),
+                candidate.workspaceIsolationMode());
     }
 
     private boolean finish(
@@ -458,5 +460,14 @@ public class DurableTaskLeaseService {
             String workerId,
             OffsetDateTime leaseExpiresAt,
             String title,
-            String inputJson) {}
+            String inputJson,
+            WorkspaceIsolationMode workspaceIsolationMode) {
+
+        public TaskLease {
+            workspaceIsolationMode =
+                    workspaceIsolationMode != null
+                            ? workspaceIsolationMode
+                            : WorkspaceIsolationMode.NONE;
+        }
+    }
 }

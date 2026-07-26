@@ -17,12 +17,14 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.harness.agent.sandbox.SandboxIsolationOverride;
 import io.agentscope.saas.app.chat.ChatPersistenceService;
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.config.TenantRlsWebFilter;
 import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
+import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
 import io.agentscope.saas.orchestration.DurableTaskExecutor;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
 import java.time.Duration;
@@ -78,7 +80,7 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
                 request.subSessionId() != null && !request.subSessionId().isBlank()
                         ? request.subSessionId()
                         : request.sessionId().toString();
-        RuntimeContext context =
+        RuntimeContext.Builder contextBuilder =
                 RuntimeContext.builder()
                         .userId(request.userId().toString())
                         .sessionId(executionSessionId)
@@ -102,8 +104,9 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
                                         ? request.agentRunId().toString()
                                         : null)
                         .put(TenantContext.class, tenant)
-                        .put(TenantContext.ATTR_KEY, tenant)
-                        .build();
+                        .put(TenantContext.ATTR_KEY, tenant);
+        applyWorkspaceIsolation(contextBuilder, request);
+        RuntimeContext context = contextBuilder.build();
         Msg input =
                 Msg.builder()
                         .role(MsgRole.USER)
@@ -156,6 +159,27 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
                                 reactorContext.put(
                                         TenantRlsWebFilter.ORG_ID_KEY, request.orgId().toString()))
                 .block(Duration.ofSeconds(timeoutSeconds));
+    }
+
+    private static void applyWorkspaceIsolation(
+            RuntimeContext.Builder context, ExecutionRequest request) {
+        WorkspaceIsolationMode mode = request.workspaceIsolationMode();
+        switch (mode) {
+            case NONE -> {
+                // Interactive coordinator tasks retain the deployment's configured scope.
+            }
+            case RUN_ISOLATED ->
+                    context.put(
+                            SandboxIsolationOverride.class,
+                            new SandboxIsolationOverride("run/" + request.runId()));
+            case ATTEMPT_ISOLATED, DEDICATED_SANDBOX ->
+                    context.put(
+                            SandboxIsolationOverride.class,
+                            new SandboxIsolationOverride("attempt/" + request.attemptId()));
+            case USER_SHARED_READ_ONLY ->
+                    throw new IllegalStateException(
+                            "USER_SHARED_READ_ONLY requires a read-only workspace adapter");
+        }
     }
 
     private String prompt(ExecutionRequest request) {

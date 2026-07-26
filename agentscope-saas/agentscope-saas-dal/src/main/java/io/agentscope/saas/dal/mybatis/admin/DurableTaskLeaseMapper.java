@@ -29,7 +29,7 @@ public interface DurableTaskLeaseMapper {
                    t.sub_session_id,
                    u.role, u.tier, COALESCE(p.max_sandboxes, 1) AS max_sandboxes,
                    COALESCE(p.monthly_token_quota, 0) AS token_quota,
-                   t.title, t.input_json, t.max_attempts,
+                   t.title, t.input_json, t.workspace_mode, t.max_attempts,
                    t.retry_mode, t.retry_base_seconds,
                    COALESCE((SELECT MAX(a.attempt_no) FROM run_attempts a
                               WHERE a.task_id = t.id), 0) AS last_attempt_no
@@ -65,6 +65,7 @@ public interface DurableTaskLeaseMapper {
         @Arg(column = "token_quota", javaType = long.class),
         @Arg(column = "title", javaType = String.class),
         @Arg(column = "input_json", javaType = String.class),
+        @Arg(column = "workspace_mode", javaType = String.class),
         @Arg(column = "max_attempts", javaType = int.class),
         @Arg(column = "retry_mode", javaType = String.class),
         @Arg(column = "retry_base_seconds", javaType = int.class),

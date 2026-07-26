@@ -43,6 +43,7 @@ public interface TestDatabaseMapper {
                 id UUID PRIMARY KEY, org_id UUID NOT NULL, run_id UUID NOT NULL,
                 parent_id UUID, owner_agent_run_id UUID, sub_session_id VARCHAR(255),
                 title VARCHAR(500), input_json VARCHAR(4000), status VARCHAR(32) NOT NULL,
+                workspace_mode VARCHAR(64) NOT NULL DEFAULT 'NONE',
                 priority INTEGER NOT NULL, max_attempts INTEGER NOT NULL,
                 retry_mode VARCHAR(32) NOT NULL, retry_base_seconds INTEGER NOT NULL,
                 next_attempt_at TIMESTAMP WITH TIME ZONE, last_error_code VARCHAR(128),
@@ -138,10 +139,10 @@ public interface TestDatabaseMapper {
             """
             INSERT INTO task_nodes
                 (id, org_id, run_id, title, input_json, status, priority, max_attempts,
-                 retry_mode, retry_base_seconds, created_at, updated_at)
+                 retry_mode, retry_base_seconds, workspace_mode, created_at, updated_at)
             VALUES
                 (#{id}, #{orgId}, #{runId}, 'test task', '{}', 'READY', 0, #{maxAttempts},
-                 #{retryMode}, 2, #{now}, #{now})
+                 #{retryMode}, 2, 'ATTEMPT_ISOLATED', #{now}, #{now})
             """)
     int insertLeaseTask(
             @Param("id") UUID id,

@@ -49,6 +49,8 @@ public final class SandboxIsolationKey {
      *
      * <p>Resolution rules:
      * <ul>
+     *   <li>A {@link SandboxIsolationOverride} in the runtime context takes precedence and is
+     *       encoded as an explicit session-scoped key.</li>
      *   <li>{@code SESSION} – requires a non-null {@code sessionId}; value =
      *       {@code sessionId}. Returns empty if absent.</li>
      *   <li>{@code USER} – uses {@code userId} when present. When userId is absent,
@@ -66,6 +68,11 @@ public final class SandboxIsolationKey {
      */
     public static Optional<SandboxIsolationKey> resolve(
             IsolationScope scope, RuntimeContext ctx, String agentId) {
+        SandboxIsolationOverride override =
+                ctx != null ? ctx.get(SandboxIsolationOverride.class) : null;
+        if (override != null) {
+            return Optional.of(new SandboxIsolationKey(IsolationScope.SESSION, override.key()));
+        }
         IsolationScope effective = scope != null ? scope : IsolationScope.USER;
         return switch (effective) {
             case SESSION -> {

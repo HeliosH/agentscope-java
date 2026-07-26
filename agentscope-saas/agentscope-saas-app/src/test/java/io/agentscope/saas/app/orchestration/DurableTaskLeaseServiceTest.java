@@ -17,6 +17,7 @@ import io.agentscope.saas.app.support.TestDatabaseMapper;
 import io.agentscope.saas.dal.mybatis.admin.DurableTaskLeaseMapper;
 import io.agentscope.saas.dal.mybatis.type.UuidTypeHandler;
 import io.agentscope.saas.dal.repository.MyBatisDurableTaskLeaseRepository;
+import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 import javax.sql.DataSource;
@@ -68,6 +69,8 @@ class DurableTaskLeaseServiceTest {
 
         assertThat(first).hasSize(1);
         assertThat(first.get(0).attemptNo()).isEqualTo(1);
+        assertThat(first.get(0).workspaceIsolationMode())
+                .isEqualTo(WorkspaceIsolationMode.ATTEMPT_ISOLATED);
         assertThat(second).isEmpty();
         assertThat(taskStatus(taskId)).isEqualTo("CLAIMED");
         assertThat(attemptStatus(first.get(0).attemptId())).isEqualTo("LEASED");

@@ -1,0 +1,44 @@
+/*
+ * Copyright 2024-2026 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ */
+package io.agentscope.saas.domain.orchestration;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import org.junit.jupiter.api.Test;
+
+class WorkspaceIsolationModeTest {
+
+    @Test
+    void readsCanonicalAndLegacyAttemptModes() {
+        assertEquals(
+                WorkspaceIsolationMode.ATTEMPT_ISOLATED,
+                WorkspaceIsolationMode.fromStorage("ATTEMPT_ISOLATED"));
+        assertEquals(
+                WorkspaceIsolationMode.ATTEMPT_ISOLATED,
+                WorkspaceIsolationMode.fromStorage("ISOLATED_ATTEMPT"));
+    }
+
+    @Test
+    void defaultsMissingValuesToNone() {
+        assertEquals(WorkspaceIsolationMode.NONE, WorkspaceIsolationMode.fromStorage(null));
+        assertEquals(WorkspaceIsolationMode.NONE, WorkspaceIsolationMode.fromStorage(" "));
+    }
+
+    @Test
+    void rejectsUnknownPersistedModes() {
+        IllegalStateException error =
+                assertThrows(
+                        IllegalStateException.class,
+                        () -> WorkspaceIsolationMode.fromStorage("shared_write"));
+        assertTrue(error.getMessage().contains("Unsupported workspace isolation mode"));
+    }
+}
