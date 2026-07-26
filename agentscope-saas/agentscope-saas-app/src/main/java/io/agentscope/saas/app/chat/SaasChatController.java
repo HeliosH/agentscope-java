@@ -28,6 +28,7 @@ import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.util.JsonUtils;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.harness.agent.tool.PlanModeTools;
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.degradation.DegradationManager;
 import io.agentscope.saas.app.observability.AgentRunMetrics;
@@ -39,6 +40,8 @@ import io.agentscope.saas.domain.model.AgentEntity;
 import io.agentscope.saas.domain.model.ChatSessionEntity;
 import io.agentscope.saas.domain.repository.ChatSessionRepository;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
+import io.agentscope.saas.orchestration.TaskComplexityRouter;
+import io.agentscope.saas.orchestration.TaskComplexityRouter.Route;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -55,6 +58,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
@@ -101,6 +105,8 @@ public class SaasChatController {
     private final RunOrchestrationService orchestration;
     private final WorkspaceArtifactService workspaceArtifactService;
     private final boolean orchestrationEnabled;
+    private final boolean plannerEnabled;
+    private final TaskComplexityRouter complexityRouter = new TaskComplexityRouter();
     private final String sandboxType;
     private final AguiEventEncoder encoder = new AguiEventEncoder();
 
@@ -128,6 +134,8 @@ public class SaasChatController {
                 properties != null
                         && properties.getOrchestration() != null
                         && properties.getOrchestration().isEnabled();
+        this.plannerEnabled =
+                this.orchestrationEnabled && properties.getOrchestration().isPlannerEnabled();
         this.sandboxType =
                 properties != null && properties.getSandbox() != null
                         ? properties.getSandbox().getType()
@@ -138,7 +146,7 @@ public class SaasChatController {
      * Returns the caller's most-recent session for the agent, if any. paw's chat page calls this on
      * mount to decide whether to fetch turns. {@code sessionKey} equals the session UUID string.
      */
-    public record CurrentSessionResponse(String sessionKey, boolean exists) {}
+    public record CurrentSessionResponse(String sessionKey, boolean exists, String latestRunId) {}
 
     /** Explicit cancellation response. Browser/SSE disconnects do not call this endpoint. */
     public record CancelRunResponse(String runId, String status, boolean interrupted) {}
@@ -149,7 +157,7 @@ public class SaasChatController {
         Map<String, Object> claims = jwt != null ? jwt.getClaims() : Map.of();
         TenantContext tenant = tenantResolver.resolve(claims);
         if (!isUuid(tenant.orgId()) || !isUuid(tenant.userId())) {
-            return Mono.just(new CurrentSessionResponse(null, false));
+            return Mono.just(new CurrentSessionResponse(null, false, null));
         }
         UUID orgId = UUID.fromString(tenant.orgId());
         UUID userId = UUID.fromString(tenant.userId());
@@ -157,7 +165,7 @@ public class SaasChatController {
         try {
             agentUuid = UUID.fromString(agentId);
         } catch (IllegalArgumentException e) {
-            return Mono.just(new CurrentSessionResponse(null, false));
+            return Mono.just(new CurrentSessionResponse(null, false, null));
         }
         return Mono.fromCallable(
                         () ->
@@ -167,8 +175,24 @@ public class SaasChatController {
                                         .map(
                                                 s ->
                                                         new CurrentSessionResponse(
-                                                                s.getId().toString(), true))
-                                        .orElseGet(() -> new CurrentSessionResponse(null, false)))
+                                                                s.getId().toString(),
+                                                                true,
+                                                                orchestrationEnabled
+                                                                        ? orchestration
+                                                                                .findLatestBySession(
+                                                                                        tenant,
+                                                                                        agentUuid,
+                                                                                        s.getId())
+                                                                                .map(
+                                                                                        run ->
+                                                                                                run.id()
+                                                                                                        .toString())
+                                                                                .orElse(null)
+                                                                        : null))
+                                        .orElseGet(
+                                                () ->
+                                                        new CurrentSessionResponse(
+                                                                null, false, null)))
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
@@ -294,6 +318,11 @@ public class SaasChatController {
         AssistantContentAccumulator accumulator = new AssistantContentAccumulator();
         long startedNanos = System.nanoTime();
         AtomicReference<String> streamOutcome = new AtomicReference<>("success");
+        Route route =
+                persist && plannerEnabled && !hasConfirmResults(request)
+                        ? complexityRouter.route(request.message())
+                        : Route.DIRECT;
+        boolean structuredPlanning = route == Route.PLANNED || route == Route.APPROVAL_REQUIRED;
 
         RuntimeContext ctx =
                 RuntimeContext.builder()
@@ -303,6 +332,8 @@ public class SaasChatController {
                                 WorkspaceProjectionCatalogSink.ATTR_AGENT_ID,
                                 resolved.agentId() != null ? resolved.agentId().toString() : null)
                         .put(RunOrchestrationService.ATTR_RUN_ID, runId)
+                        .put(TaskComplexityRouter.ATTR_ROUTE, route.name())
+                        .put(PlanModeTools.STRUCTURED_PLANNING_REQUIRED, structuredPlanning)
                         .put(
                                 RunOrchestrationService.ATTR_AGENT_RUN_ID,
                                 resolved.rootAgentRunId() != null
@@ -325,6 +356,13 @@ public class SaasChatController {
                         .put(TenantContext.class, tenant)
                         .put(TenantContext.ATTR_KEY, tenant)
                         .build();
+        if (persist && plannerEnabled) {
+            if (structuredPlanning) {
+                agent.enterPlanMode(ctx);
+            } else if (agent.isPlanModeActive(ctx)) {
+                agent.exitPlanMode(ctx);
+            }
+        }
 
         Msg userMsg =
                 Msg.builder()
@@ -467,7 +505,8 @@ public class SaasChatController {
     public Mono<CancelRunResponse> cancelRun(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable String agentId,
-            @PathVariable String runId) {
+            @PathVariable String runId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
         if (!orchestrationEnabled) {
             return Mono.error(
                     new ResponseStatusException(
@@ -476,6 +515,12 @@ public class SaasChatController {
         TenantContext tenant = tenantResolver.resolve(jwt != null ? jwt.getClaims() : Map.of());
         if (!isPersistable(tenant)) {
             return Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "Run not found"));
+        }
+        if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 255) {
+            return Mono.error(
+                    new ResponseStatusException(
+                            HttpStatus.BAD_REQUEST,
+                            "Idempotency-Key must contain 1-255 characters"));
         }
         return Mono.fromCallable(
                         () -> {
@@ -623,6 +668,12 @@ public class SaasChatController {
         metrics.recordChatStream(
                 "blocked", persistable, sandboxType, System.nanoTime() - startedNanos);
         return Flux.just(toSse(errorEvent));
+    }
+
+    private static boolean hasConfirmResults(ChatRequest request) {
+        return request != null
+                && request.confirmResults() != null
+                && !request.confirmResults().isEmpty();
     }
 
     private ServerSentEvent<String> toSse(AguiEvent event) {

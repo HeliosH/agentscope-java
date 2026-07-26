@@ -53,6 +53,7 @@ class SandboxReconciliationJobTest {
                 new MyBatisSandboxReconciliationRepository(
                         MyBatisRepositoryTestSupport.mapper(ds, SandboxReconciliationMapper.class));
         database.createSandboxes();
+        database.createReconciliationSandboxLeases();
         properties = new SaasProperties();
         properties.getSandbox().setEnabled(true);
         properties.getSandbox().setReconciliationBatchSize(20);
@@ -121,13 +122,14 @@ class SandboxReconciliationJobTest {
     void reportsCommittedInventoryAcrossTenants() {
         insertSandbox("active", "opensandbox", "os-active", null, 0, -60);
         insertSandbox("released", "e2b", "e2b-released", "succeeded", 1, -60);
+        insertLease("ACTIVE", "opensandbox", "lease-active", null, 0, -60);
 
         assertThat(repository.countByTypeAndStatus())
                 .anySatisfy(
                         count -> {
                             assertThat(count.sandboxType()).isEqualTo("opensandbox");
                             assertThat(count.status()).isEqualTo("active");
-                            assertThat(count.count()).isEqualTo(1);
+                            assertThat(count.count()).isEqualTo(2);
                         })
                 .anySatisfy(
                         count -> {
@@ -140,8 +142,45 @@ class SandboxReconciliationJobTest {
                 .satisfies(
                         count -> {
                             assertThat(count.sandboxType()).isEqualTo("opensandbox");
-                            assertThat(count.count()).isEqualTo(1);
+                            assertThat(count.count()).isEqualTo(2);
                         });
+    }
+
+    @Test
+    void expiresAndReleasesOrchestrationLeaseAcrossTenantBoundary() {
+        UUID id = insertLease("ACTIVE", "opensandbox", "lease-os-1", null, 0, -60);
+        SandboxReconciliationJob job =
+                jobWithTerminator(
+                        (type, externalId) -> SandboxBackendTerminator.TerminationResult.success());
+
+        var summary = job.reconcileBatch();
+
+        assertThat(summary.expiredLeases()).isEqualTo(1);
+        assertThat(summary.leaseReleased()).isEqualTo(1);
+        var row = database.orchestrationLeaseState(id);
+        assertThat(row.status()).isEqualTo("RELEASED");
+        assertThat(row.releaseAttempts()).isEqualTo(1);
+        assertThat(row.releasedAt()).isNotNull();
+        assertThat(row.releaseError()).isNull();
+        verify(metrics).backendReleaseSucceeded("opensandbox");
+    }
+
+    @Test
+    void retriesFailedOrchestrationLeaseReleaseWithBoundedAttemptCount() {
+        UUID id = insertLease("RELEASE_FAILED", "cube", "cube-1", "provider down", 1, -60);
+        SandboxReconciliationJob job =
+                jobWithTerminator(
+                        (type, externalId) ->
+                                SandboxBackendTerminator.TerminationResult.failed("still down"));
+
+        var summary = job.reconcileBatch();
+
+        assertThat(summary.leaseFailed()).isEqualTo(1);
+        var row = database.orchestrationLeaseState(id);
+        assertThat(row.status()).isEqualTo("RELEASE_FAILED");
+        assertThat(row.releaseAttempts()).isEqualTo(2);
+        assertThat(row.releaseError()).isEqualTo("still down");
+        verify(metrics).backendReleaseFailed("cube");
     }
 
     private SandboxReconciliationJob jobWithTerminator(SandboxBackendTerminator terminator) {
@@ -168,6 +207,28 @@ class SandboxReconciliationJobTest {
                 OffsetDateTime.now().minusSeconds(60),
                 OffsetDateTime.now().plusSeconds(expiresInSeconds),
                 backendReleaseStatus,
+                attempts);
+        return id;
+    }
+
+    private UUID insertLease(
+            String status,
+            String providerId,
+            String providerSandboxId,
+            String releaseError,
+            int attempts,
+            long expiresInSeconds) {
+        UUID id = UUID.randomUUID();
+        database.insertReconciliationSandboxLease(
+                id,
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                providerId,
+                providerSandboxId,
+                status,
+                OffsetDateTime.now().plusSeconds(expiresInSeconds),
+                OffsetDateTime.now().minusSeconds(120),
+                releaseError,
                 attempts);
         return id;
     }

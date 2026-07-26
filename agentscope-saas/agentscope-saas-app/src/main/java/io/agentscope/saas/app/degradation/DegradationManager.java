@@ -135,7 +135,7 @@ public class DegradationManager {
         statuses.add(probeRedis(now));
         statuses.add(probeFileObjectStore(now));
         statuses.add(probeSandboxSnapshot(now));
-        statuses.add(probeOpenSandbox(now));
+        statuses.add(probeSandboxProvider(now));
         for (DependencyStatus status : statuses) {
             if (!HEALTHY.equals(status.status()) && !DISABLED.equals(status.status())) {
                 metrics.recordDegradation(status.component(), status.status(), status.action());
@@ -284,71 +284,147 @@ public class DegradationManager {
         }
     }
 
-    private DependencyStatus probeOpenSandbox(Instant checkedAt) {
+    private DependencyStatus probeSandboxProvider(Instant checkedAt) {
         SaasProperties.Sandbox sandbox = properties.getSandbox();
         if (!sandbox.isEnabled()) {
             return status(
-                    "opensandbox",
+                    "sandbox_provider",
                     DISABLED,
                     "no_sandbox",
                     "Sandbox runtime disabled",
                     false,
                     checkedAt);
         }
-        if (!"opensandbox".equals(normalize(sandbox.getType()))) {
-            return status(
-                    "opensandbox",
-                    DISABLED,
-                    "not_selected",
-                    "Sandbox type is " + sandbox.getType(),
-                    false,
-                    checkedAt);
+        String provider = normalize(sandbox.getType());
+        if ("docker".equals(provider)) {
+            return probeDocker(checkedAt);
         }
-        String healthPath = properties.getDegradation().getOpenSandboxHealthPath();
+        String healthPath = properties.getDegradation().getSandboxProviderHealthPath();
         if (healthPath == null || healthPath.isBlank()) {
             return status(
-                    "opensandbox",
+                    "sandbox_provider",
                     UNKNOWN,
                     "configure_health_path",
-                    "OpenSandbox health path is not configured; runtime failures are handled during"
+                    "Sandbox Provider "
+                            + provider
+                            + " health path is not configured; runtime failures are handled during"
                             + " task execution",
                     false,
                     checkedAt);
         }
         try {
-            URI uri = healthUri(sandbox.getOpenSandboxApiBaseUrl(), healthPath);
+            URI uri = healthUri(providerBaseUrl(sandbox, provider), healthPath);
             HttpRequest.Builder builder =
                     HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(5)).GET();
-            if (sandbox.getOpenSandboxApiKey() != null
-                    && !sandbox.getOpenSandboxApiKey().isBlank()) {
-                builder.header("OPEN-SANDBOX-API-KEY", sandbox.getOpenSandboxApiKey());
-            }
+            applyProviderAuthentication(builder, sandbox, provider);
             HttpResponse<Void> response =
                     httpClient.send(builder.build(), HttpResponse.BodyHandlers.discarding());
             if (response.statusCode() >= 200 && response.statusCode() < 300) {
                 return status(
-                        "opensandbox",
+                        "sandbox_provider",
                         HEALTHY,
                         "allow",
-                        "OpenSandbox health check returned HTTP " + response.statusCode(),
+                        "Sandbox Provider "
+                                + provider
+                                + " health check returned HTTP "
+                                + response.statusCode(),
                         false,
                         checkedAt);
             }
             return status(
-                    "opensandbox",
+                    "sandbox_provider",
                     DEGRADED,
                     "block_when_policy",
-                    "OpenSandbox health check returned HTTP " + response.statusCode(),
+                    "Sandbox Provider "
+                            + provider
+                            + " health check returned HTTP "
+                            + response.statusCode(),
                     true,
                     checkedAt);
         } catch (Exception e) {
             return status(
-                    "opensandbox",
+                    "sandbox_provider",
                     DEGRADED,
                     "block_when_policy",
-                    "OpenSandbox health check failed: " + concise(e),
+                    "Sandbox Provider " + provider + " health check failed: " + concise(e),
                     true,
                     checkedAt);
+        }
+    }
+
+    private DependencyStatus probeDocker(Instant checkedAt) {
+        Process process = null;
+        try {
+            process =
+                    new ProcessBuilder("docker", "version", "--format", "{{.Server.Version}}")
+                            .redirectErrorStream(true)
+                            .start();
+            if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                throw new IllegalStateException("docker version timed out");
+            }
+            String output =
+                    new String(
+                                    process.getInputStream().readAllBytes(),
+                                    java.nio.charset.StandardCharsets.UTF_8)
+                            .trim();
+            if (process.exitValue() != 0 || output.isBlank()) {
+                throw new IllegalStateException(
+                        output.isBlank() ? "docker version failed" : output);
+            }
+            return status(
+                    "sandbox_provider",
+                    HEALTHY,
+                    "allow",
+                    "Docker daemon reachable",
+                    false,
+                    checkedAt);
+        } catch (Exception e) {
+            return status(
+                    "sandbox_provider",
+                    DEGRADED,
+                    "block_when_policy",
+                    "Docker daemon health check failed: " + concise(e),
+                    true,
+                    checkedAt);
+        } finally {
+            if (process != null && process.isAlive()) {
+                process.destroyForcibly();
+            }
+        }
+    }
+
+    private static String providerBaseUrl(SaasProperties.Sandbox sandbox, String provider) {
+        return switch (provider) {
+            case "cube" -> sandbox.getCubeApiUrl();
+            case "e2b" -> sandbox.getE2bApiBaseUrl();
+            case "opensandbox" -> sandbox.getOpenSandboxApiBaseUrl();
+            default ->
+                    throw new IllegalStateException(
+                            "Unsupported sandbox Provider health check: " + provider);
+        };
+    }
+
+    private static void applyProviderAuthentication(
+            HttpRequest.Builder builder, SaasProperties.Sandbox sandbox, String provider) {
+        switch (provider) {
+            case "cube" -> addHeader(builder, "Authorization", bearer(sandbox.getCubeApiKey()));
+            case "e2b" -> addHeader(builder, "X-API-Key", sandbox.getE2bApiKey());
+            case "opensandbox" ->
+                    addHeader(builder, "OPEN-SANDBOX-API-KEY", sandbox.getOpenSandboxApiKey());
+            default -> {
+                // providerBaseUrl rejects unknown providers before this method is reached.
+            }
+        }
+    }
+
+    private static String bearer(String value) {
+        return value == null || value.isBlank() ? null : "Bearer " + value.trim();
+    }
+
+    private static void addHeader(HttpRequest.Builder builder, String name, String value) {
+        if (value != null && !value.isBlank()) {
+            builder.header(name, value);
         }
     }
 

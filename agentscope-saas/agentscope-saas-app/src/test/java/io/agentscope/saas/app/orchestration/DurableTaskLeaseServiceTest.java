@@ -60,6 +60,7 @@ class DurableTaskLeaseServiceTest {
         database.insertMinimalRun(
                 runId, orgId, userId, UUID.randomUUID(), UUID.randomUUID(), OffsetDateTime.now());
         insertTask(taskId, orgId, "IDEMPOTENT", 3);
+        database.updateTaskCompletionContract(taskId, "[]", "[]");
     }
 
     @Test
@@ -94,6 +95,38 @@ class DurableTaskLeaseServiceTest {
                         "ATTEMPT_SUCCEEDED",
                         "TASK_SUCCEEDED",
                         "RUN_SUCCEEDED");
+    }
+
+    @Test
+    void verificationFailureCannotCompleteTaskAndUsesTheBoundedRetryPath() {
+        database.updateTaskCompletionContract(taskId, "[\"report.pdf\"]", "[\"format is valid\"]");
+        var lease = leases.claimReady("worker-a", 1).get(0);
+
+        assertThat(leases.start(lease.attemptId(), "worker-a")).isTrue();
+        assertThat(
+                        leases.succeed(
+                                lease.attemptId(),
+                                "worker-a",
+                                """
+                                {
+                                  "status": "succeeded",
+                                  "summary": "report generated",
+                                  "evidence": [{"source": "agent_result"}],
+                                  "artifactRefs": [],
+                                  "followUpTasks": [],
+                                  "usage": {}
+                                }
+                                """))
+                .isTrue();
+
+        assertThat(taskStatus(taskId)).isEqualTo("READY");
+        assertThat(attemptStatus(lease.attemptId())).isEqualTo("FAILED");
+        assertThat(eventTypes())
+                .containsSubsequence(
+                        "VERIFICATION_STARTED",
+                        "VERIFICATION_FAILED",
+                        "ATTEMPT_FAILED",
+                        "TASK_RETRY_SCHEDULED");
     }
 
     @Test

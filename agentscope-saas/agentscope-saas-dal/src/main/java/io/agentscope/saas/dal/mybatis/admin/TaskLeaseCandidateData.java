@@ -28,6 +28,8 @@ public record TaskLeaseCandidateData(
         long tokenQuota,
         String title,
         String inputJson,
+        String expectedOutputJson,
+        String acceptanceJson,
         String workspaceMode,
         int maxAttempts,
         String retryMode,

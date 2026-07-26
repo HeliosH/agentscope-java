@@ -25,6 +25,8 @@ public interface DurableTaskLeaseRepository {
 
     Optional<AttemptRef> findAttempt(UUID attemptId, String workerId);
 
+    List<DependencyResult> findCompletedDependencies(UUID taskId);
+
     int startAttempt(
             UUID attemptId,
             String workerId,
@@ -115,6 +117,8 @@ public interface DurableTaskLeaseRepository {
             long tokenQuota,
             String title,
             String inputJson,
+            String expectedOutputJson,
+            String acceptanceJson,
             WorkspaceIsolationMode workspaceIsolationMode,
             int maxAttempts,
             String retryMode,
@@ -130,7 +134,14 @@ public interface DurableTaskLeaseRepository {
             int attemptNo,
             int maxAttempts,
             String retryMode,
-            int retryBaseSeconds) {}
+            int retryBaseSeconds,
+            String expectedOutputJson,
+            String acceptanceJson) {}
+
+    record DependencyResult(
+            UUID taskId, String title, String outputJson, List<ArtifactReference> artifactRefs) {}
+
+    record ArtifactReference(UUID artifactId, String logicalPath, UUID fileVersionId) {}
 
     record ExpiredAttempt(UUID attemptId, String workerId) {}
 

@@ -24,6 +24,12 @@ public interface SandboxReconciliationRepository {
 
     List<SandboxResource> findBackendReleaseCandidates(int maxAttempts, int limit);
 
+    List<OrchestrationLeaseResource> findExpiredOrchestrationLeases(
+            OffsetDateTime staleBefore, int limit);
+
+    List<OrchestrationLeaseResource> findOrchestrationLeaseReleaseCandidates(
+            int maxAttempts, int limit);
+
     int markExpiredActiveEvicted(UUID sandboxId, OffsetDateTime changedAt);
 
     int claimBackendRelease(UUID sandboxId, int maxAttempts);
@@ -35,8 +41,22 @@ public interface SandboxReconciliationRepository {
             OffsetDateTime releasedAt,
             String error);
 
+    int markExpiredOrchestrationLease(UUID leaseId, OffsetDateTime changedAt);
+
+    int claimOrchestrationLeaseRelease(UUID leaseId, int maxAttempts);
+
+    int recordOrchestrationLeaseRelease(
+            UUID leaseId,
+            String status,
+            int attemptIncrement,
+            OffsetDateTime releasedAt,
+            String error);
+
     record SandboxResource(
             UUID id, UUID orgId, UUID userId, String sandboxType, String externalId) {}
+
+    record OrchestrationLeaseResource(
+            UUID id, UUID orgId, UUID userId, String providerId, String providerSandboxId) {}
 
     record SandboxPoolCount(String sandboxType, String status, long count) {}
 

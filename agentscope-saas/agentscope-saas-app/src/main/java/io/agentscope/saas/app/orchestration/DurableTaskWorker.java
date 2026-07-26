@@ -197,7 +197,10 @@ public class DurableTaskWorker {
                 lease.tokenQuota(),
                 lease.title(),
                 lease.inputJson(),
-                lease.workspaceIsolationMode());
+                lease.workspaceIsolationMode(),
+                lease.expectedOutputJson(),
+                lease.acceptanceJson(),
+                lease.dependencies());
     }
 
     private boolean enabled() {

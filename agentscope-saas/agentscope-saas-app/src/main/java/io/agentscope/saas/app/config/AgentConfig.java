@@ -24,6 +24,7 @@ import io.agentscope.core.permission.PermissionContextState;
 import io.agentscope.core.permission.PermissionMode;
 import io.agentscope.core.permission.PermissionRule;
 import io.agentscope.core.state.AgentStateStore;
+import io.agentscope.core.tool.Toolkit;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.filesystem.remote.store.BaseStore;
@@ -41,6 +42,7 @@ import io.agentscope.saas.app.observability.AgentTelemetryMiddleware;
 import io.agentscope.saas.app.orchestration.OrchestrationGovernanceMiddleware;
 import io.agentscope.saas.app.orchestration.OrchestrationGovernanceService;
 import io.agentscope.saas.app.orchestration.PgTaskRepository;
+import io.agentscope.saas.app.orchestration.PlanPublishTool;
 import io.agentscope.saas.app.org.OrgToolsConfigService;
 import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
 import io.agentscope.saas.core.middleware.RateLimitMiddleware;
@@ -49,6 +51,7 @@ import io.agentscope.saas.core.middleware.UsageMeteringMiddleware;
 import io.agentscope.saas.core.ratelimit.RateLimiter;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.usage.UsageService;
+import io.agentscope.saas.orchestration.ExecutionPlanService;
 import io.agentscope.saas.sandbox.ActiveSandboxDeployment;
 import io.agentscope.saas.sandbox.SandboxBroker;
 import io.agentscope.saas.sandbox.SandboxLeaseService;
@@ -98,6 +101,7 @@ public class AgentConfig {
             ObjectProvider<MemoryConsolidator.ConsolidationSink> consolidationSinkProvider,
             ObjectProvider<AgentRunMetrics> agentRunMetricsProvider,
             OrchestrationGovernanceService orchestrationGovernance,
+            ExecutionPlanService executionPlanService,
             ObjectProvider<PgTaskRepository> pgTaskRepositoryProvider) {
 
         SaasProperties.Agent agentCfg = properties.getAgent();
@@ -110,6 +114,11 @@ public class AgentConfig {
                 chatModel.getModelName(),
                 properties.getSandbox().isEnabled());
 
+        Toolkit platformToolkit = new Toolkit();
+        if (properties.getOrchestration().isPlannerEnabled()) {
+            platformToolkit.registerTool(new PlanPublishTool(executionPlanService, objectMapper));
+        }
+
         HarnessAgent.Builder builder =
                 HarnessAgent.builder()
                         .name(agentCfg.getName())
@@ -117,6 +126,7 @@ public class AgentConfig {
                         .model(chatModel)
                         .maxIters(agentCfg.getMaxIters())
                         .stateStore(agentStateStore)
+                        .toolkit(platformToolkit)
                         .defaultSessionId("default")
                         .enableTaskList(agentCfg.isTaskListEnabled())
                         .enablePlanMode(agentCfg.isPlanModeEnabled())

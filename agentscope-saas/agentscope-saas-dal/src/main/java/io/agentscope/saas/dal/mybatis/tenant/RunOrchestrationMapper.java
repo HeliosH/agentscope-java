@@ -115,6 +115,42 @@ public interface RunOrchestrationMapper {
     @Select(
             RUN_COLUMNS
                     + """
+                     WHERE session_id = #{sessionId} AND org_id = #{orgId}
+                       AND user_id = #{userId} AND agent_id = #{agentId}
+                     ORDER BY created_at DESC
+                     LIMIT 1
+                    """)
+    @ConstructorArgs({
+        @Arg(column = "id", javaType = UUID.class),
+        @Arg(column = "org_id", javaType = UUID.class),
+        @Arg(column = "user_id", javaType = UUID.class),
+        @Arg(column = "agent_id", javaType = UUID.class),
+        @Arg(column = "session_id", javaType = UUID.class),
+        @Arg(column = "mode", javaType = String.class),
+        @Arg(column = "status", javaType = String.class),
+        @Arg(column = "cancel_requested", javaType = boolean.class),
+        @Arg(column = "failure_code", javaType = String.class),
+        @Arg(column = "failure_message", javaType = String.class),
+        @Arg(column = "token_budget", javaType = Long.class),
+        @Arg(column = "consumed_tokens", javaType = long.class),
+        @Arg(column = "cost_budget_micros", javaType = Long.class),
+        @Arg(column = "consumed_cost_micros", javaType = long.class),
+        @Arg(column = "model_call_budget", javaType = Integer.class),
+        @Arg(column = "consumed_model_calls", javaType = int.class),
+        @Arg(column = "deadline_at", javaType = OffsetDateTime.class),
+        @Arg(column = "created_at", javaType = OffsetDateTime.class),
+        @Arg(column = "started_at", javaType = OffsetDateTime.class),
+        @Arg(column = "completed_at", javaType = OffsetDateTime.class)
+    })
+    List<AssistantRun> findLatestOwnedRunBySession(
+            @Param("sessionId") UUID sessionId,
+            @Param("orgId") UUID orgId,
+            @Param("userId") UUID userId,
+            @Param("agentId") UUID agentId);
+
+    @Select(
+            RUN_COLUMNS
+                    + """
                      WHERE id = #{runId} AND org_id = #{orgId}
                        AND user_id = #{userId} AND agent_id = #{agentId}
                      FOR UPDATE

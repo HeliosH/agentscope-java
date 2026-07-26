@@ -17,11 +17,14 @@ package io.agentscope.saas.app.sandbox;
 
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository;
+import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository.OrchestrationLeaseResource;
 import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository.SandboxResource;
 import io.agentscope.saas.sandbox.SandboxBackendTerminator;
 import io.agentscope.saas.sandbox.SandboxInventoryMetrics;
 import io.agentscope.saas.sandbox.SandboxMetrics;
 import java.time.OffsetDateTime;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
@@ -76,11 +79,15 @@ public class SandboxReconciliationJob {
             if (summary.total() > 0) {
                 log.info(
                         "Sandbox reconciliation completed expired={} backendReleased={} "
-                                + "backendSkipped={} backendFailed={}",
+                                + "backendSkipped={} backendFailed={} leaseExpired={} "
+                                + "leaseReleased={} leaseFailed={}",
                         summary.expiredActive(),
                         summary.backendReleased(),
                         summary.backendSkipped(),
-                        summary.backendFailed());
+                        summary.backendFailed(),
+                        summary.expiredLeases(),
+                        summary.leaseReleased(),
+                        summary.leaseFailed());
             }
         } catch (RuntimeException e) {
             log.warn("Sandbox reconciliation scan failed: {}", e.getMessage());
@@ -114,6 +121,35 @@ public class SandboxReconciliationJob {
                     repository.findBackendReleaseCandidates(maxAttempts, remaining)) {
                 if (repository.claimBackendRelease(candidate.id(), maxAttempts) == 1) {
                     terminateAndRecord(candidate, maxAttempts, summary);
+                }
+            }
+        }
+
+        remaining = Math.max(0, batchSize - summary.expiredActive - summary.expiredLeases);
+        Set<UUID> handledLeaseIds = new HashSet<>();
+        if (remaining > 0) {
+            for (OrchestrationLeaseResource candidate :
+                    repository.findExpiredOrchestrationLeases(staleBefore, remaining)) {
+                if (repository.markExpiredOrchestrationLease(candidate.id(), OffsetDateTime.now())
+                        == 1) {
+                    summary.expiredLeases++;
+                    handledLeaseIds.add(candidate.id());
+                    if (repository.claimOrchestrationLeaseRelease(candidate.id(), maxAttempts)
+                            == 1) {
+                        terminateLeaseAndRecord(candidate, maxAttempts, summary);
+                    }
+                }
+            }
+        }
+
+        remaining = Math.max(0, batchSize - summary.expiredActive - summary.expiredLeases);
+        if (remaining > 0) {
+            for (OrchestrationLeaseResource candidate :
+                    repository.findOrchestrationLeaseReleaseCandidates(maxAttempts, remaining)) {
+                if (!handledLeaseIds.contains(candidate.id())
+                        && repository.claimOrchestrationLeaseRelease(candidate.id(), maxAttempts)
+                                == 1) {
+                    terminateLeaseAndRecord(candidate, maxAttempts, summary);
                 }
             }
         }
@@ -162,6 +198,49 @@ public class SandboxReconciliationJob {
                 result.succeeded() ? null : truncate(result.message()));
     }
 
+    private void terminateLeaseAndRecord(
+            OrchestrationLeaseResource candidate, int maxAttempts, MutableSummary summary) {
+        if (candidate.providerSandboxId() == null || candidate.providerSandboxId().isBlank()) {
+            repository.recordOrchestrationLeaseRelease(
+                    candidate.id(), "RELEASED", 0, OffsetDateTime.now(), null);
+            summary.leaseReleased++;
+            return;
+        }
+        SandboxBackendTerminator.TerminationResult result;
+        try {
+            result = terminator.terminate(candidate.providerId(), candidate.providerSandboxId());
+        } catch (Exception e) {
+            result =
+                    SandboxBackendTerminator.TerminationResult.failed(
+                            e.getMessage() != null ? e.getMessage() : e.getClass().getName());
+        }
+        int attemptIncrement = result.attempted() ? 1 : maxAttempts;
+        repository.recordOrchestrationLeaseRelease(
+                candidate.id(),
+                result.succeeded() ? "RELEASED" : "RELEASE_FAILED",
+                attemptIncrement,
+                result.succeeded() ? OffsetDateTime.now() : null,
+                result.succeeded() ? null : truncate(result.message()));
+        if (result.succeeded()) {
+            metrics.backendReleaseSucceeded(candidate.providerId());
+            summary.leaseReleased++;
+        } else {
+            if (result.attempted()) {
+                metrics.backendReleaseFailed(candidate.providerId());
+            }
+            summary.leaseFailed++;
+            log.warn(
+                    "Orchestration sandbox lease release failed id={} provider={} sandboxId={} "
+                            + "status={} message={} maxAttempts={}",
+                    candidate.id(),
+                    candidate.providerId(),
+                    candidate.providerSandboxId(),
+                    result.status(),
+                    result.message(),
+                    maxAttempts);
+        }
+    }
+
     private static String truncate(String value) {
         if (value == null || value.isBlank()) {
             return null;
@@ -184,9 +263,21 @@ public class SandboxReconciliationJob {
     }
 
     record ReconciliationSummary(
-            int expiredActive, int backendReleased, int backendSkipped, int backendFailed) {
+            int expiredActive,
+            int backendReleased,
+            int backendSkipped,
+            int backendFailed,
+            int expiredLeases,
+            int leaseReleased,
+            int leaseFailed) {
         int total() {
-            return expiredActive + backendReleased + backendSkipped + backendFailed;
+            return expiredActive
+                    + backendReleased
+                    + backendSkipped
+                    + backendFailed
+                    + expiredLeases
+                    + leaseReleased
+                    + leaseFailed;
         }
     }
 
@@ -195,10 +286,19 @@ public class SandboxReconciliationJob {
         private int backendReleased;
         private int backendSkipped;
         private int backendFailed;
+        private int expiredLeases;
+        private int leaseReleased;
+        private int leaseFailed;
 
         private ReconciliationSummary toImmutable() {
             return new ReconciliationSummary(
-                    expiredActive, backendReleased, backendSkipped, backendFailed);
+                    expiredActive,
+                    backendReleased,
+                    backendSkipped,
+                    backendFailed,
+                    expiredLeases,
+                    leaseReleased,
+                    leaseFailed);
         }
     }
 }

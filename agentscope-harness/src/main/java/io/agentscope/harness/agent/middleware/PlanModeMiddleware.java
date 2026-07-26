@@ -63,6 +63,7 @@ public class PlanModeMiddleware implements MiddlewareBase {
                     PlanModeTools.PLAN_ENTER,
                     PlanModeTools.PLAN_WRITE,
                     PlanModeTools.PLAN_EXIT,
+                    PlanModeTools.PLAN_PUBLISH,
                     "todo_write",
                     "agent_spawn",
                     "agent_send",
@@ -93,6 +94,23 @@ public class PlanModeMiddleware implements MiddlewareBase {
             specific clarifying question instead of inventing a plan or assuming details.
             </system-reminder>\
             """;
+
+    private static final String STRUCTURED_PLAN_BANNER_TEMPLATE =
+            """
+
+            <system-reminder>
+            STRUCTURED PLAN MODE is active (read-only). Plan file: %s
+            Investigate only what is necessary, then call plan_publish with the complete durable
+            execution DAG. The structured plan is the scheduling source of truth. Do not call
+            plan_exit: execution and approval are controlled by the Run API after plan_publish.
+            Every task must include bounded inputs, expected outputs, acceptance criteria, a
+            workspace isolation mode, retry policy, budget, and explicit dependencies.
+            </system-reminder>\
+            """;
+
+    private static final String STRUCTURED_EXIT_DENY_MESSAGE =
+            "Blocked: this durable Run requires a structured plan. Call plan_publish with the"
+                    + " complete DAG; do not use plan_exit.";
 
     private static final String BUILD_MODE_PLAN_HINT =
             "\n\n<system-reminder>You have switched from PLAN to BUILD mode; the read-only"
@@ -149,7 +167,15 @@ public class PlanModeMiddleware implements MiddlewareBase {
 
         if (manager.isPlanActive(state)) {
             String path = manager.planFilePath(state);
-            String banner = base + PLAN_BANNER_TEMPLATE.formatted(path);
+            boolean structured =
+                    ctx != null
+                            && Boolean.TRUE.equals(
+                                    ctx.get(PlanModeTools.STRUCTURED_PLANNING_REQUIRED));
+            String banner =
+                    base
+                            + (structured
+                                    ? STRUCTURED_PLAN_BANNER_TEMPLATE.formatted(path)
+                                    : PLAN_BANNER_TEMPLATE.formatted(path));
             if (!additionalAllowed.isEmpty()) {
                 String tools = additionalAllowed.stream().collect(Collectors.joining(", "));
                 banner += PLAN_EXTRA_TOOLS_HINT.formatted(tools);
@@ -180,7 +206,7 @@ public class PlanModeMiddleware implements MiddlewareBase {
         List<ToolUseBlock> allowed = new ArrayList<>();
         List<ToolUseBlock> denied = new ArrayList<>();
         for (ToolUseBlock call : input.toolCalls()) {
-            if (isPermitted(call.getName())) {
+            if (isPermitted(call.getName(), ctx)) {
                 allowed.add(call);
             } else {
                 denied.add(call);
@@ -200,8 +226,13 @@ public class PlanModeMiddleware implements MiddlewareBase {
                         () -> {
                             List<AgentEvent> events = new ArrayList<>();
                             for (ToolUseBlock call : denied) {
+                                String denyMessage =
+                                        PlanModeTools.PLAN_EXIT.equals(call.getName())
+                                                        && structuredPlanningRequired(ctx)
+                                                ? STRUCTURED_EXIT_DENY_MESSAGE
+                                                : DENY_MESSAGE;
                                 ToolResultBlock result =
-                                        ToolResultBlock.text(DENY_MESSAGE)
+                                        ToolResultBlock.text(denyMessage)
                                                 .withIdAndName(call.getId(), call.getName())
                                                 .withState(ToolResultState.DENIED);
                                 Msg msg =
@@ -216,7 +247,7 @@ public class PlanModeMiddleware implements MiddlewareBase {
                                                 replyId,
                                                 call.getId(),
                                                 call.getName(),
-                                                DENY_MESSAGE));
+                                                denyMessage));
                                 events.add(
                                         new ToolResultEndEvent(
                                                 replyId,
@@ -233,12 +264,20 @@ public class PlanModeMiddleware implements MiddlewareBase {
         return deniedFlux.concatWith(next.apply(new ActingInput(allowed)));
     }
 
-    private boolean isPermitted(String toolName) {
+    private boolean isPermitted(String toolName, RuntimeContext context) {
         if (toolName == null) {
+            return false;
+        }
+        if (PlanModeTools.PLAN_EXIT.equals(toolName) && structuredPlanningRequired(context)) {
             return false;
         }
         return ALWAYS_ALLOWED.contains(toolName)
                 || additionalAllowed.contains(toolName)
                 || readOnlyResolver.test(toolName);
+    }
+
+    private static boolean structuredPlanningRequired(RuntimeContext context) {
+        return context != null
+                && Boolean.TRUE.equals(context.get(PlanModeTools.STRUCTURED_PLANNING_REQUIRED));
     }
 }

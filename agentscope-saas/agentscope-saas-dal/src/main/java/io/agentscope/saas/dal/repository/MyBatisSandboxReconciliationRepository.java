@@ -12,6 +12,7 @@ package io.agentscope.saas.dal.repository;
 import io.agentscope.saas.dal.mybatis.admin.SandboxReconciliationMapper;
 import io.agentscope.saas.dal.mybatis.admin.SandboxResourceData;
 import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository;
+import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository.OrchestrationLeaseResource;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -50,6 +51,36 @@ public class MyBatisSandboxReconciliationRepository implements SandboxReconcilia
     }
 
     @Override
+    public List<OrchestrationLeaseResource> findExpiredOrchestrationLeases(
+            OffsetDateTime staleBefore, int limit) {
+        return mapper.findExpiredOrchestrationLeases(staleBefore, limit).stream()
+                .map(
+                        row ->
+                                new OrchestrationLeaseResource(
+                                        row.id(),
+                                        row.orgId(),
+                                        row.userId(),
+                                        row.providerId(),
+                                        row.providerSandboxId()))
+                .toList();
+    }
+
+    @Override
+    public List<OrchestrationLeaseResource> findOrchestrationLeaseReleaseCandidates(
+            int maxAttempts, int limit) {
+        return mapper.findOrchestrationLeaseReleaseCandidates(maxAttempts, limit).stream()
+                .map(
+                        row ->
+                                new OrchestrationLeaseResource(
+                                        row.id(),
+                                        row.orgId(),
+                                        row.userId(),
+                                        row.providerId(),
+                                        row.providerSandboxId()))
+                .toList();
+    }
+
+    @Override
     public int markExpiredActiveEvicted(UUID sandboxId, OffsetDateTime changedAt) {
         return mapper.markExpiredActiveEvicted(sandboxId, changedAt);
     }
@@ -67,6 +98,27 @@ public class MyBatisSandboxReconciliationRepository implements SandboxReconcilia
             OffsetDateTime releasedAt,
             String error) {
         return mapper.recordBackendRelease(sandboxId, status, attemptIncrement, releasedAt, error);
+    }
+
+    @Override
+    public int markExpiredOrchestrationLease(UUID leaseId, OffsetDateTime changedAt) {
+        return mapper.markExpiredOrchestrationLease(leaseId, changedAt);
+    }
+
+    @Override
+    public int claimOrchestrationLeaseRelease(UUID leaseId, int maxAttempts) {
+        return mapper.claimOrchestrationLeaseRelease(leaseId, maxAttempts);
+    }
+
+    @Override
+    public int recordOrchestrationLeaseRelease(
+            UUID leaseId,
+            String status,
+            int attemptIncrement,
+            OffsetDateTime releasedAt,
+            String error) {
+        return mapper.recordOrchestrationLeaseRelease(
+                leaseId, status, attemptIncrement, releasedAt, error);
     }
 
     private SandboxResource toDomain(SandboxResourceData data) {

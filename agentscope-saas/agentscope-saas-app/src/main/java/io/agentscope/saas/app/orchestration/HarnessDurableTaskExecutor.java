@@ -30,7 +30,12 @@ import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
 import io.agentscope.saas.orchestration.DurableTaskExecutor;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
+import io.agentscope.saas.orchestration.TaskContextAssembler;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -49,6 +54,7 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
     private final WorkspaceArtifactService workspaceArtifactService;
     private final WorkspaceCheckpointRestoreService workspaceRestoreService;
     private final boolean workspaceProjectionAvailable;
+    private final TaskContextAssembler taskContextAssembler = new TaskContextAssembler();
 
     public HarnessDurableTaskExecutor(
             HarnessAgent agent,
@@ -81,6 +87,7 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
     }
 
     private ExecutionResult executeWithTenant(ExecutionRequest request) throws Exception {
+        long startedNanos = System.nanoTime();
         TenantContext tenant =
                 new TenantContext(
                         request.orgId().toString(),
@@ -140,7 +147,7 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
                 Msg.builder()
                         .role(MsgRole.USER)
                         .name(request.userId().toString())
-                        .textContent(prompt(request))
+                        .textContent(taskContextAssembler.assemble(request))
                         .build();
         long timeout =
                 Math.max(1L, properties.getOrchestration().getWorkerExecutionTimeoutSeconds());
@@ -151,7 +158,8 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
             publishCheckpoint(request, context, workspaceCheckpoint, executionError);
             throw executionError;
         }
-        publishCheckpoint(request, context, workspaceCheckpoint, null);
+        WorkspaceArtifactService.Publication publication =
+                publishCheckpoint(request, context, workspaceCheckpoint, null);
         if (result == null) {
             throw new IllegalStateException("HarnessAgent completed without a result message");
         }
@@ -163,21 +171,70 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
                     request.runId(),
                     result.getContent());
         }
+        String fullResult = result.getTextContent() != null ? result.getTextContent() : "";
+        String summary =
+                bounded(
+                        fullResult,
+                        properties.getOrchestration().getWorkerResultSummaryMaxCharacters());
+        List<Map<String, Object>> evidence = new ArrayList<>();
+        evidence.add(
+                Map.of(
+                        "source",
+                        "agent_result",
+                        "sha256",
+                        sha256(fullResult),
+                        "length",
+                        fullResult.length(),
+                        "summaryTruncated",
+                        summary.length() < fullResult.length()));
+        List<String> artifactRefs = new ArrayList<>();
+        if (publication != null && publication.artifactCount() > 0) {
+            artifactRefs.add(publication.uri());
+            evidence.add(
+                    Map.of(
+                            "source",
+                            "workspace_checkpoint",
+                            "uri",
+                            publication.uri(),
+                            "version",
+                            publication.version(),
+                            "artifactCount",
+                            publication.artifactCount()));
+        }
         return new ExecutionResult(
                 objectMapper.writeValueAsString(
-                        Map.of("status", "succeeded", "summary", result.getTextContent())));
+                        Map.of(
+                                "status",
+                                "succeeded",
+                                "summary",
+                                summary,
+                                "evidence",
+                                evidence,
+                                "artifactRefs",
+                                artifactRefs,
+                                "followUpTasks",
+                                List.of(),
+                                "usage",
+                                Map.of(
+                                        "tokens",
+                                        0,
+                                        "durationMillis",
+                                        Duration.ofNanos(System.nanoTime() - startedNanos)
+                                                .toMillis(),
+                                        "sandboxSeconds",
+                                        0))));
     }
 
-    private void publishCheckpoint(
+    private WorkspaceArtifactService.Publication publishCheckpoint(
             ExecutionRequest request,
             RuntimeContext context,
             WorkspaceCheckpointContext checkpoint,
             Throwable executionError) {
         if (checkpoint == null) {
-            return;
+            return null;
         }
         try {
-            workspaceArtifactService.publish(
+            return workspaceArtifactService.publish(
                     request.orgId(),
                     request.runId(),
                     request.taskId(),
@@ -190,6 +247,25 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
             }
             throw checkpointError;
         }
+    }
+
+    private static String sha256(String value) {
+        try {
+            return HexFormat.of()
+                    .formatHex(
+                            MessageDigest.getInstance("SHA-256")
+                                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available", e);
+        }
+    }
+
+    private static String bounded(String value, int maxCharacters) {
+        int limit = Math.max(1, maxCharacters);
+        if (value.length() <= limit) {
+            return value;
+        }
+        return value.substring(0, limit);
     }
 
     private Msg executeAgent(
@@ -240,24 +316,6 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
                     throw new IllegalStateException(
                             "USER_SHARED_READ_ONLY requires a read-only workspace adapter");
         }
-    }
-
-    private String prompt(ExecutionRequest request) {
-        try {
-            JsonNode root = objectMapper.readTree(request.inputJson());
-            if (root.isTextual()) {
-                root = objectMapper.readTree(root.textValue());
-            }
-            for (String field : new String[] {"prompt", "message", "task"}) {
-                String value = root.path(field).asText("").trim();
-                if (!value.isEmpty()) {
-                    return value;
-                }
-            }
-        } catch (Exception ignored) {
-            // The scheduler validates JSON at write time; title is a safe fallback for old rows.
-        }
-        return request.title();
     }
 
     private boolean isContinuation(ExecutionRequest request) {

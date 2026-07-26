@@ -20,6 +20,8 @@ import io.agentscope.saas.domain.orchestration.DurableTaskLeaseRepository.NewOut
 import io.agentscope.saas.domain.orchestration.DurableTaskLeaseRepository.NewRunEvent;
 import io.agentscope.saas.domain.orchestration.DurableTaskLeaseRepository.TaskCandidate;
 import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
+import io.agentscope.saas.orchestration.CompletionGate;
+import io.agentscope.saas.orchestration.DurableTaskExecutor.DependencyContext;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -46,6 +48,7 @@ public class DurableTaskLeaseService {
     private final DurableTaskLeaseRepository repository;
     private final TransactionOperations transactions;
     private final SaasProperties properties;
+    private final CompletionGate completionGate = new CompletionGate();
 
     @Autowired
     public DurableTaskLeaseService(
@@ -187,8 +190,26 @@ public class DurableTaskLeaseService {
                         attemptNo,
                         candidate.maxAttempts(),
                         candidate.retryMode(),
-                        candidate.retryBaseSeconds());
+                        candidate.retryBaseSeconds(),
+                        candidate.expectedOutputJson(),
+                        candidate.acceptanceJson());
         appendEvent(ref, "TASK_CLAIMED", payload(attemptId, workerId, attemptNo));
+        List<DependencyContext> dependencies =
+                repository.findCompletedDependencies(candidate.taskId()).stream()
+                        .map(
+                                dependency ->
+                                        new DependencyContext(
+                                                dependency.taskId(),
+                                                dependency.title(),
+                                                dependency.outputJson(),
+                                                dependency.artifactRefs().stream()
+                                                        .map(
+                                                                artifact ->
+                                                                        "file-version://"
+                                                                                + artifact
+                                                                                        .fileVersionId())
+                                                        .toList()))
+                        .toList();
         return new TaskLease(
                 attemptId,
                 candidate.orgId(),
@@ -209,7 +230,10 @@ public class DurableTaskLeaseService {
                 expiresAt,
                 candidate.title(),
                 candidate.inputJson(),
-                candidate.workspaceIsolationMode());
+                candidate.workspaceIsolationMode(),
+                candidate.expectedOutputJson(),
+                candidate.acceptanceJson(),
+                dependencies);
     }
 
     private boolean finish(
@@ -229,13 +253,44 @@ public class DurableTaskLeaseService {
                             if (ref == null) {
                                 return false;
                             }
+                            String finalStatus = attemptStatus;
+                            String finalErrorCode = errorCode;
+                            String finalErrorMessage = errorMessage;
+                            String normalizedOutput =
+                                    "SUCCEEDED".equals(attemptStatus)
+                                            ? normalizeJson(outputJson)
+                                            : null;
+                            if ("SUCCEEDED".equals(attemptStatus)) {
+                                CompletionGate.Decision decision =
+                                        completionGate.evaluate(
+                                                ref.expectedOutputJson(),
+                                                ref.acceptanceJson(),
+                                                normalizedOutput);
+                                if (decision.verificationRequired()) {
+                                    appendEvent(ref, "VERIFICATION_STARTED", "{}");
+                                }
+                                if (!decision.passed()) {
+                                    finalStatus = "FAILED";
+                                    finalErrorCode = CompletionGate.ERROR_CODE;
+                                    finalErrorMessage = String.join("; ", decision.failures());
+                                    appendEvent(
+                                            ref,
+                                            "VERIFICATION_FAILED",
+                                            verificationPayload(decision));
+                                } else if (decision.verificationRequired()) {
+                                    appendEvent(
+                                            ref,
+                                            "VERIFICATION_PASSED",
+                                            verificationPayload(decision));
+                                }
+                            }
                             int updated =
                                     repository.finishAttempt(
                                             attemptId,
                                             workerId,
-                                            attemptStatus,
-                                            truncate(errorCode, 128),
-                                            truncate(errorMessage, MAX_ERROR_LENGTH),
+                                            finalStatus,
+                                            truncate(finalErrorCode, 128),
+                                            truncate(finalErrorMessage, MAX_ERROR_LENGTH),
                                             now,
                                             requireExpired ? now : null);
                             if (updated != 1) {
@@ -243,12 +298,12 @@ public class DurableTaskLeaseService {
                             }
                             appendEvent(
                                     ref,
-                                    "ATTEMPT_" + attemptStatus,
+                                    "ATTEMPT_" + finalStatus,
                                     payload(attemptId, workerId, ref.attemptNo()));
-                            if ("SUCCEEDED".equals(attemptStatus)) {
-                                completeTask(ref, now, normalizeJson(outputJson));
+                            if ("SUCCEEDED".equals(finalStatus)) {
+                                completeTask(ref, now, normalizedOutput);
                             } else {
-                                retryOrStopTask(ref, now, errorCode, errorMessage);
+                                retryOrStopTask(ref, now, finalErrorCode, finalErrorMessage);
                             }
                             return true;
                         });
@@ -441,6 +496,16 @@ public class DurableTaskLeaseService {
         return normalized;
     }
 
+    private static String verificationPayload(CompletionGate.Decision decision) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("passed", decision.passed());
+        payload.put("required", decision.verificationRequired());
+        payload.put("evidenceCount", decision.evidenceCount());
+        payload.put("artifactCount", decision.artifactCount());
+        payload.put("failures", decision.failures());
+        return JsonUtils.getJsonCodec().toJson(payload);
+    }
+
     public record TaskLease(
             UUID attemptId,
             UUID orgId,
@@ -461,13 +526,70 @@ public class DurableTaskLeaseService {
             OffsetDateTime leaseExpiresAt,
             String title,
             String inputJson,
-            WorkspaceIsolationMode workspaceIsolationMode) {
+            WorkspaceIsolationMode workspaceIsolationMode,
+            String expectedOutputJson,
+            String acceptanceJson,
+            List<DependencyContext> dependencies) {
 
         public TaskLease {
             workspaceIsolationMode =
                     workspaceIsolationMode != null
                             ? workspaceIsolationMode
                             : WorkspaceIsolationMode.NONE;
+            expectedOutputJson =
+                    expectedOutputJson == null || expectedOutputJson.isBlank()
+                            ? "[]"
+                            : expectedOutputJson;
+            acceptanceJson =
+                    acceptanceJson == null || acceptanceJson.isBlank() ? "[]" : acceptanceJson;
+            dependencies = dependencies == null ? List.of() : List.copyOf(dependencies);
+        }
+
+        public TaskLease(
+                UUID attemptId,
+                UUID orgId,
+                UUID runId,
+                UUID userId,
+                UUID agentId,
+                UUID sessionId,
+                UUID agentRunId,
+                String agentType,
+                String subSessionId,
+                String role,
+                String tier,
+                int maxSandboxes,
+                long tokenQuota,
+                UUID taskId,
+                int attemptNo,
+                String workerId,
+                OffsetDateTime leaseExpiresAt,
+                String title,
+                String inputJson,
+                WorkspaceIsolationMode workspaceIsolationMode) {
+            this(
+                    attemptId,
+                    orgId,
+                    runId,
+                    userId,
+                    agentId,
+                    sessionId,
+                    agentRunId,
+                    agentType,
+                    subSessionId,
+                    role,
+                    tier,
+                    maxSandboxes,
+                    tokenQuota,
+                    taskId,
+                    attemptNo,
+                    workerId,
+                    leaseExpiresAt,
+                    title,
+                    inputJson,
+                    workspaceIsolationMode,
+                    "[]",
+                    "[]",
+                    List.of());
         }
     }
 }

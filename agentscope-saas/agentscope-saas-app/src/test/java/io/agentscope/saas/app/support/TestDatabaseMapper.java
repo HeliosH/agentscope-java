@@ -43,6 +43,8 @@ public interface TestDatabaseMapper {
                 id UUID PRIMARY KEY, org_id UUID NOT NULL, run_id UUID NOT NULL,
                 parent_id UUID, owner_agent_run_id UUID, sub_session_id VARCHAR(255),
                 title VARCHAR(500), input_json VARCHAR(4000), status VARCHAR(32) NOT NULL,
+                expected_output_json JSON NOT NULL DEFAULT '[]',
+                acceptance_json JSON NOT NULL DEFAULT '[]',
                 workspace_mode VARCHAR(64) NOT NULL DEFAULT 'NONE',
                 priority INTEGER NOT NULL, max_attempts INTEGER NOT NULL,
                 retry_mode VARCHAR(32) NOT NULL, retry_base_seconds INTEGER NOT NULL,
@@ -55,6 +57,14 @@ public interface TestDatabaseMapper {
 
     @Update("CREATE TABLE task_edges (from_task_id UUID NOT NULL, to_task_id UUID NOT NULL)")
     void createTaskEdges();
+
+    @Update(
+            """
+            CREATE TABLE run_artifacts (
+                id UUID PRIMARY KEY, task_id UUID NOT NULL, file_version_id UUID,
+                logical_path VARCHAR(1000), created_at TIMESTAMP WITH TIME ZONE NOT NULL)
+            """)
+    void createRunArtifacts();
 
     @Update(
             """
@@ -106,6 +116,7 @@ public interface TestDatabaseMapper {
         createAssistantRuns();
         createTaskNodes();
         createTaskEdges();
+        createRunArtifacts();
         createAgentRuns();
         createRunAttempts();
         createRunEvents();
@@ -158,6 +169,18 @@ public interface TestDatabaseMapper {
 
     @Update("UPDATE task_nodes SET retry_mode = #{retryMode} WHERE id = #{id}")
     int updateTaskRetryMode(@Param("id") UUID id, @Param("retryMode") String retryMode);
+
+    @Update(
+            """
+            UPDATE task_nodes
+               SET expected_output_json = CAST(#{expectedOutputJson} AS JSON),
+                   acceptance_json = CAST(#{acceptanceJson} AS JSON)
+             WHERE id = #{id}
+            """)
+    int updateTaskCompletionContract(
+            @Param("id") UUID id,
+            @Param("expectedOutputJson") String expectedOutputJson,
+            @Param("acceptanceJson") String acceptanceJson);
 
     @Update("UPDATE run_attempts SET lease_expires_at = #{expiresAt} WHERE id = #{id}")
     int updateAttemptExpiry(@Param("id") UUID id, @Param("expiresAt") OffsetDateTime expiresAt);
@@ -280,6 +303,23 @@ public interface TestDatabaseMapper {
             """)
     void createSandboxes();
 
+    @Update(
+            """
+            CREATE TABLE sandbox_leases (
+                id UUID PRIMARY KEY,
+                org_id UUID NOT NULL,
+                user_id UUID NOT NULL,
+                provider_id VARCHAR(64) NOT NULL,
+                provider_sandbox_id VARCHAR(255),
+                status VARCHAR(32) NOT NULL,
+                lease_expires_at TIMESTAMP WITH TIME ZONE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                released_at TIMESTAMP WITH TIME ZONE,
+                release_error VARCHAR(2000),
+                release_attempts INTEGER NOT NULL DEFAULT 0)
+            """)
+    void createReconciliationSandboxLeases();
+
     @Insert(
             """
             INSERT INTO sandboxes
@@ -311,6 +351,35 @@ public interface TestDatabaseMapper {
              WHERE id = #{id}
             """)
     SandboxState sandboxState(UUID id);
+
+    @Insert(
+            """
+            INSERT INTO sandbox_leases
+                (id, org_id, user_id, provider_id, provider_sandbox_id, status,
+                 lease_expires_at, created_at, release_error, release_attempts)
+            VALUES
+                (#{id}, #{orgId}, #{userId}, #{providerId}, #{providerSandboxId}, #{status},
+                 #{leaseExpiresAt}, #{createdAt}, #{releaseError}, #{releaseAttempts})
+            """)
+    int insertReconciliationSandboxLease(
+            @Param("id") UUID id,
+            @Param("orgId") UUID orgId,
+            @Param("userId") UUID userId,
+            @Param("providerId") String providerId,
+            @Param("providerSandboxId") String providerSandboxId,
+            @Param("status") String status,
+            @Param("leaseExpiresAt") OffsetDateTime leaseExpiresAt,
+            @Param("createdAt") OffsetDateTime createdAt,
+            @Param("releaseError") String releaseError,
+            @Param("releaseAttempts") int releaseAttempts);
+
+    @Select(
+            """
+            SELECT status, released_at, release_error, release_attempts
+              FROM sandbox_leases
+             WHERE id = #{id}
+            """)
+    OrchestrationLeaseState orchestrationLeaseState(UUID id);
 
     @Update(
             """
@@ -452,6 +521,15 @@ public interface TestDatabaseMapper {
     @Select("SELECT status, output_json FROM task_nodes WHERE id = #{id}")
     TaskState taskState(UUID id);
 
+    @Update(
+            """
+            UPDATE task_nodes
+               SET status = 'SUCCEEDED', output_json = CAST(#{outputJson} AS JSON),
+                   completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+             WHERE id = #{id}
+            """)
+    int markTaskSucceeded(@Param("id") UUID id, @Param("outputJson") String outputJson);
+
     @Select("SELECT event_type FROM run_events WHERE run_id = #{runId} ORDER BY seq")
     List<String> runEventTypes(UUID runId);
 
@@ -580,6 +658,9 @@ public interface TestDatabaseMapper {
             int backendReleaseAttempts,
             OffsetDateTime backendReleasedAt,
             String backendReleaseError) {}
+
+    record OrchestrationLeaseState(
+            String status, OffsetDateTime releasedAt, String releaseError, int releaseAttempts) {}
 
     record TaskState(String status, String outputJson) {}
 

@@ -168,6 +168,13 @@ saas:
     enabled: ${SAAS_ORCHESTRATION_ENABLED:true}
     scheduler-enabled: ${SAAS_ORCHESTRATION_SCHEDULER_ENABLED:false}
     planner-enabled: ${SAAS_ORCHESTRATION_PLANNER_ENABLED:false}
+    planner-max-depth: ${SAAS_ORCHESTRATION_PLANNER_MAX_DEPTH:8}
+    planner-max-fanout: ${SAAS_ORCHESTRATION_PLANNER_MAX_FANOUT:8}
+    planner-max-parallelism: ${SAAS_ORCHESTRATION_PLANNER_MAX_PARALLELISM:8}
+    planner-max-attempts: ${SAAS_ORCHESTRATION_PLANNER_MAX_ATTEMPTS:5}
+    planner-max-input-characters: ${SAAS_ORCHESTRATION_PLANNER_MAX_INPUT_CHARACTERS:32000}
+    planner-max-sandboxes: ${SAAS_ORCHESTRATION_PLANNER_MAX_SANDBOXES:8}
+    planner-max-storage-bytes: ${SAAS_ORCHESTRATION_PLANNER_MAX_STORAGE_BYTES:10737418240}
     outbox-enabled: ${SAAS_ORCHESTRATION_OUTBOX_ENABLED:true}
     outbox-fixed-delay-millis: ${SAAS_ORCHESTRATION_OUTBOX_FIXED_DELAY_MILLIS:1000}
     outbox-batch-size: ${SAAS_ORCHESTRATION_OUTBOX_BATCH_SIZE:100}
@@ -183,6 +190,7 @@ saas:
     scheduler-heartbeat-seconds: ${SAAS_ORCHESTRATION_SCHEDULER_HEARTBEAT_SECONDS:20}
     worker-concurrency: ${SAAS_ORCHESTRATION_WORKER_CONCURRENCY:4}
     worker-execution-timeout-seconds: ${SAAS_ORCHESTRATION_WORKER_EXECUTION_TIMEOUT_SECONDS:900}
+    worker-result-summary-max-characters: ${SAAS_ORCHESTRATION_WORKER_RESULT_SUMMARY_MAX_CHARACTERS:8000}
     budget-enforcement-enabled: ${SAAS_ORCHESTRATION_BUDGET_ENFORCEMENT_ENABLED:true}
     max-run-tokens: ${SAAS_ORCHESTRATION_MAX_RUN_TOKENS:200000}
     max-run-cost-micros: ${SAAS_ORCHESTRATION_MAX_RUN_COST_MICROS:0}
@@ -222,7 +230,9 @@ saas:
     # warn = expose/metric only; block = fail closed for new chat runs when critical deps degrade.
     chat-policy: ${SAAS_DEGRADATION_CHAT_POLICY:warn}
     health-cache-ttl-seconds: ${SAAS_DEGRADATION_HEALTH_CACHE_TTL_SECONDS:15}
-    # Optional, for deployments exposing an OpenSandbox health endpoint (for example /health).
+    # Optional health path for the single remote sandbox Provider selected by this deployment.
+    sandbox-provider-health-path: ${SAAS_DEGRADATION_SANDBOX_PROVIDER_HEALTH_PATH:${SAAS_DEGRADATION_OPENSANDBOX_HEALTH_PATH:}}
+    # Deprecated compatibility alias.
     open-sandbox-health-path: ${SAAS_DEGRADATION_OPENSANDBOX_HEALTH_PATH:}
   security:
     jwt:

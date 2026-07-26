@@ -11,16 +11,11 @@ package io.agentscope.saas.dal.mybatis.admin;
 
 import java.util.UUID;
 
-/** Persistence projection for an owned durable task attempt. */
-public record TaskLeaseAttemptData(
-        UUID attemptId,
-        UUID orgId,
-        UUID runId,
+/** Flattened dependency result and immutable artifact projection for task context assembly. */
+public record TaskDependencyData(
         UUID taskId,
-        UUID agentRunId,
-        int attemptNo,
-        int maxAttempts,
-        String retryMode,
-        int retryBaseSeconds,
-        String expectedOutputJson,
-        String acceptanceJson) {}
+        String title,
+        String outputJson,
+        UUID artifactId,
+        String logicalPath,
+        UUID fileVersionId) {}

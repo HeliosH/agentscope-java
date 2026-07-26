@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.Event;
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.agent.StreamOptions;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.message.Msg;
@@ -30,6 +31,7 @@ import io.agentscope.core.middleware.ActingInput;
 import io.agentscope.core.state.AgentState;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.spec.LocalFilesystemSpec;
+import io.agentscope.harness.agent.tool.PlanModeTools;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
 import io.agentscope.harness.agent.workspace.plan.PlanModeManager;
 import java.nio.file.Path;
@@ -111,6 +113,44 @@ class PlanModeMiddlewareTest {
 
         // Start + delta + end for the one denied call.
         assertEquals(3, events.size());
+    }
+
+    @Test
+    void structuredPlanningRequiresPlanPublishAndBlocksPlanExit(
+            @TempDir Path project, @TempDir Path workspace) {
+        PlanModeManager manager = manager(project, workspace);
+        AgentState state = AgentState.builder().build();
+        manager.enter(state);
+        StubAgent agent = new StubAgent("tester", state);
+        PlanModeMiddleware mw = new PlanModeMiddleware(manager, READ_ONLY);
+        RuntimeContext context =
+                RuntimeContext.builder()
+                        .put(PlanModeTools.STRUCTURED_PLANNING_REQUIRED, true)
+                        .build();
+
+        AtomicReference<ActingInput> forwarded = new AtomicReference<>();
+        List<AgentEvent> events =
+                mw.onActing(
+                                agent,
+                                context,
+                                new ActingInput(
+                                        List.of(
+                                                call("1", PlanModeTools.PLAN_EXIT),
+                                                call("2", PlanModeTools.PLAN_PUBLISH))),
+                                input -> {
+                                    forwarded.set(input);
+                                    return Flux.empty();
+                                })
+                        .collectList()
+                        .block();
+
+        assertEquals(
+                List.of(PlanModeTools.PLAN_PUBLISH),
+                forwarded.get().toolCalls().stream().map(ToolUseBlock::getName).toList());
+        assertEquals(3, events.size());
+        String prompt = mw.onSystemPrompt(agent, context, "base").block();
+        assertTrue(prompt.contains("STRUCTURED PLAN MODE"));
+        assertTrue(prompt.contains("plan_publish"));
     }
 
     @Test

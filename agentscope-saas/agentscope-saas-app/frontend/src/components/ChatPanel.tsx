@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ConfirmToolCall, currentSession, stream, type ChatEvent, type ChatRequest, type ConfirmResultInput } from '../api/chat';
 import { TurnEntry, turnsWindow } from '../api/sessions';
+import RunInspector from './RunInspector';
 import ToolCallBlock from './ToolCallBlock';
 
 type Role = 'user' | 'assistant' | 'system';
@@ -143,6 +144,7 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
   const [hasEarlier, setHasEarlier] = useState(false);
   const [nextBeforeSeq, setNextBeforeSeq] = useState<number | null>(null);
   const [sessionKey, setSessionKey] = useState<string | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const preserveScrollRef = useRef(false);
@@ -163,6 +165,7 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
     setRestoring(true);
     setHasEarlier(false);
     setNextBeforeSeq(null);
+    setActiveRunId(null);
 
     const urlKey = searchParams.get('session');
     const stored = (() => { try { return localStorage.getItem(storageKey(agentId)); } catch { return null; } })();
@@ -176,10 +179,12 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
           const cur = await currentSession(agentId);
           key = cur.sessionKey;
           exists = cur.exists;
+          setActiveRunId(cur.latestRunId ?? null);
         } else {
           // We have a candidate; just check whether the backend has turns.
           const cur = await currentSession(agentId);
           exists = cur.exists && cur.sessionKey === key;
+          if (exists) setActiveRunId(cur.latestRunId ?? null);
         }
       } catch {
         // ignore — a missing session is fine, we just start empty
@@ -243,7 +248,9 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
   const canSend = useMemo(() => !busy && !restoring && input.trim().length > 0, [busy, restoring, input]);
 
   function applyChatEvent(evt: ChatEvent, replyId: string) {
-    if (evt.type === 'token') {
+    if (evt.type === 'run_started') {
+      if (evt.runId) setActiveRunId(evt.runId);
+    } else if (evt.type === 'token') {
       const chunk = evt.data ?? '';
       setMessages(prev => prev.map(m => m.id === replyId ? { ...m, text: m.text + chunk } : m));
     } else if (evt.type === 'tool_call') {
@@ -382,6 +389,7 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
   }
 
   return (
+    <div className="chat-run-layout">
     <div style={S.root}>
       <div style={S.header}>
         <span>Session</span>
@@ -487,6 +495,8 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
           {busy ? '…' : 'Send'}
         </button>
       </div>
+    </div>
+    {activeRunId && <RunInspector agentId={agentId} runId={activeRunId} />}
     </div>
   );
 }

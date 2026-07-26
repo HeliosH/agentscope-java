@@ -10,6 +10,7 @@
 package io.agentscope.saas.orchestration;
 
 import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
+import java.util.List;
 import java.util.UUID;
 
 /** Provider-neutral execution port consumed by the durable task worker. */
@@ -36,13 +37,73 @@ public interface DurableTaskExecutor {
             long tokenQuota,
             String title,
             String inputJson,
-            WorkspaceIsolationMode workspaceIsolationMode) {
+            WorkspaceIsolationMode workspaceIsolationMode,
+            String expectedOutputJson,
+            String acceptanceJson,
+            List<DependencyContext> dependencies) {
 
         public ExecutionRequest {
             workspaceIsolationMode =
                     workspaceIsolationMode != null
                             ? workspaceIsolationMode
                             : WorkspaceIsolationMode.NONE;
+            expectedOutputJson =
+                    expectedOutputJson == null || expectedOutputJson.isBlank()
+                            ? "[]"
+                            : expectedOutputJson;
+            acceptanceJson =
+                    acceptanceJson == null || acceptanceJson.isBlank() ? "[]" : acceptanceJson;
+            dependencies = dependencies == null ? List.of() : List.copyOf(dependencies);
+        }
+
+        public ExecutionRequest(
+                UUID attemptId,
+                String leaseOwner,
+                UUID orgId,
+                UUID runId,
+                UUID taskId,
+                UUID userId,
+                UUID agentId,
+                UUID sessionId,
+                UUID agentRunId,
+                String agentType,
+                String subSessionId,
+                String role,
+                String tier,
+                int maxSandboxes,
+                long tokenQuota,
+                String title,
+                String inputJson,
+                WorkspaceIsolationMode workspaceIsolationMode) {
+            this(
+                    attemptId,
+                    leaseOwner,
+                    orgId,
+                    runId,
+                    taskId,
+                    userId,
+                    agentId,
+                    sessionId,
+                    agentRunId,
+                    agentType,
+                    subSessionId,
+                    role,
+                    tier,
+                    maxSandboxes,
+                    tokenQuota,
+                    title,
+                    inputJson,
+                    workspaceIsolationMode,
+                    "[]",
+                    "[]",
+                    List.of());
+        }
+    }
+
+    record DependencyContext(
+            UUID taskId, String title, String outputJson, List<String> artifactRefs) {
+        public DependencyContext {
+            artifactRefs = artifactRefs == null ? List.of() : List.copyOf(artifactRefs);
         }
     }
 

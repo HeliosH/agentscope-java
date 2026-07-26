@@ -1194,6 +1194,14 @@ public class SaasProperties {
         /** Enables structured planning once plan publishing is wired. */
         private boolean plannerEnabled = false;
 
+        private int plannerMaxDepth = 8;
+        private int plannerMaxFanout = 8;
+        private int plannerMaxParallelism = 8;
+        private int plannerMaxAttempts = 5;
+        private int plannerMaxInputCharacters = 32_000;
+        private int plannerMaxSandboxes = 8;
+        private long plannerMaxStorageBytes = 10L * 1024 * 1024 * 1024;
+
         /** Publishes the transactional event Outbox with lease-based, at-least-once delivery. */
         private boolean outboxEnabled = true;
 
@@ -1212,6 +1220,7 @@ public class SaasProperties {
         private long schedulerHeartbeatSeconds = 20;
         private int workerConcurrency = 4;
         private long workerExecutionTimeoutSeconds = 900;
+        private int workerResultSummaryMaxCharacters = 8_000;
 
         /** Enforces immutable Run/Task token, cost, model-call, and wall-clock budgets. */
         private boolean budgetEnforcementEnabled = true;
@@ -1249,6 +1258,62 @@ public class SaasProperties {
 
         public void setPlannerEnabled(boolean plannerEnabled) {
             this.plannerEnabled = plannerEnabled;
+        }
+
+        public int getPlannerMaxDepth() {
+            return plannerMaxDepth;
+        }
+
+        public void setPlannerMaxDepth(int plannerMaxDepth) {
+            this.plannerMaxDepth = plannerMaxDepth;
+        }
+
+        public int getPlannerMaxFanout() {
+            return plannerMaxFanout;
+        }
+
+        public void setPlannerMaxFanout(int plannerMaxFanout) {
+            this.plannerMaxFanout = plannerMaxFanout;
+        }
+
+        public int getPlannerMaxParallelism() {
+            return plannerMaxParallelism;
+        }
+
+        public void setPlannerMaxParallelism(int plannerMaxParallelism) {
+            this.plannerMaxParallelism = plannerMaxParallelism;
+        }
+
+        public int getPlannerMaxAttempts() {
+            return plannerMaxAttempts;
+        }
+
+        public void setPlannerMaxAttempts(int plannerMaxAttempts) {
+            this.plannerMaxAttempts = plannerMaxAttempts;
+        }
+
+        public int getPlannerMaxInputCharacters() {
+            return plannerMaxInputCharacters;
+        }
+
+        public void setPlannerMaxInputCharacters(int plannerMaxInputCharacters) {
+            this.plannerMaxInputCharacters = plannerMaxInputCharacters;
+        }
+
+        public int getPlannerMaxSandboxes() {
+            return plannerMaxSandboxes;
+        }
+
+        public void setPlannerMaxSandboxes(int plannerMaxSandboxes) {
+            this.plannerMaxSandboxes = plannerMaxSandboxes;
+        }
+
+        public long getPlannerMaxStorageBytes() {
+            return plannerMaxStorageBytes;
+        }
+
+        public void setPlannerMaxStorageBytes(long plannerMaxStorageBytes) {
+            this.plannerMaxStorageBytes = plannerMaxStorageBytes;
         }
 
         public boolean isOutboxEnabled() {
@@ -1369,6 +1434,14 @@ public class SaasProperties {
 
         public void setWorkerExecutionTimeoutSeconds(long workerExecutionTimeoutSeconds) {
             this.workerExecutionTimeoutSeconds = workerExecutionTimeoutSeconds;
+        }
+
+        public int getWorkerResultSummaryMaxCharacters() {
+            return workerResultSummaryMaxCharacters;
+        }
+
+        public void setWorkerResultSummaryMaxCharacters(int workerResultSummaryMaxCharacters) {
+            this.workerResultSummaryMaxCharacters = workerResultSummaryMaxCharacters;
         }
 
         public boolean isBudgetEnforcementEnabled() {
@@ -1783,9 +1856,12 @@ public class SaasProperties {
         private int healthCacheTtlSeconds = 15;
 
         /**
-         * Optional OpenSandbox health path appended to open-sandbox-api-base-url. Empty means
-         * provider health is treated as unknown and never blocks by itself.
+         * Optional health path appended to the active remote sandbox Provider API URL. Empty means
+         * remote Provider health is treated as unknown and never blocks by itself.
          */
+        private String sandboxProviderHealthPath = "";
+
+        /** Deprecated OpenSandbox-specific alias retained for deployment compatibility. */
         private String openSandboxHealthPath = "";
 
         public boolean isEnabled() {
@@ -1810,6 +1886,17 @@ public class SaasProperties {
 
         public void setHealthCacheTtlSeconds(int healthCacheTtlSeconds) {
             this.healthCacheTtlSeconds = healthCacheTtlSeconds;
+        }
+
+        public String getSandboxProviderHealthPath() {
+            if (sandboxProviderHealthPath != null && !sandboxProviderHealthPath.isBlank()) {
+                return sandboxProviderHealthPath;
+            }
+            return openSandboxHealthPath;
+        }
+
+        public void setSandboxProviderHealthPath(String sandboxProviderHealthPath) {
+            this.sandboxProviderHealthPath = sandboxProviderHealthPath;
         }
 
         public String getOpenSandboxHealthPath() {

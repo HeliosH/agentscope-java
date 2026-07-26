@@ -22,6 +22,9 @@ public interface RunOrchestrationRepository {
     Optional<AssistantRun> findByIdempotencyKey(
             UUID orgId, UUID userId, UUID agentId, String idempotencyKey);
 
+    Optional<AssistantRun> findLatestOwnedRunBySession(
+            UUID sessionId, UUID orgId, UUID userId, UUID agentId);
+
     Optional<AssistantRun> lockOwnedRun(UUID runId, UUID orgId, UUID userId, UUID agentId);
 
     void insertRun(NewRun run);

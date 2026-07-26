@@ -24,7 +24,7 @@ export interface ChatRequest {
  * simpler {token, tool_call, tool_result, done, error} shape that ChatPanel renders.
  */
 export interface ChatEvent {
-  type: 'token' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'confirm_required' | string;
+  type: 'run_started' | 'token' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'confirm_required' | string;
   data?: string;
   toolName?: string;
   toolInput?: string;
@@ -32,11 +32,13 @@ export interface ChatEvent {
   confirmTools?: ConfirmToolCall[];
   error?: string;
   sessionKey?: string;
+  runId?: string;
 }
 
 export interface CurrentSession {
   sessionKey: string | null;
   exists: boolean;
+  latestRunId?: string | null;
 }
 
 export async function currentSession(agentId: string): Promise<CurrentSession> {
@@ -92,7 +94,9 @@ export async function* stream(agentId: string, req: ChatRequest): AsyncGenerator
       }
 
       const type = payload.type as string;
-      if (type === 'TEXT_MESSAGE_CONTENT') {
+      if (type === 'RUN_STARTED') {
+        yield { type: 'run_started', runId: payload.runId as string };
+      } else if (type === 'TEXT_MESSAGE_CONTENT') {
         const delta = (payload.delta as string) ?? '';
         if (delta) yield { type: 'token', data: delta };
       } else if (type === 'TOOL_CALL_START') {
@@ -128,7 +132,7 @@ export async function* stream(agentId: string, req: ChatRequest): AsyncGenerator
         const confirmTools = (value?.toolCalls ?? []).map(toConfirmToolCall);
         yield { type: 'confirm_required', confirmTools };
       }
-      // RUN_STARTED, TEXT_MESSAGE_START/END, STATE_*, RAW, and REASONING_* are ignored.
+      // TEXT_MESSAGE_START/END, STATE_*, RAW, and REASONING_* are ignored.
     }
   }
 }

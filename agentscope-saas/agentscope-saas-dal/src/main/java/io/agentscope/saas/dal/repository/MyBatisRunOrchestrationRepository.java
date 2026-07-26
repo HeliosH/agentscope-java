@@ -39,6 +39,12 @@ public class MyBatisRunOrchestrationRepository implements RunOrchestrationReposi
     }
 
     @Override
+    public Optional<AssistantRun> findLatestOwnedRunBySession(
+            UUID sessionId, UUID orgId, UUID userId, UUID agentId) {
+        return first(mapper.findLatestOwnedRunBySession(sessionId, orgId, userId, agentId));
+    }
+
+    @Override
     public Optional<AssistantRun> lockOwnedRun(UUID runId, UUID orgId, UUID userId, UUID agentId) {
         return first(mapper.lockOwnedRun(runId, orgId, userId, agentId));
     }

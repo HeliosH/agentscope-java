@@ -10,12 +10,16 @@
 package io.agentscope.saas.dal.repository;
 
 import io.agentscope.saas.dal.mybatis.admin.DurableTaskLeaseMapper;
+import io.agentscope.saas.dal.mybatis.admin.TaskDependencyData;
 import io.agentscope.saas.dal.mybatis.admin.TaskLeaseAttemptData;
 import io.agentscope.saas.dal.mybatis.admin.TaskLeaseCandidateData;
 import io.agentscope.saas.domain.orchestration.DurableTaskLeaseRepository;
 import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.stereotype.Repository;
@@ -65,6 +69,40 @@ public class MyBatisDurableTaskLeaseRepository implements DurableTaskLeaseReposi
     @Override
     public Optional<AttemptRef> findAttempt(UUID attemptId, String workerId) {
         return mapper.findAttempt(attemptId, workerId).stream().findFirst().map(this::toDomain);
+    }
+
+    @Override
+    public List<DependencyResult> findCompletedDependencies(UUID taskId) {
+        Map<UUID, DependencyAccumulator> dependencies = new LinkedHashMap<>();
+        for (TaskDependencyData data : mapper.findCompletedDependencies(taskId)) {
+            DependencyAccumulator dependency =
+                    dependencies.computeIfAbsent(
+                            data.taskId(),
+                            ignored ->
+                                    new DependencyAccumulator(
+                                            data.taskId(),
+                                            data.title(),
+                                            data.outputJson(),
+                                            new ArrayList<>()));
+            if (data.artifactId() != null) {
+                dependency
+                        .artifacts()
+                        .add(
+                                new ArtifactReference(
+                                        data.artifactId(),
+                                        data.logicalPath(),
+                                        data.fileVersionId()));
+            }
+        }
+        return dependencies.values().stream()
+                .map(
+                        value ->
+                                new DependencyResult(
+                                        value.taskId(),
+                                        value.title(),
+                                        value.outputJson(),
+                                        List.copyOf(value.artifacts())))
+                .toList();
     }
 
     @Override
@@ -271,6 +309,8 @@ public class MyBatisDurableTaskLeaseRepository implements DurableTaskLeaseReposi
                 data.tokenQuota(),
                 data.title(),
                 data.inputJson(),
+                data.expectedOutputJson(),
+                data.acceptanceJson(),
                 WorkspaceIsolationMode.fromStorage(data.workspaceMode()),
                 data.maxAttempts(),
                 data.retryMode(),
@@ -288,6 +328,11 @@ public class MyBatisDurableTaskLeaseRepository implements DurableTaskLeaseReposi
                 data.attemptNo(),
                 data.maxAttempts(),
                 data.retryMode(),
-                data.retryBaseSeconds());
+                data.retryBaseSeconds(),
+                data.expectedOutputJson(),
+                data.acceptanceJson());
     }
+
+    private record DependencyAccumulator(
+            UUID taskId, String title, String outputJson, List<ArtifactReference> artifacts) {}
 }

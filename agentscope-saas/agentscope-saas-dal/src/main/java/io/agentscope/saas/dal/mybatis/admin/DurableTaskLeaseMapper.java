@@ -29,7 +29,10 @@ public interface DurableTaskLeaseMapper {
                    t.sub_session_id,
                    u.role, u.tier, COALESCE(p.max_sandboxes, 1) AS max_sandboxes,
                    COALESCE(p.monthly_token_quota, 0) AS token_quota,
-                   t.title, t.input_json, t.workspace_mode, t.max_attempts,
+                   t.title, t.input_json,
+                   CAST(t.expected_output_json AS VARCHAR) AS expected_output_json,
+                   CAST(t.acceptance_json AS VARCHAR) AS acceptance_json,
+                   t.workspace_mode, t.max_attempts,
                    t.retry_mode, t.retry_base_seconds,
                    COALESCE((SELECT MAX(a.attempt_no) FROM run_attempts a
                               WHERE a.task_id = t.id), 0) AS last_attempt_no
@@ -65,6 +68,8 @@ public interface DurableTaskLeaseMapper {
         @Arg(column = "token_quota", javaType = long.class),
         @Arg(column = "title", javaType = String.class),
         @Arg(column = "input_json", javaType = String.class),
+        @Arg(column = "expected_output_json", javaType = String.class),
+        @Arg(column = "acceptance_json", javaType = String.class),
         @Arg(column = "workspace_mode", javaType = String.class),
         @Arg(column = "max_attempts", javaType = int.class),
         @Arg(column = "retry_mode", javaType = String.class),
@@ -73,6 +78,28 @@ public interface DurableTaskLeaseMapper {
     })
     List<TaskLeaseCandidateData> findReadyCandidates(
             @Param("readyAt") OffsetDateTime readyAt, @Param("limit") int limit);
+
+    @Select(
+            """
+            SELECT dependency.id AS task_id, dependency.title,
+                   CAST(dependency.output_json AS VARCHAR) AS output_json,
+                   artifact.id AS artifact_id, artifact.logical_path, artifact.file_version_id
+              FROM task_edges edge
+              JOIN task_nodes dependency ON dependency.id = edge.from_task_id
+              LEFT JOIN run_artifacts artifact ON artifact.task_id = dependency.id
+             WHERE edge.to_task_id = #{taskId}
+               AND dependency.status = 'SUCCEEDED'
+             ORDER BY dependency.created_at, artifact.created_at
+            """)
+    @ConstructorArgs({
+        @Arg(column = "task_id", javaType = UUID.class),
+        @Arg(column = "title", javaType = String.class),
+        @Arg(column = "output_json", javaType = String.class),
+        @Arg(column = "artifact_id", javaType = UUID.class),
+        @Arg(column = "logical_path", javaType = String.class),
+        @Arg(column = "file_version_id", javaType = UUID.class)
+    })
+    List<TaskDependencyData> findCompletedDependencies(@Param("taskId") UUID taskId);
 
     @Update(
             """
@@ -109,7 +136,9 @@ public interface DurableTaskLeaseMapper {
     @Select(
             """
             SELECT a.id AS attempt_id, a.org_id, a.run_id, a.task_id, a.agent_run_id,
-                   a.attempt_no, t.max_attempts, t.retry_mode, t.retry_base_seconds
+                   a.attempt_no, t.max_attempts, t.retry_mode, t.retry_base_seconds,
+                   CAST(t.expected_output_json AS VARCHAR) AS expected_output_json,
+                   CAST(t.acceptance_json AS VARCHAR) AS acceptance_json
               FROM run_attempts a
               JOIN task_nodes t ON t.id = a.task_id
              WHERE a.id = #{attemptId} AND a.lease_owner = #{workerId}
@@ -123,7 +152,9 @@ public interface DurableTaskLeaseMapper {
         @Arg(column = "attempt_no", javaType = int.class),
         @Arg(column = "max_attempts", javaType = int.class),
         @Arg(column = "retry_mode", javaType = String.class),
-        @Arg(column = "retry_base_seconds", javaType = int.class)
+        @Arg(column = "retry_base_seconds", javaType = int.class),
+        @Arg(column = "expected_output_json", javaType = String.class),
+        @Arg(column = "acceptance_json", javaType = String.class)
     })
     List<TaskLeaseAttemptData> findAttempt(
             @Param("attemptId") UUID attemptId, @Param("workerId") String workerId);

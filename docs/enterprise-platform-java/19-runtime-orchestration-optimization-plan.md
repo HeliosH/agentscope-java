@@ -1,7 +1,7 @@
 # 19. 企业智能助手运行框架优化落地方案
 
-> 状态：Phase 0-2 已完成；Phase 3 已完成编排沙箱租约、部署能力基线、Attempt
-> 工作区隔离及 checkpoint/Artifact 发布链路，继续实施 checkpoint 恢复和资源对账
+> 状态：Phase 0-3 已完成；Phase 4 已完成结构化规划、DAG、审批、重规划、
+> CompletionGate、任务级上下文和运行面板，继续实施独立 Verifier Agent、显式重试和岗位档案装配
 >
 > 适用范围：`agentscope-saas` 企业智能助手运行时
 >
@@ -730,7 +730,10 @@ saas:
   清单不一致或路径越界均失败关闭，不允许任务在不完整工作区上继续执行；
 - 恢复流程不依赖 Docker、E2B、CubeSandbox 或 OpenSandbox 的私有状态，Provider 仅实现
   标准工作区 hydrate 能力，部署切换不会改变任务恢复语义；
-- 待完成 Provider 连接健康检查和 `sandbox_leases` 跨租户 reconciliation。
+- 已完成活动 Provider 的真实连接探测、依赖降级诊断，以及传统沙箱记录和编排
+  `sandbox_leases` 的跨租户 reconciliation、释放重试和终态收口；
+- 已于 2026-07-26 使用 PostgreSQL、Redis、MinIO 和 OpenSandbox 完成企业 smoke：
+  应用流程 12/12、发布门禁 8/8，覆盖快照恢复、产物下载和资源释放。
 
 ### Phase 4：计划、验证和前端，8-10 个工作日
 
@@ -743,6 +746,28 @@ saas:
 - 接入岗位档案和个人记忆的任务上下文构建。
 
 验收：复杂任务完成“计划、审批、并行子任务、验证、产物返回”全流程，刷新浏览器不丢进度。
+
+当前落地进度：
+
+- 已实现 `TaskComplexityRouter`，普通问答、单工具、复杂任务和高风险审批任务按确定性
+  规则路由；复杂任务由控制面强制进入 Structured Plan Mode，不能通过 `plan_exit`
+  绕过 `plan_publish`；
+- 已实现版本化 `ExecutionPlan`、确定性 DAG Validator、计划审批和运行时重规划；
+  重规划只复用任务规范哈希一致的成功节点，变化节点创建新 Task，旧计划和未完成节点
+  保留审计关系并进入 superseded/cancelled；
+- 已实现 PostgreSQL/MyBatis 计划事实源、H2/PostgreSQL V28 迁移、计划审批幂等和
+  任务依赖激活；计划 Markdown 不参与调度；
+- 已实现结构化子任务结果、任务级 `TaskContextAssembler`、摘要长度上限、依赖摘要和
+  Artifact 引用传递，不再向子 Agent 全量加载长 Session；
+- 已实现事务内 `CompletionGate` 和验证事件。结果缺失结构化状态、证据、验收引用或
+  文件 Artifact 时不能进入 `SUCCEEDED`，而是进入受限重试或失败路径；
+- 已实现 Web 运行面板，显示计划版本、审批、任务依赖和状态、持久化事件、产物下载及
+  显式取消；刷新后通过当前 Session 的最新 Run 和事件序号恢复视图；
+- 已修复审批等待态无法取消的问题；取消覆盖所有非终态 Run，重复取消不重复写终态，
+  API 强制携带 `Idempotency-Key`；
+- 待完成独立只读 Verifier Agent、失败 Run 的显式人工重试 API/前端入口，以及企业
+  岗位档案在身份模块启用后的任务上下文装配。当前 CompletionGate 是确定性验证门禁，
+  不等同于独立 Verifier Agent。
 
 ### Phase 5：生产加固，5-8 个工作日
 

@@ -51,6 +51,12 @@ public final class PlanModeTools {
     public static final String PLAN_WRITE = "plan_write";
     public static final String PLAN_EXIT = "plan_exit";
 
+    /** Reserved extension point for a host platform's durable structured planner. */
+    public static final String PLAN_PUBLISH = "plan_publish";
+
+    /** RuntimeContext flag requiring the host's durable structured planning workflow. */
+    public static final String STRUCTURED_PLANNING_REQUIRED = "structuredPlanningRequired";
+
     private PlanModeTools() {}
 
     private static AgentState stateOf(ToolCallParam param) {

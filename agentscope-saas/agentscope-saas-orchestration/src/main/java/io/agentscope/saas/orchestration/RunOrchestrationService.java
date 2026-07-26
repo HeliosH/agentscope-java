@@ -249,6 +249,18 @@ public class RunOrchestrationService {
                 .map(this::toView);
     }
 
+    @Transactional(readOnly = true)
+    public Optional<RunView> findLatestBySession(
+            TenantContext tenant, UUID agentId, UUID sessionId) {
+        return repository
+                .findLatestOwnedRunBySession(
+                        sessionId,
+                        uuid(tenant.orgId(), "orgId"),
+                        uuid(tenant.userId(), "userId"),
+                        agentId)
+                .map(this::toView);
+    }
+
     /**
      * Marks the coordinator task successful. A Run with durable children remains RUNNING until the
      * scheduler reaches a terminal state for every child.
@@ -529,7 +541,7 @@ public class RunOrchestrationService {
             return Optional.empty();
         }
         AssistantRun run = maybeRun.get();
-        if (!RUN_RUNNING.equals(run.status())) {
+        if (isTerminalRunStatus(run.status())) {
             return Optional.of(new CancelledRun(run.id(), run.agentId(), run.sessionId(), false));
         }
         OffsetDateTime now = OffsetDateTime.now();
@@ -863,6 +875,12 @@ public class RunOrchestrationService {
                 || TASK_FAILED.equals(status)
                 || TASK_CANCELLED.equals(status)
                 || "MANUAL_ACTION".equals(status);
+    }
+
+    private static boolean isTerminalRunStatus(String status) {
+        return RUN_SUCCEEDED.equals(status)
+                || RUN_FAILED.equals(status)
+                || RUN_CANCELLED.equals(status);
     }
 
     private static boolean isTerminalAttemptStatus(String status) {

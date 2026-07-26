@@ -25,8 +25,17 @@ public interface SandboxReconciliationMapper {
 
     @Select(
             """
-            SELECT sandbox_type, status, COUNT(*) AS count
-              FROM sandboxes
+            SELECT sandbox_type, status, SUM(row_count) AS count
+              FROM (
+                    SELECT sandbox_type, LOWER(status) AS status, COUNT(*) AS row_count
+                      FROM sandboxes
+                     GROUP BY sandbox_type, LOWER(status)
+                    UNION ALL
+                    SELECT provider_id AS sandbox_type, LOWER(status) AS status,
+                           COUNT(*) AS row_count
+                      FROM sandbox_leases
+                     GROUP BY provider_id, LOWER(status)
+              ) inventory
              GROUP BY sandbox_type, status
             """)
     @ConstructorArgs({
@@ -38,9 +47,19 @@ public interface SandboxReconciliationMapper {
 
     @Select(
             """
-            SELECT sandbox_type, COUNT(*) AS count
-              FROM sandboxes
-             WHERE status = 'active' AND expires_at < #{now}
+            SELECT sandbox_type, SUM(row_count) AS count
+              FROM (
+                    SELECT sandbox_type, COUNT(*) AS row_count
+                      FROM sandboxes
+                     WHERE status = 'active' AND expires_at < #{now}
+                     GROUP BY sandbox_type
+                    UNION ALL
+                    SELECT provider_id AS sandbox_type, COUNT(*) AS row_count
+                      FROM sandbox_leases
+                     WHERE status IN ('PROVISIONING', 'ACTIVE', 'CHECKPOINTING')
+                       AND lease_expires_at < #{now}
+                     GROUP BY provider_id
+              ) expired
              GROUP BY sandbox_type
             """)
     @ConstructorArgs({
@@ -94,6 +113,47 @@ public interface SandboxReconciliationMapper {
     List<SandboxResourceData> findBackendReleaseCandidates(
             @Param("maxAttempts") int maxAttempts, @Param("limit") int limit);
 
+    @Select(
+            """
+            SELECT id, org_id, user_id, provider_id, provider_sandbox_id
+              FROM sandbox_leases
+             WHERE status IN ('PROVISIONING', 'ACTIVE', 'CHECKPOINTING')
+               AND lease_expires_at IS NOT NULL
+               AND lease_expires_at < #{staleBefore}
+             ORDER BY lease_expires_at ASC
+             LIMIT #{limit}
+            """)
+    @ConstructorArgs({
+        @Arg(column = "id", javaType = UUID.class),
+        @Arg(column = "org_id", javaType = UUID.class),
+        @Arg(column = "user_id", javaType = UUID.class),
+        @Arg(column = "provider_id", javaType = String.class),
+        @Arg(column = "provider_sandbox_id", javaType = String.class)
+    })
+    List<OrchestrationLeaseResourceData> findExpiredOrchestrationLeases(
+            @Param("staleBefore") OffsetDateTime staleBefore, @Param("limit") int limit);
+
+    @Select(
+            """
+            SELECT id, org_id, user_id, provider_id, provider_sandbox_id
+              FROM sandbox_leases
+             WHERE status IN ('EXPIRED', 'RELEASE_FAILED')
+               AND provider_sandbox_id IS NOT NULL
+               AND TRIM(provider_sandbox_id) <> ''
+               AND COALESCE(release_attempts, 0) < #{maxAttempts}
+             ORDER BY lease_expires_at ASC, created_at ASC
+             LIMIT #{limit}
+            """)
+    @ConstructorArgs({
+        @Arg(column = "id", javaType = UUID.class),
+        @Arg(column = "org_id", javaType = UUID.class),
+        @Arg(column = "user_id", javaType = UUID.class),
+        @Arg(column = "provider_id", javaType = String.class),
+        @Arg(column = "provider_sandbox_id", javaType = String.class)
+    })
+    List<OrchestrationLeaseResourceData> findOrchestrationLeaseReleaseCandidates(
+            @Param("maxAttempts") int maxAttempts, @Param("limit") int limit);
+
     @Update(
             """
             UPDATE sandboxes
@@ -139,6 +199,54 @@ public interface SandboxReconciliationMapper {
             """)
     int recordBackendRelease(
             @Param("sandboxId") UUID sandboxId,
+            @Param("status") String status,
+            @Param("attemptIncrement") int attemptIncrement,
+            @Param("releasedAt") OffsetDateTime releasedAt,
+            @Param("error") String error);
+
+    @Update(
+            """
+            UPDATE sandbox_leases
+               SET status = 'EXPIRED',
+                   lease_expires_at = #{changedAt},
+                   release_error = NULL
+             WHERE id = #{leaseId}
+               AND status IN ('PROVISIONING', 'ACTIVE', 'CHECKPOINTING')
+               AND lease_expires_at IS NOT NULL
+               AND lease_expires_at < #{changedAt}
+            """)
+    int markExpiredOrchestrationLease(
+            @Param("leaseId") UUID leaseId, @Param("changedAt") OffsetDateTime changedAt);
+
+    @Update(
+            """
+            UPDATE sandbox_leases
+               SET status = 'RELEASING',
+                   release_error = NULL
+             WHERE id = #{leaseId}
+               AND status IN ('EXPIRED', 'RELEASE_FAILED')
+               AND COALESCE(release_attempts, 0) < #{maxAttempts}
+            """)
+    int claimOrchestrationLeaseRelease(
+            @Param("leaseId") UUID leaseId, @Param("maxAttempts") int maxAttempts);
+
+    @Update(
+            """
+            UPDATE sandbox_leases
+               SET status = #{status},
+                   release_attempts =
+                       COALESCE(release_attempts, 0) + #{attemptIncrement},
+                   released_at =
+                       CASE
+                           WHEN #{releasedAt} IS NOT NULL THEN #{releasedAt}
+                           ELSE released_at
+                       END,
+                   release_error = #{error}
+             WHERE id = #{leaseId}
+               AND status = 'RELEASING'
+            """)
+    int recordOrchestrationLeaseRelease(
+            @Param("leaseId") UUID leaseId,
             @Param("status") String status,
             @Param("attemptIncrement") int attemptIncrement,
             @Param("releasedAt") OffsetDateTime releasedAt,
