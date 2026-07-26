@@ -14,6 +14,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -28,6 +29,7 @@ import io.agentscope.harness.agent.sandbox.SandboxIsolationOverride;
 import io.agentscope.saas.app.chat.ChatPersistenceService;
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.config.TenantRlsWebFilter;
+import io.agentscope.saas.app.workspace.WorkspaceCheckpointContext;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
@@ -82,6 +84,7 @@ class HarnessDurableTaskExecutorTest {
                         chatPersistence,
                         orchestration,
                         mock(WorkspaceArtifactService.class),
+                        mock(WorkspaceCheckpointRestoreService.class),
                         Optional.empty());
         UUID userId = UUID.randomUUID();
         UUID runId = UUID.randomUUID();
@@ -147,6 +150,7 @@ class HarnessDurableTaskExecutorTest {
                         chatPersistence,
                         orchestration,
                         mock(WorkspaceArtifactService.class),
+                        mock(WorkspaceCheckpointRestoreService.class),
                         Optional.empty());
         UUID orgId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
@@ -186,6 +190,126 @@ class HarnessDurableTaskExecutorTest {
     }
 
     @Test
+    void publishesCheckpointWhenAgentExecutionFailsSoRetryCanRestoreIt() {
+        HarnessAgent parent = mock(HarnessAgent.class);
+        when(parent.call(any(Msg.class), any(RuntimeContext.class)))
+                .thenReturn(Mono.error(new IllegalStateException("agent failed")));
+        SaasProperties properties = new SaasProperties();
+        properties.getSandbox().setEnabled(true);
+        properties.getOrchestration().setWorkerExecutionTimeoutSeconds(5);
+        WorkspaceArtifactService artifacts = mock(WorkspaceArtifactService.class);
+        WorkspaceCheckpointRestoreService restore = mock(WorkspaceCheckpointRestoreService.class);
+        UUID orgId = UUID.randomUUID();
+        UUID attemptId = UUID.randomUUID();
+        when(restore.prepare(
+                        any(TenantContext.class),
+                        eq(orgId),
+                        eq(attemptId),
+                        eq(WorkspaceIsolationMode.ATTEMPT_ISOLATED)))
+                .thenReturn(Optional.empty());
+        HarnessDurableTaskExecutor executor =
+                new HarnessDurableTaskExecutor(
+                        parent,
+                        new ObjectMapper(),
+                        properties,
+                        mock(ChatPersistenceService.class),
+                        mock(RunOrchestrationService.class),
+                        artifacts,
+                        restore,
+                        Optional.of(
+                                mock(
+                                        io.agentscope.harness.agent.filesystem.remote.store
+                                                .BaseStore.class)));
+        ExecutionRequest request =
+                new ExecutionRequest(
+                        attemptId,
+                        "worker-test",
+                        orgId,
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        null,
+                        "assistant",
+                        null,
+                        "member",
+                        "standard",
+                        1,
+                        100,
+                        "Fail after work",
+                        "{}",
+                        WorkspaceIsolationMode.ATTEMPT_ISOLATED);
+
+        assertThatThrownBy(() -> executor.execute(request))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("agent failed");
+
+        verify(artifacts)
+                .publish(
+                        eq(request.orgId()),
+                        eq(request.runId()),
+                        eq(request.taskId()),
+                        eq(request.attemptId()),
+                        any(),
+                        any(WorkspaceCheckpointContext.class));
+    }
+
+    @Test
+    void surfacesCheckpointFailureWhenAgentExecutionAlsoFails() {
+        HarnessAgent parent = mock(HarnessAgent.class);
+        IllegalStateException agentFailure = new IllegalStateException("agent failed");
+        when(parent.call(any(Msg.class), any(RuntimeContext.class)))
+                .thenReturn(Mono.error(agentFailure));
+        SaasProperties properties = new SaasProperties();
+        properties.getSandbox().setEnabled(true);
+        properties.getOrchestration().setWorkerExecutionTimeoutSeconds(5);
+        WorkspaceArtifactService artifacts = mock(WorkspaceArtifactService.class);
+        IllegalStateException checkpointFailure =
+                new IllegalStateException("checkpoint publication failed");
+        doThrow(checkpointFailure)
+                .when(artifacts)
+                .publish(any(), any(), any(), any(), any(), any());
+        WorkspaceCheckpointRestoreService restore = mock(WorkspaceCheckpointRestoreService.class);
+        when(restore.prepare(any(), any(), any(), any())).thenReturn(Optional.empty());
+        HarnessDurableTaskExecutor executor =
+                new HarnessDurableTaskExecutor(
+                        parent,
+                        new ObjectMapper(),
+                        properties,
+                        mock(ChatPersistenceService.class),
+                        mock(RunOrchestrationService.class),
+                        artifacts,
+                        restore,
+                        Optional.empty());
+        ExecutionRequest request =
+                new ExecutionRequest(
+                        UUID.randomUUID(),
+                        "worker-test",
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        null,
+                        "assistant",
+                        null,
+                        "member",
+                        "standard",
+                        1,
+                        100,
+                        "Fail after work",
+                        "{}",
+                        WorkspaceIsolationMode.ATTEMPT_ISOLATED);
+
+        assertThatThrownBy(() -> executor.execute(request))
+                .isSameAs(checkpointFailure)
+                .satisfies(
+                        error -> assertThat(error.getSuppressed()).containsExactly(agentFailure));
+    }
+
+    @Test
     void rejectsReadOnlyModeUntilAReadOnlyAdapterIsConfigured() {
         HarnessAgent parent = mock(HarnessAgent.class);
         SaasProperties properties = new SaasProperties();
@@ -219,6 +343,7 @@ class HarnessDurableTaskExecutorTest {
                         chatPersistence,
                         orchestration,
                         mock(WorkspaceArtifactService.class),
+                        mock(WorkspaceCheckpointRestoreService.class),
                         Optional.empty());
 
         assertThatThrownBy(() -> executor.execute(request))

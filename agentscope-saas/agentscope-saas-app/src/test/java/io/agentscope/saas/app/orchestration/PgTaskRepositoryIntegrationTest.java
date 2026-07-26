@@ -14,18 +14,25 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.message.TextBlock;
 import io.agentscope.harness.agent.subagent.task.TaskRunSpec;
 import io.agentscope.harness.agent.subagent.task.TaskStatus;
+import io.agentscope.saas.app.chat.ChatPersistenceService;
 import io.agentscope.saas.app.support.MyBatisRepositoryTestSupport;
 import io.agentscope.saas.app.support.TestDatabaseMapper;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewAttempt;
 import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
+import io.agentscope.saas.domain.repository.AgentRepository;
+import io.agentscope.saas.domain.sandbox.SandboxLeaseRepository;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
 import io.agentscope.saas.sandbox.ActiveSandboxDeployment;
 import io.agentscope.saas.sandbox.SandboxLeaseService;
 import io.agentscope.saas.sandbox.SandboxRuntimeAttributes;
 import java.time.Duration;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -65,6 +72,10 @@ class PgTaskRepositoryIntegrationTest {
     @Autowired DurableTaskLeaseService leases;
     @Autowired DurableTaskWorker worker;
     @Autowired SandboxLeaseService sandboxLeases;
+    @Autowired RunOrchestrationRepository runRepository;
+    @Autowired SandboxLeaseRepository sandboxLeaseRepository;
+    @Autowired ChatPersistenceService chatPersistence;
+    @Autowired AgentRepository agentRepository;
 
     @Autowired
     PgTaskRepositoryIntegrationTest(
@@ -194,6 +205,82 @@ class PgTaskRepositoryIntegrationTest {
                                 .orElseThrow()
                                 .status())
                 .isEqualTo("RELEASED");
+    }
+
+    @Test
+    void retrySelectsLatestPriorAttemptCheckpointThroughMyBatis() {
+        UUID agentId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        seedAgentAndSession(agentId, sessionId);
+        var run = runs.createDirectRun(tenant(), agentId, sessionId, null, "Restore retry");
+        var firstLease =
+                sandboxLeases.begin(
+                        ORG_ID,
+                        USER_ID,
+                        run.runId(),
+                        run.rootTaskId(),
+                        run.rootAttemptId(),
+                        new ActiveSandboxDeployment(
+                                "opensandbox",
+                                "runtime:latest",
+                                java.util.Set.of(
+                                        io.agentscope.saas.sandbox.SandboxCapability.SNAPSHOT),
+                                "{\"capabilities\":[\"SNAPSHOT\"]}"),
+                        "worker-first-attempt",
+                        OffsetDateTime.now().plusMinutes(1));
+        assertThat(sandboxLeases.checkpoint(firstLease, "catalog://attempt/first", "sha256:first"))
+                .isTrue();
+        assertThat(sandboxLeases.release(firstLease)).isTrue();
+
+        UUID retryAttemptId = UUID.randomUUID();
+        OffsetDateTime now = OffsetDateTime.now();
+        runRepository.insertAttempt(
+                new NewAttempt(
+                        retryAttemptId,
+                        ORG_ID,
+                        run.runId(),
+                        run.rootTaskId(),
+                        null,
+                        2,
+                        "PENDING",
+                        "retry-checkpoint-" + retryAttemptId,
+                        now,
+                        now));
+
+        assertThat(sandboxLeaseRepository.findLatestCheckpointBeforeAttempt(retryAttemptId, ORG_ID))
+                .hasValueSatisfying(
+                        checkpoint -> {
+                            assertThat(checkpoint.attemptId()).isEqualTo(run.rootAttemptId());
+                            assertThat(checkpoint.workspaceSnapshotUri())
+                                    .isEqualTo("catalog://attempt/first");
+                            assertThat(checkpoint.workspaceVersion()).isEqualTo("sha256:first");
+                        });
+    }
+
+    @Test
+    void deletingAgentDetachesMessageRunReferencesBeforeRemovingAggregate() {
+        UUID agentId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        seedAgentAndSession(agentId, sessionId);
+        TenantContext tenant = tenant();
+        var trigger =
+                chatPersistence.saveUserMessage(
+                        tenant, sessionId, agentId, "Delete agent with durable history");
+        var run =
+                runs.createDirectRun(
+                        tenant, agentId, sessionId, trigger.getId(), "Delete referenced Run");
+        chatPersistence.saveAssistantMessageForRun(
+                tenant,
+                sessionId,
+                agentId,
+                run.runId(),
+                List.of(TextBlock.builder().text("Referenced output").build()));
+
+        chatPersistence.deleteAgentCascade(
+                agentRepository.findByIdAndOrgId(agentId, ORG_ID).orElseThrow());
+
+        assertThat(agentRepository.findByIdAndOrgId(agentId, ORG_ID)).isEmpty();
+        assertThat(runRepository.findOwnedRun(run.runId(), ORG_ID, USER_ID, agentId)).isEmpty();
     }
 
     @Test

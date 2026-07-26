@@ -19,6 +19,8 @@ public interface RunArtifactRepository {
 
     List<RunArtifact> findByRunId(UUID runId, UUID orgId);
 
+    List<RunArtifact> findByAttemptId(UUID attemptId, UUID orgId);
+
     record NewRunArtifact(
             UUID id,
             UUID orgId,
@@ -27,6 +29,7 @@ public interface RunArtifactRepository {
             UUID attemptId,
             UUID fileId,
             UUID fileVersionId,
+            String logicalPath,
             String artifactType,
             String evidenceJson,
             OffsetDateTime createdAt) {}
@@ -39,6 +42,7 @@ public interface RunArtifactRepository {
             UUID attemptId,
             UUID fileId,
             UUID fileVersionId,
+            String logicalPath,
             String artifactType,
             String evidenceJson,
             OffsetDateTime createdAt) {}

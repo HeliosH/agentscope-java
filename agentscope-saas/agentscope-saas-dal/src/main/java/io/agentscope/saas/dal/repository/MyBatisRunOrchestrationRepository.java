@@ -82,6 +82,17 @@ public class MyBatisRunOrchestrationRepository implements RunOrchestrationReposi
     }
 
     @Override
+    public void detachMessageReferencesForSession(UUID sessionId, UUID orgId) {
+        mapper.clearTriggerMessageReferences(sessionId, orgId);
+        mapper.clearSourceRunReferences(sessionId, orgId);
+    }
+
+    @Override
+    public void deleteBySessionId(UUID sessionId, UUID orgId) {
+        mapper.deleteBySessionId(sessionId, orgId);
+    }
+
+    @Override
     public List<TaskNode> findTasks(UUID runId, UUID orgId) {
         return mapper.findTasks(runId, orgId);
     }

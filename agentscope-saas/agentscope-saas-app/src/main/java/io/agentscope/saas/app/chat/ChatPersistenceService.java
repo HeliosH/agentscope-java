@@ -23,6 +23,7 @@ import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.domain.model.AgentEntity;
 import io.agentscope.saas.domain.model.ChatMessageEntity;
 import io.agentscope.saas.domain.model.ChatSessionEntity;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository;
 import io.agentscope.saas.domain.repository.AgentRepository;
 import io.agentscope.saas.domain.repository.ChatMessageRepository;
 import io.agentscope.saas.domain.repository.ChatSessionRepository;
@@ -47,16 +48,19 @@ public class ChatPersistenceService {
     private final AgentRepository agentRepository;
     private final ChatSessionRepository sessionRepository;
     private final ChatMessageRepository messageRepository;
+    private final RunOrchestrationRepository runRepository;
     private final ObjectMapper objectMapper;
 
     public ChatPersistenceService(
             AgentRepository agentRepository,
             ChatSessionRepository sessionRepository,
             ChatMessageRepository messageRepository,
+            RunOrchestrationRepository runRepository,
             ObjectMapper objectMapper) {
         this.agentRepository = agentRepository;
         this.sessionRepository = sessionRepository;
         this.messageRepository = messageRepository;
+        this.runRepository = runRepository;
         this.objectMapper = objectMapper;
     }
 
@@ -219,11 +223,13 @@ public class ChatPersistenceService {
      */
     @Transactional
     public void resetSession(UUID sessionId) {
-        messageRepository.deleteBySessionId(sessionId);
         sessionRepository
                 .findById(sessionId)
                 .ifPresent(
                         s -> {
+                            runRepository.detachMessageReferencesForSession(
+                                    sessionId, s.getOrgId());
+                            messageRepository.deleteBySessionId(sessionId);
                             s.setMessageCount(0);
                             s.setLastMessage(null);
                             s.setUnread(false);
@@ -238,16 +244,24 @@ public class ChatPersistenceService {
      */
     @Transactional
     public void deleteSession(UUID sessionId) {
-        messageRepository.deleteBySessionId(sessionId);
-        sessionRepository.deleteById(sessionId);
+        sessionRepository
+                .findById(sessionId)
+                .ifPresent(
+                        session -> {
+                            runRepository.detachMessageReferencesForSession(
+                                    sessionId, session.getOrgId());
+                            messageRepository.deleteBySessionId(sessionId);
+                            runRepository.deleteBySessionId(sessionId, session.getOrgId());
+                            sessionRepository.delete(session);
+                        });
     }
 
     /**
-     * Cascades an agent's deletion to its sessions and messages, then deletes the agent itself. All
-     * writes run in one transaction so the per-session {@code deleteBySessionId} derived queries
-     * succeed on boundedElastic. The per-user workspace is intentionally NOT touched (shared across
-     * the user's agents). The caller is responsible for the org/owner authorization check on the
-     * agent; this method trusts the entity it is handed.
+     * Cascades an agent's deletion to its Run aggregates, sessions and messages, then deletes the
+     * agent itself. Message references are detached before removing either side of the Run/message
+     * relationship. The per-user workspace is intentionally NOT touched (shared across the user's
+     * agents). The caller is responsible for the org/owner authorization check on the agent; this
+     * method trusts the entity it is handed.
      */
     @Transactional
     public void deleteAgentCascade(AgentEntity agent) {
@@ -255,9 +269,12 @@ public class ChatPersistenceService {
                 .findByOrgIdAndUserIdAndAgentIdOrderByUpdatedAtDesc(
                         agent.getOrgId(), agent.getUserId(), agent.getId())
                 .forEach(
-                        s -> {
-                            messageRepository.deleteBySessionId(s.getId());
-                            sessionRepository.delete(s);
+                        session -> {
+                            runRepository.detachMessageReferencesForSession(
+                                    session.getId(), agent.getOrgId());
+                            messageRepository.deleteBySessionId(session.getId());
+                            runRepository.deleteBySessionId(session.getId(), agent.getOrgId());
+                            sessionRepository.delete(session);
                         });
         agentRepository.delete(agent);
     }

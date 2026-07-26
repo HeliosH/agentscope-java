@@ -23,8 +23,13 @@ import io.agentscope.harness.agent.sandbox.SandboxAcquireResult;
 import io.agentscope.harness.agent.sandbox.SandboxContext;
 import io.agentscope.harness.agent.sandbox.SandboxLifecycleObserver;
 import io.agentscope.harness.agent.sandbox.SandboxManager;
+import io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -53,6 +58,9 @@ import org.slf4j.LoggerFactory;
 public class SandboxLifecycleMiddleware implements MiddlewareBase {
 
     private static final Logger log = LoggerFactory.getLogger(SandboxLifecycleMiddleware.class);
+    private static final int RESTORE_MAX_FILES = 5_000;
+    private static final long RESTORE_MAX_FILE_BYTES = 4L * 1024L * 1024L;
+    private static final long RESTORE_MAX_TOTAL_BYTES = 64L * 1024L * 1024L;
 
     private final SandboxManager sandboxManager;
     private final SandboxBackedFilesystem filesystemProxy;
@@ -95,6 +103,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             Sandbox sandbox = result.getSandbox();
             try {
                 sandbox.start();
+                restoreWorkspace(ctx, sandbox);
                 long durationNanos = System.nanoTime() - acquireStartNanos;
                 ctx.put(Sandbox.class, sandbox);
                 ctx.put(SandboxCallState.class, new SandboxCallState(result));
@@ -125,6 +134,51 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             log.error("[sandbox-mw] Failed to acquire/start sandbox", e);
             throw new RuntimeException(e);
         }
+    }
+
+    private void restoreWorkspace(RuntimeContext ctx, Sandbox sandbox) throws Exception {
+        WorkspaceRestorePlan plan = ctx.get(WorkspaceRestorePlan.class);
+        if (plan == null || plan.files().isEmpty()) {
+            return;
+        }
+        if (plan.files().size() > RESTORE_MAX_FILES) {
+            throw new IllegalStateException(
+                    "Workspace checkpoint exceeds restore file limit " + RESTORE_MAX_FILES);
+        }
+        long totalBytes = 0L;
+        ByteArrayOutputStream archiveBytes = new ByteArrayOutputStream();
+        try (TarArchiveOutputStream archive = new TarArchiveOutputStream(archiveBytes)) {
+            archive.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
+            for (WorkspaceRestorePlan.WorkspaceFile file : plan.files()) {
+                if (file.size() > RESTORE_MAX_FILE_BYTES) {
+                    throw new IllegalStateException(
+                            "Workspace checkpoint file exceeds restore limit: " + file.path());
+                }
+                totalBytes = Math.addExact(totalBytes, file.size());
+                if (totalBytes > RESTORE_MAX_TOTAL_BYTES) {
+                    throw new IllegalStateException(
+                            "Workspace checkpoint exceeds restore byte limit "
+                                    + RESTORE_MAX_TOTAL_BYTES);
+                }
+                byte[] content = file.content();
+                TarArchiveEntry entry = new TarArchiveEntry(file.path());
+                entry.setSize(content.length);
+                entry.setMode(0644);
+                archive.putArchiveEntry(entry);
+                archive.write(content);
+                archive.closeArchiveEntry();
+            }
+            archive.finish();
+        }
+        try (ByteArrayInputStream input = new ByteArrayInputStream(archiveBytes.toByteArray())) {
+            sandbox.hydrateWorkspace(input);
+        }
+        log.info(
+                "[sandbox-mw] Restored workspace checkpoint {} version={} files={} bytes={}",
+                plan.checkpointUri(),
+                plan.workspaceVersion(),
+                plan.files().size(),
+                totalBytes);
     }
 
     /**

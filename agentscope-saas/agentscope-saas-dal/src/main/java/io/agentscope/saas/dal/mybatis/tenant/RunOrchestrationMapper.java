@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.UUID;
 import org.apache.ibatis.annotations.Arg;
 import org.apache.ibatis.annotations.ConstructorArgs;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -199,6 +200,39 @@ public interface RunOrchestrationMapper {
             @Param("runId") UUID runId,
             @Param("orgId") UUID orgId,
             @Param("updatedAt") OffsetDateTime updatedAt);
+
+    @Update(
+            """
+            UPDATE assistant_runs
+               SET trigger_message_id = NULL
+             WHERE session_id = #{sessionId}
+               AND org_id = #{orgId}
+               AND trigger_message_id IS NOT NULL
+            """)
+    int clearTriggerMessageReferences(
+            @Param("sessionId") UUID sessionId, @Param("orgId") UUID orgId);
+
+    @Update(
+            """
+            UPDATE chat_messages
+               SET source_run_id = NULL
+             WHERE org_id = #{orgId}
+               AND source_run_id IN (
+                   SELECT id
+                     FROM assistant_runs
+                    WHERE session_id = #{sessionId}
+                      AND org_id = #{orgId}
+               )
+            """)
+    int clearSourceRunReferences(@Param("sessionId") UUID sessionId, @Param("orgId") UUID orgId);
+
+    @Delete(
+            """
+            DELETE FROM assistant_runs
+             WHERE session_id = #{sessionId}
+               AND org_id = #{orgId}
+            """)
+    int deleteBySessionId(@Param("sessionId") UUID sessionId, @Param("orgId") UUID orgId);
 
     @Select(
             """

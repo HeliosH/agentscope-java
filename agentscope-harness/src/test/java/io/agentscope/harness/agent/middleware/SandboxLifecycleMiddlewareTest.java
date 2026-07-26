@@ -38,17 +38,46 @@ import io.agentscope.harness.agent.sandbox.SandboxLifecycleObserver;
 import io.agentscope.harness.agent.sandbox.SandboxManager;
 import io.agentscope.harness.agent.sandbox.SandboxState;
 import io.agentscope.harness.agent.sandbox.SessionSandboxStateStore;
+import io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan;
+import io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan.WorkspaceFile;
 import io.agentscope.harness.agent.sandbox.WorkspaceSpec;
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.junit.jupiter.api.Test;
 
 class SandboxLifecycleMiddlewareTest {
+
+    @Test
+    void hydratesPreparedCheckpointAfterStartAndBeforeCallBecomesVisible() throws Exception {
+        RecordingSandbox sandbox = new RecordingSandbox("restore");
+        SandboxLifecycleMiddleware middleware =
+                new SandboxLifecycleMiddleware(
+                        new RecordingSandboxManager(sandbox), new SandboxBackedFilesystem());
+        RuntimeContext ctx = RuntimeContext.empty();
+        ctx.put(SandboxContext.class, SandboxContext.builder().build());
+        ctx.put(
+                WorkspaceRestorePlan.class,
+                new WorkspaceRestorePlan(
+                        "workspace-catalog://attempt/previous",
+                        "version-1",
+                        List.of(
+                                new WorkspaceFile(
+                                        "/generated/report.txt",
+                                        "restored".getBytes(StandardCharsets.UTF_8)))));
+
+        middleware.acquireForCall(ctx);
+
+        assertSame(sandbox, ctx.get(Sandbox.class));
+        assertEquals("restored", restoredFile(sandbox.hydratedArchive, "generated/report.txt"));
+    }
 
     @Test
     void releaseUsesCallScopedAcquireResultUnderInterleavedCalls() {
@@ -277,6 +306,7 @@ class SandboxLifecycleMiddlewareTest {
         private boolean failStart;
         private boolean failStop;
         private boolean failShutdown;
+        private byte[] hydratedArchive;
 
         private RecordingSandbox(String sessionId) {
             state.setSessionId(sessionId);
@@ -331,7 +361,23 @@ class SandboxLifecycleMiddlewareTest {
         }
 
         @Override
-        public void hydrateWorkspace(InputStream archive) {}
+        public void hydrateWorkspace(InputStream archive) throws Exception {
+            hydratedArchive = archive.readAllBytes();
+        }
+    }
+
+    private static String restoredFile(byte[] archive, String path) throws Exception {
+        try (TarArchiveInputStream tar =
+                new TarArchiveInputStream(new ByteArrayInputStream(archive))) {
+            while (tar.getNextTarEntry() != null) {
+                if (path.equals(tar.getCurrentEntry().getName())) {
+                    ByteArrayOutputStream content = new ByteArrayOutputStream();
+                    tar.transferTo(content);
+                    return content.toString(StandardCharsets.UTF_8);
+                }
+            }
+        }
+        return null;
     }
 
     private static class NoopSandboxClient implements SandboxClient<SandboxClientOptions> {

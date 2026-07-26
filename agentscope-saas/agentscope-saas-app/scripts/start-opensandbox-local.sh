@@ -30,6 +30,7 @@ MAVEN_PREPARE_ARGS=(
 )
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-90}"
 DOCKER_START_TIMEOUT_SECONDS="${DOCKER_START_TIMEOUT_SECONDS:-120}"
+APP_PID=""
 
 PG_CONTAINER="${PG_CONTAINER:-saas-pg}"
 REDIS_CONTAINER="${REDIS_CONTAINER:-saas-redis}"
@@ -271,11 +272,10 @@ run_app_foreground() {
 }
 
 run_smoke_mode() {
-  local app_pid=""
   cleanup() {
-    if [ -n "$app_pid" ] && kill -0 "$app_pid" >/dev/null 2>&1; then
-      kill "$app_pid" >/dev/null 2>&1 || true
-      wait "$app_pid" >/dev/null 2>&1 || true
+    if [ -n "$APP_PID" ] && kill -0 "$APP_PID" >/dev/null 2>&1; then
+      kill "$APP_PID" >/dev/null 2>&1 || true
+      wait "$APP_PID" >/dev/null 2>&1 || true
     fi
   }
   trap cleanup EXIT
@@ -288,7 +288,7 @@ run_smoke_mode() {
   else
     mvn -pl "$APP_MODULE" spring-boot:run &
   fi
-  app_pid="$!"
+  APP_PID="$!"
   wait_http "$BASE_URL/actuator/health" "SaaS app"
 
   BASE="$BASE_URL" \

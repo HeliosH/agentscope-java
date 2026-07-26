@@ -19,6 +19,7 @@ import io.agentscope.core.message.MsgRole;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.filesystem.remote.store.BaseStore;
 import io.agentscope.harness.agent.sandbox.SandboxIsolationOverride;
+import io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan;
 import io.agentscope.saas.app.chat.ChatPersistenceService;
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.config.TenantRlsWebFilter;
@@ -46,6 +47,7 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
     private final ChatPersistenceService chatPersistence;
     private final RunOrchestrationService orchestration;
     private final WorkspaceArtifactService workspaceArtifactService;
+    private final WorkspaceCheckpointRestoreService workspaceRestoreService;
     private final boolean workspaceProjectionAvailable;
 
     public HarnessDurableTaskExecutor(
@@ -55,6 +57,7 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
             ChatPersistenceService chatPersistence,
             RunOrchestrationService orchestration,
             WorkspaceArtifactService workspaceArtifactService,
+            WorkspaceCheckpointRestoreService workspaceRestoreService,
             Optional<BaseStore> workspaceStore) {
         this.agent = agent;
         this.objectMapper = objectMapper;
@@ -62,6 +65,7 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
         this.chatPersistence = chatPersistence;
         this.orchestration = orchestration;
         this.workspaceArtifactService = workspaceArtifactService;
+        this.workspaceRestoreService = workspaceRestoreService;
         this.workspaceProjectionAvailable = workspaceStore.isPresent();
     }
 
@@ -120,6 +124,15 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
                         : null;
         if (workspaceCheckpoint != null) {
             contextBuilder.put(WorkspaceCheckpointContext.class, workspaceCheckpoint);
+            workspaceRestoreService
+                    .prepare(
+                            tenant,
+                            request.orgId(),
+                            request.attemptId(),
+                            request.workspaceIsolationMode())
+                    .ifPresent(
+                            restorePlan ->
+                                    contextBuilder.put(WorkspaceRestorePlan.class, restorePlan));
         }
         applyWorkspaceIsolation(contextBuilder, request);
         RuntimeContext context = contextBuilder.build();
@@ -131,18 +144,16 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
                         .build();
         long timeout =
                 Math.max(1L, properties.getOrchestration().getWorkerExecutionTimeoutSeconds());
-        Msg result = executeAgent(request, input, context, timeout);
+        Msg result;
+        try {
+            result = executeAgent(request, input, context, timeout);
+        } catch (RuntimeException | Error executionError) {
+            publishCheckpoint(request, context, workspaceCheckpoint, executionError);
+            throw executionError;
+        }
+        publishCheckpoint(request, context, workspaceCheckpoint, null);
         if (result == null) {
             throw new IllegalStateException("HarnessAgent completed without a result message");
-        }
-        if (workspaceCheckpoint != null) {
-            workspaceArtifactService.publish(
-                    request.orgId(),
-                    request.runId(),
-                    request.taskId(),
-                    request.attemptId(),
-                    context.get(io.agentscope.saas.sandbox.SandboxLeaseContext.class),
-                    workspaceCheckpoint);
         }
         if (isContinuation(request) && !orchestration.hasUnsettledChildren(request.runId())) {
             chatPersistence.saveAssistantMessageForRun(
@@ -155,6 +166,30 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
         return new ExecutionResult(
                 objectMapper.writeValueAsString(
                         Map.of("status", "succeeded", "summary", result.getTextContent())));
+    }
+
+    private void publishCheckpoint(
+            ExecutionRequest request,
+            RuntimeContext context,
+            WorkspaceCheckpointContext checkpoint,
+            Throwable executionError) {
+        if (checkpoint == null) {
+            return;
+        }
+        try {
+            workspaceArtifactService.publish(
+                    request.orgId(),
+                    request.runId(),
+                    request.taskId(),
+                    request.attemptId(),
+                    context.get(io.agentscope.saas.sandbox.SandboxLeaseContext.class),
+                    checkpoint);
+        } catch (RuntimeException checkpointError) {
+            if (executionError != null) {
+                checkpointError.addSuppressed(executionError);
+            }
+            throw checkpointError;
+        }
     }
 
     private Msg executeAgent(

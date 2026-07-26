@@ -40,6 +40,10 @@ public interface RunOrchestrationRepository {
 
     void reopenRun(UUID runId, UUID orgId, OffsetDateTime updatedAt);
 
+    void detachMessageReferencesForSession(UUID sessionId, UUID orgId);
+
+    void deleteBySessionId(UUID sessionId, UUID orgId);
+
     List<TaskNode> findTasks(UUID runId, UUID orgId);
 
     Optional<TaskNode> findTask(UUID taskId, UUID runId, UUID orgId);

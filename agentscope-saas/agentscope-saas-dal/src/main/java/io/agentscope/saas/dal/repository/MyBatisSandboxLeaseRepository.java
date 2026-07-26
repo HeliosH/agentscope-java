@@ -41,6 +41,11 @@ public class MyBatisSandboxLeaseRepository implements SandboxLeaseRepository {
     }
 
     @Override
+    public Optional<SandboxLease> findLatestCheckpointBeforeAttempt(UUID attemptId, UUID orgId) {
+        return one(mapper.findLatestCheckpointBeforeAttempt(attemptId, orgId));
+    }
+
+    @Override
     public int activate(
             UUID leaseId,
             UUID orgId,

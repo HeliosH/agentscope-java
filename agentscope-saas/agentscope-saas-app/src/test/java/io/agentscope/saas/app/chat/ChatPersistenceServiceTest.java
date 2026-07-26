@@ -17,6 +17,7 @@ package io.agentscope.saas.app.chat;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -24,8 +25,10 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.domain.model.AgentEntity;
 import io.agentscope.saas.domain.model.ChatMessageEntity;
 import io.agentscope.saas.domain.model.ChatSessionEntity;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository;
 import io.agentscope.saas.domain.repository.AgentRepository;
 import io.agentscope.saas.domain.repository.ChatMessageRepository;
 import io.agentscope.saas.domain.repository.ChatSessionRepository;
@@ -38,9 +41,14 @@ class ChatPersistenceServiceTest {
     private final AgentRepository agentRepository = mock(AgentRepository.class);
     private final ChatSessionRepository sessionRepository = mock(ChatSessionRepository.class);
     private final ChatMessageRepository messageRepository = mock(ChatMessageRepository.class);
+    private final RunOrchestrationRepository runRepository = mock(RunOrchestrationRepository.class);
     private final ChatPersistenceService service =
             new ChatPersistenceService(
-                    agentRepository, sessionRepository, messageRepository, new ObjectMapper());
+                    agentRepository,
+                    sessionRepository,
+                    messageRepository,
+                    runRepository,
+                    new ObjectMapper());
 
     @Test
     void assignsSessionScopedMonotonicSeq() {
@@ -66,6 +74,32 @@ class ChatPersistenceServiceTest {
         assertThat(first.getSeq()).isEqualTo(1L);
         assertThat(second.getSeq()).isEqualTo(2L);
         verify(sessionRepository, times(2)).lockById(sessionId);
+    }
+
+    @Test
+    void deletesRunAggregateBeforeSessionAndAgent() {
+        UUID orgId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID agentId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        AgentEntity agent = new AgentEntity();
+        agent.setId(agentId);
+        agent.setOrgId(orgId);
+        agent.setUserId(userId);
+        ChatSessionEntity session = new ChatSessionEntity();
+        session.setId(sessionId);
+        when(sessionRepository.findByOrgIdAndUserIdAndAgentIdOrderByUpdatedAtDesc(
+                        orgId, userId, agentId))
+                .thenReturn(java.util.List.of(session));
+
+        service.deleteAgentCascade(agent);
+
+        var order = inOrder(runRepository, messageRepository, sessionRepository, agentRepository);
+        order.verify(runRepository).detachMessageReferencesForSession(sessionId, orgId);
+        order.verify(messageRepository).deleteBySessionId(sessionId);
+        order.verify(runRepository).deleteBySessionId(sessionId, orgId);
+        order.verify(sessionRepository).delete(session);
+        order.verify(agentRepository).delete(agent);
     }
 
     private static TenantContext tenant(UUID orgId, UUID userId) {

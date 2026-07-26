@@ -40,6 +40,13 @@ public class MyBatisRunArtifactRepository implements RunArtifactRepository {
                 .toList();
     }
 
+    @Override
+    public List<RunArtifact> findByAttemptId(UUID attemptId, UUID orgId) {
+        return mapper.findByAttemptId(attemptId, orgId).stream()
+                .map(MyBatisRunArtifactRepository::toDomain)
+                .toList();
+    }
+
     private static RunArtifact toDomain(RunArtifactData row) {
         return new RunArtifact(
                 row.id(),
@@ -49,6 +56,7 @@ public class MyBatisRunArtifactRepository implements RunArtifactRepository {
                 row.attemptId(),
                 row.fileId(),
                 row.fileVersionId(),
+                row.logicalPath(),
                 row.artifactType(),
                 row.evidenceJson(),
                 row.createdAt());

@@ -16,10 +16,8 @@ import io.agentscope.saas.domain.orchestration.RunArtifactRepository.RunArtifact
 import io.agentscope.saas.sandbox.SandboxLeaseContext;
 import io.agentscope.saas.sandbox.SandboxLeaseService;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.OffsetDateTime;
 import java.util.Comparator;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -74,6 +72,7 @@ public class WorkspaceArtifactService {
                                     attemptId,
                                     file.fileId(),
                                     file.versionId(),
+                                    file.logicalPath(),
                                     ARTIFACT_TYPE_WORKSPACE_FILE,
                                     evidence(file, checkpoint),
                                     now));
@@ -83,7 +82,16 @@ public class WorkspaceArtifactService {
             }
         }
 
-        String version = manifestVersion(files);
+        String version =
+                WorkspaceManifestVersion.compute(
+                        files.stream()
+                                .map(
+                                        file ->
+                                                new WorkspaceManifestVersion.Entry(
+                                                        file.logicalPath(),
+                                                        file.versionId(),
+                                                        file.sha256()))
+                                .toList());
         String uri = "workspace-catalog://runs/" + runId + "/attempts/" + attemptId;
         if (lease != null && !sandboxLeaseService.checkpoint(lease, uri, version)) {
             throw new IllegalStateException(
@@ -128,23 +136,6 @@ public class WorkspaceArtifactService {
                         .getBytes(StandardCharsets.UTF_8));
     }
 
-    private static String manifestVersion(List<FileRecord> files) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            for (FileRecord file : files) {
-                digest.update(file.logicalPath().getBytes(StandardCharsets.UTF_8));
-                digest.update((byte) 0);
-                digest.update(file.versionId().toString().getBytes(StandardCharsets.UTF_8));
-                digest.update((byte) 0);
-                digest.update(file.sha256().getBytes(StandardCharsets.UTF_8));
-                digest.update((byte) '\n');
-            }
-            return HexFormat.of().formatHex(digest.digest());
-        } catch (Exception e) {
-            throw new IllegalStateException("SHA-256 is unavailable", e);
-        }
-    }
-
     private static ArtifactView toView(RunArtifact artifact) {
         return new ArtifactView(
                 artifact.id(),
@@ -152,6 +143,7 @@ public class WorkspaceArtifactService {
                 artifact.attemptId(),
                 artifact.fileId(),
                 artifact.fileVersionId(),
+                artifact.logicalPath(),
                 artifact.artifactType(),
                 artifact.evidenceJson(),
                 artifact.createdAt());
@@ -165,6 +157,7 @@ public class WorkspaceArtifactService {
             UUID attemptId,
             UUID fileId,
             UUID fileVersionId,
+            String logicalPath,
             String artifactType,
             String evidenceJson,
             OffsetDateTime createdAt) {}

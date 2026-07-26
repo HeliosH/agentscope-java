@@ -222,6 +222,7 @@ class SaasChatOrchestrationIntegrationTest {
                                             ids.attemptId(),
                                             null,
                                             null,
+                                            "generated/report.txt",
                                             "WORKSPACE_FILE",
                                             "{\"logicalPath\":\"/generated/report.txt\"}",
                                             OffsetDateTime.now())))

@@ -723,8 +723,14 @@ saas:
 - 已将 Provider 无关的 `workspace-catalog://` 检查点 URI 和 SHA-256 清单版本回填至
   `sandbox_leases`，并提供租户授权保护的 Run Artifact 查询 API，沙箱释放后仍可按
   `file_version_id` 读取产物；
-- 待完成 Provider 连接健康检查、从上一 Attempt 的目录检查点 hydrate 新工作区，以及
-  `sandbox_leases` 跨租户 reconciliation。
+- 已支持成功或失败的 Durable Attempt 在沙箱释放后发布目录检查点；新的隔离 Attempt
+  按任务和 Attempt 序号选择最近前序检查点，从 PG 中读取 Artifact 与不可变文件版本关系，
+  并在模型执行前通过统一 Sandbox SPI hydrate 新工作区；
+- 恢复时重新校验文件内容 SHA-256、完整清单版本、逻辑路径和重复路径；文件缺失、内容损坏、
+  清单不一致或路径越界均失败关闭，不允许任务在不完整工作区上继续执行；
+- 恢复流程不依赖 Docker、E2B、CubeSandbox 或 OpenSandbox 的私有状态，Provider 仅实现
+  标准工作区 hydrate 能力，部署切换不会改变任务恢复语义；
+- 待完成 Provider 连接健康检查和 `sandbox_leases` 跨租户 reconciliation。
 
 ### Phase 4：计划、验证和前端，8-10 个工作日
 

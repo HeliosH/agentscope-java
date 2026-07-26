@@ -66,6 +66,7 @@ class WorkspaceArtifactServiceTest {
         verify(repository).insert(artifact.capture());
         assertThat(artifact.getValue().attemptId()).isEqualTo(attemptId);
         assertThat(artifact.getValue().fileVersionId()).isEqualTo(file.versionId());
+        assertThat(artifact.getValue().logicalPath()).isEqualTo(file.logicalPath());
         assertThat(artifact.getValue().evidenceJson())
                 .contains("\"logicalPath\":\"/generated/report.txt\"")
                 .contains("\"sandboxStopped\":true");

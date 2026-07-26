@@ -23,10 +23,10 @@ public interface RunArtifactMapper {
             """
             INSERT INTO run_artifacts
                 (id, org_id, run_id, task_id, attempt_id, file_id, file_version_id,
-                 artifact_type, evidence_json, created_at)
+                 logical_path, artifact_type, evidence_json, created_at)
             VALUES
                 (#{id}, #{orgId}, #{runId}, #{taskId}, #{attemptId}, #{fileId}, #{fileVersionId},
-                 #{artifactType},
+                 #{logicalPath}, #{artifactType},
                  #{evidenceJson,typeHandler=io.agentscope.saas.dal.mybatis.type.JsonTypeHandler},
                  #{createdAt})
             """)
@@ -35,11 +35,23 @@ public interface RunArtifactMapper {
     @Select(
             """
             SELECT id, org_id, run_id, task_id, attempt_id, file_id, file_version_id,
-                   artifact_type, evidence_json, created_at
+                   logical_path, artifact_type, evidence_json, created_at
               FROM run_artifacts
              WHERE run_id = #{runId}
                AND org_id = #{orgId}
              ORDER BY created_at, id
             """)
     List<RunArtifactData> findByRunId(@Param("runId") UUID runId, @Param("orgId") UUID orgId);
+
+    @Select(
+            """
+            SELECT id, org_id, run_id, task_id, attempt_id, file_id, file_version_id,
+                   logical_path, artifact_type, evidence_json, created_at
+              FROM run_artifacts
+             WHERE attempt_id = #{attemptId}
+               AND org_id = #{orgId}
+             ORDER BY logical_path, created_at, id
+            """)
+    List<RunArtifactData> findByAttemptId(
+            @Param("attemptId") UUID attemptId, @Param("orgId") UUID orgId);
 }

@@ -18,6 +18,7 @@ public record RunArtifactData(
         UUID attemptId,
         UUID fileId,
         UUID fileVersionId,
+        String logicalPath,
         String artifactType,
         String evidenceJson,
         OffsetDateTime createdAt) {}

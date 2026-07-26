@@ -55,6 +55,30 @@ public interface SandboxLeaseMapper {
     List<SandboxLeaseData> findByAttemptId(
             @Param("attemptId") UUID attemptId, @Param("orgId") UUID orgId);
 
+    @Select(
+            """
+            SELECT sl.id, sl.org_id, sl.user_id, sl.run_id, sl.task_id, sl.attempt_id,
+                   sl.provider_id, sl.provider_sandbox_id, sl.provider_state_json,
+                   sl.image_or_template, sl.capabilities_json, sl.workspace_snapshot_uri,
+                   sl.workspace_version, sl.status, sl.lease_owner, sl.lease_expires_at,
+                   sl.last_heartbeat_at, sl.created_at, sl.released_at, sl.release_error
+              FROM sandbox_leases sl
+              JOIN run_attempts previous_attempt ON previous_attempt.id = sl.attempt_id
+              JOIN run_attempts current_attempt
+                ON current_attempt.id = #{attemptId}
+               AND current_attempt.org_id = #{orgId}
+             WHERE sl.org_id = #{orgId}
+               AND previous_attempt.org_id = #{orgId}
+               AND previous_attempt.task_id = current_attempt.task_id
+               AND previous_attempt.attempt_no < current_attempt.attempt_no
+               AND sl.workspace_snapshot_uri IS NOT NULL
+               AND sl.workspace_version IS NOT NULL
+             ORDER BY previous_attempt.attempt_no DESC, sl.created_at DESC
+             LIMIT 1
+            """)
+    List<SandboxLeaseData> findLatestCheckpointBeforeAttempt(
+            @Param("attemptId") UUID attemptId, @Param("orgId") UUID orgId);
+
     @Update(
             """
             UPDATE sandbox_leases
