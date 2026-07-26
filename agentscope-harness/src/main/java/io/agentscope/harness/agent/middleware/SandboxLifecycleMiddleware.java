@@ -162,7 +162,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             log.warn("[sandbox-mw] Failed to persist sandbox state: {}", e.getMessage(), e);
         }
         try {
-            sandboxManager.release(result);
+            sandboxManager.release(result, ctx);
         } catch (Exception e) {
             notifyObserver(obs -> obs.onBackendReleaseFailed(ctx, e));
             log.warn("[sandbox-mw] Failed to release sandbox session: {}", e.getMessage(), e);

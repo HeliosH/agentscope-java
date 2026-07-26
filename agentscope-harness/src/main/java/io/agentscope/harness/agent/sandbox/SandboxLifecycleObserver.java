@@ -36,7 +36,11 @@ public interface SandboxLifecycleObserver {
 
     default void onWorkspaceProjectionFailed(RuntimeContext runtimeContext, Exception error) {}
 
+    default void onStatePersistSucceeded(RuntimeContext runtimeContext) {}
+
     default void onStatePersistFailed(RuntimeContext runtimeContext, Exception error) {}
+
+    default void onSandboxStopSucceeded(RuntimeContext runtimeContext) {}
 
     default void onSandboxStopFailed(RuntimeContext runtimeContext, Exception error) {}
 

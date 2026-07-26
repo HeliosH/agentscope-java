@@ -18,6 +18,7 @@ package io.agentscope.saas.app.config;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.sandbox.SandboxAcquireResult.AcquisitionSource;
 import io.agentscope.harness.agent.sandbox.SandboxLifecycleObserver;
+import io.agentscope.saas.app.workspace.WorkspaceCheckpointContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.sandbox.SandboxBroker;
 import io.agentscope.saas.sandbox.SandboxExternalIds;
@@ -79,6 +80,10 @@ final class MeteredSandboxLifecycleObserver implements SandboxLifecycleObserver 
 
     @Override
     public void onWorkspaceProjectionSucceeded(RuntimeContext runtimeContext, int projectedFiles) {
+        WorkspaceCheckpointContext checkpoint = checkpoint(runtimeContext);
+        if (checkpoint != null) {
+            checkpoint.projectionSucceeded(projectedFiles);
+        }
         if (projectedFiles > 0) {
             metrics.workspaceProjectionSucceeded(sandboxType);
         }
@@ -86,16 +91,44 @@ final class MeteredSandboxLifecycleObserver implements SandboxLifecycleObserver 
 
     @Override
     public void onWorkspaceProjectionFailed(RuntimeContext runtimeContext, Exception error) {
+        WorkspaceCheckpointContext checkpoint = checkpoint(runtimeContext);
+        if (checkpoint != null) {
+            checkpoint.failed("workspace_projection", error);
+        }
         metrics.workspaceProjectionFailed(sandboxType);
     }
 
     @Override
+    public void onStatePersistSucceeded(RuntimeContext runtimeContext) {
+        WorkspaceCheckpointContext checkpoint = checkpoint(runtimeContext);
+        if (checkpoint != null) {
+            checkpoint.statePersisted();
+        }
+    }
+
+    @Override
     public void onStatePersistFailed(RuntimeContext runtimeContext, Exception error) {
+        WorkspaceCheckpointContext checkpoint = checkpoint(runtimeContext);
+        if (checkpoint != null) {
+            checkpoint.failed("sandbox_state_persist", error);
+        }
         metrics.statePersistFailed(sandboxType);
     }
 
     @Override
+    public void onSandboxStopSucceeded(RuntimeContext runtimeContext) {
+        WorkspaceCheckpointContext checkpoint = checkpoint(runtimeContext);
+        if (checkpoint != null) {
+            checkpoint.sandboxStopped();
+        }
+    }
+
+    @Override
     public void onSandboxStopFailed(RuntimeContext runtimeContext, Exception error) {
+        WorkspaceCheckpointContext checkpoint = checkpoint(runtimeContext);
+        if (checkpoint != null) {
+            checkpoint.failed("sandbox_stop", error);
+        }
         metrics.sandboxStopFailed(sandboxType);
     }
 
@@ -163,6 +196,14 @@ final class MeteredSandboxLifecycleObserver implements SandboxLifecycleObserver 
         if (lease != null) {
             withTenant(lease, () -> leaseService.provisioningFailed(lease, error));
         }
+    }
+
+    private static WorkspaceCheckpointContext checkpoint(RuntimeContext runtimeContext) {
+        WorkspaceCheckpointContext checkpoint =
+                runtimeContext != null
+                        ? runtimeContext.get(WorkspaceCheckpointContext.class)
+                        : null;
+        return checkpoint;
     }
 
     private void withTenant(SandboxLeaseContext lease, LeaseOperation operation) {

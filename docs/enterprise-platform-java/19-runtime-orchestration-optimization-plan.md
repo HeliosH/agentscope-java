@@ -1,7 +1,7 @@
 # 19. 企业智能助手运行框架优化落地方案
 
-> 状态：Phase 0-2 已完成；Phase 3 已完成编排沙箱租约、部署能力基线和 Attempt
-> 工作区隔离控制链路，checkpoint/Artifact 继续实施
+> 状态：Phase 0-2 已完成；Phase 3 已完成编排沙箱租约、部署能力基线、Attempt
+> 工作区隔离及 checkpoint/Artifact 发布链路，继续实施 checkpoint 恢复和资源对账
 >
 > 适用范围：`agentscope-saas` 企业智能助手运行时
 >
@@ -713,8 +713,18 @@ saas:
 - 已支持编排层按 Run/Attempt 生成显式隔离键并覆盖部署默认共享范围；并行子任务和重试
   Attempt 不再复用用户级工作区，交互式协调任务仍保留部署配置的默认范围；
 - `USER_SHARED_READ_ONLY` 在只读适配器完成前失败关闭，避免把只读语义降级为共享写；
-- 待完成 Provider 连接健康检查、checkpoint/Artifact 发布和 `sandbox_leases` 跨租户
-  reconciliation。
+- 已将沙箱释放投影写入统一 `files/file_versions` 目录，并通过 `run_artifacts` 关联
+  Run、Task、Attempt 和不可变文件版本；Artifact id 按 Attempt 和文件版本确定性生成，
+  Worker 重试不会重复发布同一产物；
+- 已实现 Durable Task 的 fail-closed 检查点收口：工作区投影、文件目录、状态保存或快照
+  停止失败时，不允许 Attempt 被误标成功；交互式调用仍保持原有 best-effort 清理语义；
+- Durable Task 启用沙箱时必须存在持久化 `BaseStore`；缺失投影存储时拒绝发布空
+  checkpoint，避免把未持久化工作区误判为可恢复状态；
+- 已将 Provider 无关的 `workspace-catalog://` 检查点 URI 和 SHA-256 清单版本回填至
+  `sandbox_leases`，并提供租户授权保护的 Run Artifact 查询 API，沙箱释放后仍可按
+  `file_version_id` 读取产物；
+- 待完成 Provider 连接健康检查、从上一 Attempt 的目录检查点 hydrate 新工作区，以及
+  `sandbox_leases` 跨租户 reconciliation。
 
 ### Phase 4：计划、验证和前端，8-10 个工作日
 

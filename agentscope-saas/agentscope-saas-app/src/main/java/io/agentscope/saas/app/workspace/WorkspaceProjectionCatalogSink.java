@@ -42,21 +42,52 @@ public class WorkspaceProjectionCatalogSink implements WorkspaceProjectionSink {
 
     @Override
     public void onProjectedFile(RuntimeContext runtimeContext, String path, byte[] content) {
+        WorkspaceCheckpointContext checkpoint =
+                runtimeContext != null
+                        ? runtimeContext.get(WorkspaceCheckpointContext.class)
+                        : null;
         TenantContext tenant = TenantContext.from(runtimeContext);
         if (tenant == null) {
+            if (checkpoint != null) {
+                checkpoint.failed(
+                        "workspace_catalog",
+                        new IllegalStateException("tenant context is unavailable"));
+            }
             return;
         }
         try {
-            fileCatalogService.recordWorkspaceFile(
-                    tenant,
-                    parseUuid(runtimeContext != null ? runtimeContext.get(ATTR_AGENT_ID) : null),
-                    parseUuid(runtimeContext != null ? runtimeContext.getSessionId() : null),
-                    path,
-                    content,
-                    MediaType.APPLICATION_OCTET_STREAM_VALUE,
-                    FileCatalogService.SOURCE_SANDBOX_PROJECTION,
-                    Map.of("source", "sandbox.release.projection"));
+            fileCatalogService
+                    .recordWorkspaceFile(
+                            tenant,
+                            parseUuid(
+                                    runtimeContext != null
+                                            ? runtimeContext.get(ATTR_AGENT_ID)
+                                            : null),
+                            parseUuid(
+                                    runtimeContext != null ? runtimeContext.getSessionId() : null),
+                            path,
+                            content,
+                            MediaType.APPLICATION_OCTET_STREAM_VALUE,
+                            FileCatalogService.SOURCE_SANDBOX_PROJECTION,
+                            Map.of("source", "sandbox.release.projection"))
+                    .ifPresentOrElse(
+                            record -> {
+                                if (checkpoint != null) {
+                                    checkpoint.recordFile(record);
+                                }
+                            },
+                            () -> {
+                                if (checkpoint != null) {
+                                    checkpoint.failed(
+                                            "workspace_catalog",
+                                            new IllegalStateException(
+                                                    "file object store is unavailable"));
+                                }
+                            });
         } catch (Exception e) {
+            if (checkpoint != null) {
+                checkpoint.failed("workspace_catalog", e);
+            }
             log.warn(
                     "Failed to catalog sandbox projected file {} for session {}: {}",
                     path,
@@ -67,13 +98,25 @@ public class WorkspaceProjectionCatalogSink implements WorkspaceProjectionSink {
 
     @Override
     public void onDeletedFile(RuntimeContext runtimeContext, String path) {
+        WorkspaceCheckpointContext checkpoint =
+                runtimeContext != null
+                        ? runtimeContext.get(WorkspaceCheckpointContext.class)
+                        : null;
         TenantContext tenant = TenantContext.from(runtimeContext);
         if (tenant == null) {
+            if (checkpoint != null) {
+                checkpoint.failed(
+                        "workspace_catalog_delete",
+                        new IllegalStateException("tenant context is unavailable"));
+            }
             return;
         }
         try {
             fileCatalogService.markDeleted(tenant, path);
         } catch (Exception e) {
+            if (checkpoint != null) {
+                checkpoint.failed("workspace_catalog_delete", e);
+            }
             log.warn("Failed to catalog sandbox projected delete {}: {}", path, e.getMessage());
         }
     }

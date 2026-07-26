@@ -95,6 +95,21 @@ public interface SandboxLeaseMapper {
     @Update(
             """
             UPDATE sandbox_leases
+               SET workspace_snapshot_uri = #{workspaceSnapshotUri},
+                   workspace_version = #{workspaceVersion}
+             WHERE id = #{leaseId}
+               AND org_id = #{orgId}
+               AND status IN ('PROVISIONING', 'ACTIVE', 'CHECKPOINTING', 'RELEASED')
+            """)
+    int checkpoint(
+            @Param("leaseId") UUID leaseId,
+            @Param("orgId") UUID orgId,
+            @Param("workspaceSnapshotUri") String workspaceSnapshotUri,
+            @Param("workspaceVersion") String workspaceVersion);
+
+    @Update(
+            """
+            UPDATE sandbox_leases
                SET status = 'RELEASED',
                    released_at = #{releasedAt},
                    lease_expires_at = #{releasedAt},

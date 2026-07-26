@@ -217,7 +217,7 @@ class SandboxLifecycleMiddlewareTest {
         }
 
         @Override
-        public void release(SandboxAcquireResult result) {
+        public void release(SandboxAcquireResult result, RuntimeContext runtimeContext) {
             released.add(result.getSandbox());
         }
     }

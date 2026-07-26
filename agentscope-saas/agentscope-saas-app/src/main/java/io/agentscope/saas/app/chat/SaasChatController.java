@@ -31,6 +31,7 @@ import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.degradation.DegradationManager;
 import io.agentscope.saas.app.observability.AgentRunMetrics;
+import io.agentscope.saas.app.orchestration.WorkspaceArtifactService;
 import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantResolver;
@@ -98,6 +99,7 @@ public class SaasChatController {
     private final DegradationManager degradationManager;
     private final AgentRunMetrics metrics;
     private final RunOrchestrationService orchestration;
+    private final WorkspaceArtifactService workspaceArtifactService;
     private final boolean orchestrationEnabled;
     private final String sandboxType;
     private final AguiEventEncoder encoder = new AguiEventEncoder();
@@ -111,6 +113,7 @@ public class SaasChatController {
             DegradationManager degradationManager,
             AgentRunMetrics metrics,
             RunOrchestrationService orchestration,
+            WorkspaceArtifactService workspaceArtifactService,
             SaasProperties properties) {
         this.agent = agent;
         this.tenantResolver = tenantResolver;
@@ -120,6 +123,7 @@ public class SaasChatController {
         this.degradationManager = degradationManager;
         this.metrics = metrics != null ? metrics : AgentRunMetrics.noop();
         this.orchestration = orchestration;
+        this.workspaceArtifactService = workspaceArtifactService;
         this.orchestrationEnabled =
                 properties != null
                         && properties.getOrchestration() != null
@@ -578,6 +582,28 @@ public class SaasChatController {
                                         request.runId(),
                                         afterSeq,
                                         limit));
+    }
+
+    @GetMapping("/api/agents/{agentId}/runs/{runId}/artifacts")
+    public Mono<List<WorkspaceArtifactService.ArtifactView>> getRunArtifacts(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String agentId,
+            @PathVariable String runId) {
+        return withRun(
+                        tenantResolver.resolve(jwt != null ? jwt.getClaims() : Map.of()),
+                        agentId,
+                        runId)
+                .map(
+                        request -> {
+                            orchestration
+                                    .getRun(request.tenant(), request.agentId(), request.runId())
+                                    .orElseThrow(
+                                            () ->
+                                                    new ResponseStatusException(
+                                                            HttpStatus.NOT_FOUND, "Run not found"));
+                            return workspaceArtifactService.list(
+                                    UUID.fromString(request.tenant().orgId()), request.runId());
+                        });
     }
 
     private Flux<ServerSentEvent<String>> degradationBlockedStream(

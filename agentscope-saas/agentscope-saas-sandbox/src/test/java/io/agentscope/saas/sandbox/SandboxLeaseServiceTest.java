@@ -24,6 +24,7 @@ class SandboxLeaseServiceTest {
         when(repository.insert(any())).thenReturn(1);
         when(repository.activate(any(), any(), any(), any(), any(), any())).thenReturn(1);
         when(repository.heartbeat(any(), any(), any(), any())).thenReturn(1);
+        when(repository.checkpoint(any(), any(), any(), any())).thenReturn(1);
         when(repository.release(any(), any(), any())).thenReturn(1);
         SandboxLeaseService service = new SandboxLeaseService(repository);
         UUID orgId = UUID.randomUUID();
@@ -47,10 +48,12 @@ class SandboxLeaseServiceTest {
 
         assertThat(service.activate(lease, "sandbox-1", "{}", expiresAt)).isTrue();
         assertThat(service.heartbeat(lease, expiresAt.plusSeconds(10))).isTrue();
+        assertThat(service.checkpoint(lease, "workspace-catalog://attempt/1", "v1")).isTrue();
         assertThat(service.release(lease)).isTrue();
         verify(repository).insert(any());
         verify(repository).activate(any(), any(), any(), any(), any(), any());
         verify(repository).heartbeat(any(), any(), any(), any());
+        verify(repository).checkpoint(any(), any(), any(), any());
         verify(repository).release(any(), any(), any());
     }
 

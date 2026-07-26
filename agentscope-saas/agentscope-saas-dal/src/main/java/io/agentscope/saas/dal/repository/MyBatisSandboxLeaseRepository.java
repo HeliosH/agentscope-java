@@ -59,6 +59,12 @@ public class MyBatisSandboxLeaseRepository implements SandboxLeaseRepository {
     }
 
     @Override
+    public int checkpoint(
+            UUID leaseId, UUID orgId, String workspaceSnapshotUri, String workspaceVersion) {
+        return mapper.checkpoint(leaseId, orgId, workspaceSnapshotUri, workspaceVersion);
+    }
+
+    @Override
     public int release(UUID leaseId, UUID orgId, OffsetDateTime releasedAt) {
         return mapper.release(leaseId, orgId, releasedAt);
     }

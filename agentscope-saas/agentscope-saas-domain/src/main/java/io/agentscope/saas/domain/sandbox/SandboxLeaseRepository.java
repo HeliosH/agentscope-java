@@ -30,6 +30,8 @@ public interface SandboxLeaseRepository {
     int heartbeat(
             UUID leaseId, UUID orgId, OffsetDateTime heartbeatAt, OffsetDateTime leaseExpiresAt);
 
+    int checkpoint(UUID leaseId, UUID orgId, String workspaceSnapshotUri, String workspaceVersion);
+
     int release(UUID leaseId, UUID orgId, OffsetDateTime releasedAt);
 
     int releaseAfterProvisioningFailure(

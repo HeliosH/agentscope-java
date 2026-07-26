@@ -76,7 +76,13 @@ class HarnessDurableTaskExecutorTest {
         RunOrchestrationService orchestration = mock(RunOrchestrationService.class);
         HarnessDurableTaskExecutor executor =
                 new HarnessDurableTaskExecutor(
-                        parent, new ObjectMapper(), properties, chatPersistence, orchestration);
+                        parent,
+                        new ObjectMapper(),
+                        properties,
+                        chatPersistence,
+                        orchestration,
+                        mock(WorkspaceArtifactService.class),
+                        Optional.empty());
         UUID userId = UUID.randomUUID();
         UUID runId = UUID.randomUUID();
         UUID agentRunId = UUID.randomUUID();
@@ -135,7 +141,13 @@ class HarnessDurableTaskExecutorTest {
         properties.getOrchestration().setWorkerExecutionTimeoutSeconds(5);
         HarnessDurableTaskExecutor executor =
                 new HarnessDurableTaskExecutor(
-                        parent, new ObjectMapper(), properties, chatPersistence, orchestration);
+                        parent,
+                        new ObjectMapper(),
+                        properties,
+                        chatPersistence,
+                        orchestration,
+                        mock(WorkspaceArtifactService.class),
+                        Optional.empty());
         UUID orgId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         UUID agentId = UUID.randomUUID();
@@ -201,7 +213,13 @@ class HarnessDurableTaskExecutorTest {
                         WorkspaceIsolationMode.USER_SHARED_READ_ONLY);
         HarnessDurableTaskExecutor executor =
                 new HarnessDurableTaskExecutor(
-                        parent, new ObjectMapper(), properties, chatPersistence, orchestration);
+                        parent,
+                        new ObjectMapper(),
+                        properties,
+                        chatPersistence,
+                        orchestration,
+                        mock(WorkspaceArtifactService.class),
+                        Optional.empty());
 
         assertThatThrownBy(() -> executor.execute(request))
                 .isInstanceOf(IllegalStateException.class)

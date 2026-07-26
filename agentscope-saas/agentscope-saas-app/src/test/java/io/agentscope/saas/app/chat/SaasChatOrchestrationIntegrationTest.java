@@ -15,7 +15,11 @@ import static org.springframework.http.MediaType.TEXT_EVENT_STREAM;
 
 import io.agentscope.saas.app.support.MyBatisRepositoryTestSupport;
 import io.agentscope.saas.app.support.TestDatabaseMapper;
+import io.agentscope.saas.core.tenant.TenantContextHolder;
+import io.agentscope.saas.domain.orchestration.RunArtifactRepository;
+import io.agentscope.saas.domain.orchestration.RunArtifactRepository.NewRunArtifact;
 import java.time.Duration;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -43,6 +47,8 @@ class SaasChatOrchestrationIntegrationTest {
     @Autowired
     @Qualifier("adminDataSource")
     DataSource adminDataSource;
+
+    @Autowired RunArtifactRepository artifactRepository;
 
     private WebTestClient webClient;
     private TestDatabaseMapper database;
@@ -202,6 +208,43 @@ class SaasChatOrchestrationIntegrationTest {
                 .isEqualTo("RUN_SUCCEEDED");
 
         UUID durableRunId = UUID.fromString(runId);
+        TestDatabaseMapper.RunArtifactIds ids = database.runArtifactIds(durableRunId);
+        UUID artifactId = UUID.randomUUID();
+        TenantContextHolder.setOrgId(ids.orgId().toString());
+        try {
+            assertThat(
+                            artifactRepository.insert(
+                                    new NewRunArtifact(
+                                            artifactId,
+                                            ids.orgId(),
+                                            durableRunId,
+                                            ids.taskId(),
+                                            ids.attemptId(),
+                                            null,
+                                            null,
+                                            "WORKSPACE_FILE",
+                                            "{\"logicalPath\":\"/generated/report.txt\"}",
+                                            OffsetDateTime.now())))
+                    .isEqualTo(1);
+        } finally {
+            TenantContextHolder.clear();
+        }
+
+        webClient
+                .get()
+                .uri("/api/agents/{agentId}/runs/{runId}/artifacts", agentId, runId)
+                .headers(headers -> headers.setBearerAuth(token))
+                .exchange()
+                .expectStatus()
+                .isOk()
+                .expectBody()
+                .jsonPath("$[0].id")
+                .isEqualTo(artifactId.toString())
+                .jsonPath("$[0].attemptId")
+                .isEqualTo(ids.attemptId().toString())
+                .jsonPath("$[0].artifactType")
+                .isEqualTo("WORKSPACE_FILE");
+
         UUID sessionId = database.runState(durableRunId).sessionId();
         assertThat(database.countRunEvents(durableRunId)).isEqualTo(6L);
         assertThat(database.countOutboxEvents(durableRunId)).isEqualTo(6L);

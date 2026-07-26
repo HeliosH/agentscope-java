@@ -17,10 +17,12 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.harness.agent.filesystem.remote.store.BaseStore;
 import io.agentscope.harness.agent.sandbox.SandboxIsolationOverride;
 import io.agentscope.saas.app.chat.ChatPersistenceService;
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.config.TenantRlsWebFilter;
+import io.agentscope.saas.app.workspace.WorkspaceCheckpointContext;
 import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
@@ -30,6 +32,7 @@ import io.agentscope.saas.orchestration.RunOrchestrationService;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
@@ -42,18 +45,24 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
     private final SaasProperties properties;
     private final ChatPersistenceService chatPersistence;
     private final RunOrchestrationService orchestration;
+    private final WorkspaceArtifactService workspaceArtifactService;
+    private final boolean workspaceProjectionAvailable;
 
     public HarnessDurableTaskExecutor(
             HarnessAgent agent,
             ObjectMapper objectMapper,
             SaasProperties properties,
             ChatPersistenceService chatPersistence,
-            RunOrchestrationService orchestration) {
+            RunOrchestrationService orchestration,
+            WorkspaceArtifactService workspaceArtifactService,
+            Optional<BaseStore> workspaceStore) {
         this.agent = agent;
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.chatPersistence = chatPersistence;
         this.orchestration = orchestration;
+        this.workspaceArtifactService = workspaceArtifactService;
+        this.workspaceProjectionAvailable = workspaceStore.isPresent();
     }
 
     @Override
@@ -105,6 +114,13 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
                                         : null)
                         .put(TenantContext.class, tenant)
                         .put(TenantContext.ATTR_KEY, tenant);
+        WorkspaceCheckpointContext workspaceCheckpoint =
+                properties.getSandbox().isEnabled()
+                        ? new WorkspaceCheckpointContext(workspaceProjectionAvailable)
+                        : null;
+        if (workspaceCheckpoint != null) {
+            contextBuilder.put(WorkspaceCheckpointContext.class, workspaceCheckpoint);
+        }
         applyWorkspaceIsolation(contextBuilder, request);
         RuntimeContext context = contextBuilder.build();
         Msg input =
@@ -118,6 +134,15 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
         Msg result = executeAgent(request, input, context, timeout);
         if (result == null) {
             throw new IllegalStateException("HarnessAgent completed without a result message");
+        }
+        if (workspaceCheckpoint != null) {
+            workspaceArtifactService.publish(
+                    request.orgId(),
+                    request.runId(),
+                    request.taskId(),
+                    request.attemptId(),
+                    context.get(io.agentscope.saas.sandbox.SandboxLeaseContext.class),
+                    workspaceCheckpoint);
         }
         if (isContinuation(request) && !orchestration.hasUnsettledChildren(request.runId())) {
             chatPersistence.saveAssistantMessageForRun(

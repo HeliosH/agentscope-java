@@ -489,6 +489,18 @@ public interface TestDatabaseMapper {
     @Select("SELECT COUNT(*) FROM chat_messages WHERE session_id = #{sessionId}")
     long countSessionMessages(UUID sessionId);
 
+    @Select(
+            """
+            SELECT r.org_id, t.id AS task_id, a.id AS attempt_id
+              FROM assistant_runs r
+              JOIN task_nodes t ON t.run_id = r.id
+              JOIN run_attempts a ON a.task_id = t.id
+             WHERE r.id = #{runId}
+             ORDER BY a.attempt_no
+             LIMIT 1
+            """)
+    RunArtifactIds runArtifactIds(UUID runId);
+
     @Select("SELECT COUNT(*) FROM chat_messages WHERE source_run_id = #{runId}")
     int countRunMessages(UUID runId);
 
@@ -578,6 +590,8 @@ public interface TestDatabaseMapper {
             Long consumedCostMicros,
             Integer consumedModelCalls,
             String failureCode) {}
+
+    record RunArtifactIds(UUID orgId, UUID taskId, UUID attemptId) {}
 
     record AgentRunState(String status, Integer depth, UUID parentAgentRunId) {}
 }

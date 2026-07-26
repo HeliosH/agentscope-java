@@ -91,6 +91,20 @@ public class SandboxLeaseService {
     }
 
     @Transactional
+    public boolean checkpoint(
+            SandboxLeaseContext context, String workspaceSnapshotUri, String workspaceVersion) {
+        if (context == null) {
+            return false;
+        }
+        return repository.checkpoint(
+                        context.leaseId(),
+                        context.orgId(),
+                        normalize(workspaceSnapshotUri),
+                        normalize(workspaceVersion))
+                == 1;
+    }
+
+    @Transactional
     public boolean release(SandboxLeaseContext context) {
         if (context == null) {
             return false;

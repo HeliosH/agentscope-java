@@ -186,6 +186,7 @@ public class SandboxManager {
         if (sandbox.isRunning()) {
             try {
                 sandbox.stop();
+                notifyObserver(obs -> obs.onSandboxStopSucceeded(runtimeContext));
             } catch (Exception e) {
                 notifyObserver(obs -> obs.onSandboxStopFailed(runtimeContext, e));
                 log.warn("[sandbox] Sandbox stop failed: {}", e.getMessage(), e);
@@ -233,6 +234,7 @@ public class SandboxManager {
         try {
             String json = client.serializeState(state);
             stateStore.save(scopeKey.get(), json);
+            notifyObserver(obs -> obs.onStatePersistSucceeded(runtimeContext));
             log.debug(
                     "[sandbox] Persisted sandbox state for scope {}: sessionId={}",
                     scopeKey.get(),
