@@ -21,6 +21,7 @@ import static org.mockito.Mockito.verify;
 
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.support.MyBatisRepositoryTestSupport;
+import io.agentscope.saas.app.support.TestDatabaseMapper;
 import io.agentscope.saas.dal.mybatis.admin.SandboxReconciliationMapper;
 import io.agentscope.saas.dal.repository.MyBatisSandboxReconciliationRepository;
 import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository;
@@ -28,50 +29,30 @@ import io.agentscope.saas.sandbox.SandboxBackendTerminator;
 import io.agentscope.saas.sandbox.SandboxInventoryMetrics;
 import io.agentscope.saas.sandbox.SandboxMetrics;
 import java.time.OffsetDateTime;
-import java.util.Map;
 import java.util.UUID;
+import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
 class SandboxReconciliationJobTest {
 
-    private JdbcTemplate jdbc;
+    private TestDatabaseMapper database;
     private SandboxReconciliationRepository repository;
     private SaasProperties properties;
     private SandboxMetrics metrics;
 
     @BeforeEach
     void setUp() {
-        DriverManagerDataSource ds = new DriverManagerDataSource();
-        ds.setDriverClassName("org.h2.Driver");
-        ds.setUrl(
+        JdbcDataSource ds = new JdbcDataSource();
+        ds.setURL(
                 "jdbc:h2:mem:sandbox_reconciliation_"
                         + UUID.randomUUID().toString().replace("-", "")
                         + ";MODE=PostgreSQL;DATABASE_TO_UPPER=false;DB_CLOSE_DELAY=-1");
-        jdbc = new JdbcTemplate(ds);
+        database = MyBatisRepositoryTestSupport.mapper(ds, TestDatabaseMapper.class);
         repository =
                 new MyBatisSandboxReconciliationRepository(
                         MyBatisRepositoryTestSupport.mapper(ds, SandboxReconciliationMapper.class));
-        jdbc.execute(
-                """
-                CREATE TABLE sandboxes (
-                    id UUID PRIMARY KEY,
-                    org_id UUID NOT NULL,
-                    user_id UUID NOT NULL,
-                    sandbox_type VARCHAR(32) NOT NULL,
-                    external_id VARCHAR(255),
-                    status VARCHAR(32) NOT NULL,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    last_used_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    expires_at TIMESTAMP WITH TIME ZONE,
-                    backend_release_status VARCHAR(32),
-                    backend_release_attempts INTEGER NOT NULL DEFAULT 0,
-                    backend_released_at TIMESTAMP WITH TIME ZONE,
-                    backend_release_error VARCHAR(2000)
-                )
-                """);
+        database.createSandboxes();
         properties = new SaasProperties();
         properties.getSandbox().setEnabled(true);
         properties.getSandbox().setReconciliationBatchSize(20);
@@ -91,11 +72,11 @@ class SandboxReconciliationJobTest {
 
         assertThat(summary.expiredActive()).isEqualTo(1);
         assertThat(summary.backendReleased()).isEqualTo(1);
-        Map<String, Object> row = loadRow(id);
-        assertThat(row.get("status")).isEqualTo("evicted");
-        assertThat(row.get("backend_release_status")).isEqualTo("succeeded");
-        assertThat(row.get("backend_release_attempts")).isEqualTo(1);
-        assertThat(row.get("backend_released_at")).isNotNull();
+        var row = database.sandboxState(id);
+        assertThat(row.status()).isEqualTo("evicted");
+        assertThat(row.backendReleaseStatus()).isEqualTo("succeeded");
+        assertThat(row.backendReleaseAttempts()).isEqualTo(1);
+        assertThat(row.backendReleasedAt()).isNotNull();
         verify(metrics).evict("opensandbox");
         verify(metrics).backendReleaseSucceeded("opensandbox");
     }
@@ -111,10 +92,10 @@ class SandboxReconciliationJobTest {
         var summary = job.reconcileBatch();
 
         assertThat(summary.backendFailed()).isEqualTo(1);
-        Map<String, Object> row = loadRow(id);
-        assertThat(row.get("backend_release_status")).isEqualTo("failed");
-        assertThat(row.get("backend_release_attempts")).isEqualTo(2);
-        assertThat(row.get("backend_release_error").toString()).isEqualTo("provider down");
+        var row = database.sandboxState(id);
+        assertThat(row.backendReleaseStatus()).isEqualTo("failed");
+        assertThat(row.backendReleaseAttempts()).isEqualTo(2);
+        assertThat(row.backendReleaseError()).isEqualTo("provider down");
         verify(metrics).backendReleaseFailed("e2b");
     }
 
@@ -130,11 +111,10 @@ class SandboxReconciliationJobTest {
         var summary = job.reconcileBatch();
 
         assertThat(summary.backendSkipped()).isEqualTo(1);
-        Map<String, Object> row = loadRow(id);
-        assertThat(row.get("backend_release_status")).isEqualTo("unsupported");
-        assertThat(row.get("backend_release_attempts")).isEqualTo(0);
-        assertThat(row.get("backend_release_error").toString())
-                .isEqualTo("configured terminator handles e2b");
+        var row = database.sandboxState(id);
+        assertThat(row.backendReleaseStatus()).isEqualTo("unsupported");
+        assertThat(row.backendReleaseAttempts()).isEqualTo(0);
+        assertThat(row.backendReleaseError()).isEqualTo("configured terminator handles e2b");
     }
 
     @Test
@@ -177,14 +157,7 @@ class SandboxReconciliationJobTest {
             int attempts,
             long expiresInSeconds) {
         UUID id = UUID.randomUUID();
-        jdbc.update(
-                """
-                INSERT INTO sandboxes (
-                    id, org_id, user_id, sandbox_type, external_id, status,
-                    created_at, last_used_at, expires_at,
-                    backend_release_status, backend_release_attempts
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+        database.insertSandbox(
                 id,
                 UUID.randomUUID(),
                 UUID.randomUUID(),
@@ -197,9 +170,5 @@ class SandboxReconciliationJobTest {
                 backendReleaseStatus,
                 attempts);
         return id;
-    }
-
-    private Map<String, Object> loadRow(UUID id) {
-        return jdbc.queryForMap("SELECT * FROM sandboxes WHERE id = ?", id);
     }
 }

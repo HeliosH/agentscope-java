@@ -15,6 +15,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.permission.PermissionBehavior;
 import io.agentscope.core.permission.PermissionContextState;
 import io.agentscope.core.permission.PermissionRule;
+import io.agentscope.saas.app.support.MyBatisRepositoryTestSupport;
+import io.agentscope.saas.app.support.TestDatabaseMapper;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
@@ -30,7 +32,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
 /** Verifies atomic budget enforcement and immutable parent-to-child permission inheritance. */
@@ -51,12 +52,13 @@ class OrchestrationGovernanceIntegrationTest {
     @Autowired OrchestrationGovernanceService governance;
     @Autowired ObjectMapper objectMapper;
 
-    private final JdbcTemplate jdbc;
+    private final TestDatabaseMapper database;
 
     @Autowired
     OrchestrationGovernanceIntegrationTest(
             @Qualifier("adminDataSource") DataSource adminDataSource) {
-        this.jdbc = new JdbcTemplate(adminDataSource);
+        this.database =
+                MyBatisRepositoryTestSupport.mapper(adminDataSource, TestDatabaseMapper.class);
     }
 
     @BeforeEach
@@ -100,23 +102,15 @@ class OrchestrationGovernanceIntegrationTest {
 
         assertThat(rejected.permitted()).isFalse();
         assertThat(rejected.reason()).isEqualTo("RUN_TOKEN_BUDGET_EXCEEDED");
-        assertThat(longValue("consumed_tokens", fixture.runId())).isEqualTo(11);
-        assertThat(longValue("consumed_cost_micros", fixture.runId())).isEqualTo(11);
-        assertThat(intValue("consumed_model_calls", fixture.runId())).isEqualTo(2);
+        var runState = database.runState(fixture.runId());
+        assertThat(runState.consumedTokens()).isEqualTo(11);
+        assertThat(runState.consumedCostMicros()).isEqualTo(11);
+        assertThat(runState.consumedModelCalls()).isEqualTo(2);
         assertThat(runStatus(fixture.runId())).isEqualTo("FAILED");
-        assertThat(
-                        jdbc.queryForList(
-                                "SELECT event_type FROM run_events WHERE run_id = ? ORDER BY seq",
-                                String.class,
-                                fixture.runId()))
+        assertThat(database.runEventTypes(fixture.runId()))
                 .contains("AGENT_PERMISSION_SNAPSHOT", "SUBAGENT_PERMISSION_INHERITED")
                 .endsWith("RUN_BUDGET_EXCEEDED");
-        assertThat(
-                        jdbc.queryForObject(
-                                "SELECT status FROM agent_runs WHERE id = ?",
-                                String.class,
-                                child.agentRunId()))
-                .isEqualTo("CANCELLED");
+        assertThat(database.agentRunState(child.agentRunId()).status()).isEqualTo("CANCELLED");
     }
 
     @Test
@@ -144,7 +138,7 @@ class OrchestrationGovernanceIntegrationTest {
                     .singleElement()
                     .extracting(OrchestrationGovernanceService.BudgetDecision::reason)
                     .isEqualTo("RUN_TOKEN_BUDGET_EXCEEDED");
-            assertThat(longValue("consumed_tokens", fixture.runId())).isEqualTo(12);
+            assertThat(database.runState(fixture.runId()).consumedTokens()).isEqualTo(12);
             assertThat(runStatus(fixture.runId())).isEqualTo("FAILED");
         } finally {
             pool.shutdownNow();
@@ -154,19 +148,12 @@ class OrchestrationGovernanceIntegrationTest {
     @Test
     void deadlineSweepTerminatesQueuedOrStalledWork() throws Exception {
         Fixture fixture = createGovernedRun(10);
-        jdbc.update(
-                "UPDATE assistant_runs SET deadline_at = ? WHERE id = ?",
-                java.time.OffsetDateTime.now().minusSeconds(1),
-                fixture.runId());
+        database.updateRunDeadline(fixture.runId(), java.time.OffsetDateTime.now().minusSeconds(1));
 
         assertThat(governance.expireDue(10)).isGreaterThanOrEqualTo(1);
 
         assertThat(runStatus(fixture.runId())).isEqualTo("FAILED");
-        assertThat(
-                        jdbc.queryForObject(
-                                "SELECT failure_code FROM assistant_runs WHERE id = ?",
-                                String.class,
-                                fixture.runId()))
+        assertThat(database.runState(fixture.runId()).failureCode())
                 .isEqualTo("RUN_DEADLINE_EXCEEDED");
     }
 
@@ -182,21 +169,8 @@ class OrchestrationGovernanceIntegrationTest {
     private Fixture createGovernedRun(long tokenBudget) throws Exception {
         UUID agentId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
-        jdbc.update(
-                "INSERT INTO agents (id, org_id, user_id, name, status) VALUES (?, ?, ?, ?, ?)",
-                agentId,
-                ORG_ID,
-                USER_ID,
-                "governance-" + agentId,
-                "active");
-        jdbc.update(
-                "INSERT INTO chat_sessions (id, org_id, user_id, agent_id, title) "
-                        + "VALUES (?, ?, ?, ?, ?)",
-                sessionId,
-                ORG_ID,
-                USER_ID,
-                agentId,
-                "Governance integration");
+        database.insertAgent(agentId, ORG_ID, USER_ID, "governance-" + agentId);
+        database.insertChatSession(sessionId, ORG_ID, USER_ID, agentId, "Governance integration");
         PermissionContextState permissions =
                 PermissionContextState.builder()
                         .addDenyRule(
@@ -235,18 +209,7 @@ class OrchestrationGovernanceIntegrationTest {
     }
 
     private String runStatus(UUID runId) {
-        return jdbc.queryForObject(
-                "SELECT status FROM assistant_runs WHERE id = ?", String.class, runId);
-    }
-
-    private long longValue(String column, UUID runId) {
-        return jdbc.queryForObject(
-                "SELECT " + column + " FROM assistant_runs WHERE id = ?", Long.class, runId);
-    }
-
-    private int intValue(String column, UUID runId) {
-        return jdbc.queryForObject(
-                "SELECT " + column + " FROM assistant_runs WHERE id = ?", Integer.class, runId);
+        return database.runState(runId).status();
     }
 
     private record Fixture(UUID agentId, UUID runId, UUID rootAgentRunId) {}

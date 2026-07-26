@@ -16,6 +16,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import io.agentscope.saas.app.config.SaasProperties;
+import io.agentscope.saas.app.support.MyBatisRepositoryTestSupport;
+import io.agentscope.saas.app.support.TestDatabaseMapper;
 import io.agentscope.saas.dal.mybatis.admin.OrchestrationOutboxMapper;
 import io.agentscope.saas.dal.mybatis.type.UuidTypeHandler;
 import io.agentscope.saas.dal.repository.MyBatisOrchestrationOutboxRepository;
@@ -32,11 +34,10 @@ import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.jdbc.core.JdbcTemplate;
 
 class OrchestrationOutboxPublisherTest {
 
-    private JdbcTemplate jdbc;
+    private TestDatabaseMapper database;
     private SaasProperties properties;
     private OrchestrationEventDispatcher dispatcher;
     private OrchestrationOutboxPublisher publisher;
@@ -45,26 +46,8 @@ class OrchestrationOutboxPublisherTest {
     @BeforeEach
     void setUp() {
         DataSource dataSource = dataSource();
-        jdbc = new JdbcTemplate(dataSource);
-        jdbc.execute(
-                """
-                CREATE TABLE orchestration_outbox (
-                    id UUID PRIMARY KEY,
-                    org_id UUID NOT NULL,
-                    aggregate_id UUID NOT NULL,
-                    aggregate_type VARCHAR(64) NOT NULL,
-                    event_type VARCHAR(64) NOT NULL,
-                    payload_json VARCHAR(4000) NOT NULL,
-                    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                    published_at TIMESTAMP WITH TIME ZONE,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    last_error VARCHAR(2000),
-                    locked_by VARCHAR(255),
-                    locked_until TIMESTAMP WITH TIME ZONE,
-                    next_attempt_at TIMESTAMP WITH TIME ZONE,
-                    dead_lettered_at TIMESTAMP WITH TIME ZONE
-                )
-                """);
+        database = MyBatisRepositoryTestSupport.mapper(dataSource, TestDatabaseMapper.class);
+        database.createOutbox();
         properties = new SaasProperties();
         properties.getOrchestration().setOutboxBatchSize(10);
         properties.getOrchestration().setOutboxLeaseSeconds(30);
@@ -100,9 +83,10 @@ class OrchestrationOutboxPublisherTest {
 
         assertThat(summary.published()).isEqualTo(1);
         assertThat(summary.failed()).isZero();
-        assertThat(value(id, "attempts", Integer.class)).isEqualTo(1);
-        assertThat(value(id, "published_at", OffsetDateTime.class)).isNotNull();
-        assertThat(value(id, "locked_by", String.class)).isNull();
+        var state = database.outboxState(id);
+        assertThat(state.attempts()).isEqualTo(1);
+        assertThat(state.publishedAt()).isNotNull();
+        assertThat(state.lockedBy()).isNull();
         verify(dispatcher).dispatch(any(OrchestrationEventDispatcher.OutboxEvent.class));
     }
 
@@ -117,11 +101,11 @@ class OrchestrationOutboxPublisherTest {
 
         assertThat(summary.failed()).isEqualTo(1);
         assertThat(summary.deadLettered()).isZero();
-        assertThat(value(id, "attempts", Integer.class)).isEqualTo(1);
-        assertThat(value(id, "next_attempt_at", OffsetDateTime.class))
-                .isAfter(OffsetDateTime.now());
-        assertThat(value(id, "dead_lettered_at", OffsetDateTime.class)).isNull();
-        assertThat(value(id, "last_error", String.class)).isEqualTo("event bus unavailable");
+        var state = database.outboxState(id);
+        assertThat(state.attempts()).isEqualTo(1);
+        assertThat(state.nextAttemptAt()).isAfter(OffsetDateTime.now());
+        assertThat(state.deadLetteredAt()).isNull();
+        assertThat(state.lastError()).isEqualTo("event bus unavailable");
         assertThat(publisher.retryDelaySeconds(1)).isEqualTo(2);
         assertThat(publisher.retryDelaySeconds(2)).isEqualTo(4);
         assertThat(publisher.retryDelaySeconds(20)).isEqualTo(30);
@@ -135,9 +119,9 @@ class OrchestrationOutboxPublisherTest {
         var summary = publisher.publishBatch();
 
         assertThat(summary.published()).isEqualTo(1);
-        assertThat(value(expired, "published_at", OffsetDateTime.class)).isNotNull();
-        assertThat(value(active, "published_at", OffsetDateTime.class)).isNull();
-        assertThat(value(active, "attempts", Integer.class)).isZero();
+        assertThat(database.outboxState(expired).publishedAt()).isNotNull();
+        assertThat(database.outboxState(active).publishedAt()).isNull();
+        assertThat(database.outboxState(active).attempts()).isZero();
     }
 
     @Test
@@ -148,36 +132,23 @@ class OrchestrationOutboxPublisherTest {
         var summary = publisher.publishBatch();
 
         assertThat(summary.deadLettered()).isEqualTo(1);
-        assertThat(value(id, "attempts", Integer.class)).isEqualTo(3);
-        assertThat(value(id, "next_attempt_at", OffsetDateTime.class)).isNull();
-        assertThat(value(id, "dead_lettered_at", OffsetDateTime.class)).isNotNull();
+        var state = database.outboxState(id);
+        assertThat(state.attempts()).isEqualTo(3);
+        assertThat(state.nextAttemptAt()).isNull();
+        assertThat(state.deadLetteredAt()).isNotNull();
     }
 
     private UUID insertEvent(int attempts, String lockedBy, OffsetDateTime lockedUntil) {
         UUID id = UUID.randomUUID();
-        jdbc.update(
-                """
-                INSERT INTO orchestration_outbox
-                    (id, org_id, aggregate_id, aggregate_type, event_type, payload_json,
-                     created_at, attempts, locked_by, locked_until)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+        database.insertOutboxEvent(
                 id,
                 UUID.randomUUID(),
                 UUID.randomUUID(),
-                "assistant_run",
-                "RUN_STARTED",
-                "{}",
                 OffsetDateTime.now(),
                 attempts,
                 lockedBy,
                 lockedUntil);
         return id;
-    }
-
-    private <T> T value(UUID id, String column, Class<T> type) {
-        return jdbc.queryForObject(
-                "SELECT " + column + " FROM orchestration_outbox WHERE id = ?", type, id);
     }
 
     private static DataSource dataSource() {

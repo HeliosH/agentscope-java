@@ -22,12 +22,25 @@ import org.junit.jupiter.api.Test;
 class DataAccessArchitectureTest {
 
     @Test
-    void productionCodeCannotUseJdbcTemplate() throws IOException {
+    void allSaasJavaSourcesCannotUseSpringJdbcQueryApis() throws IOException {
         Path sourceRoot = Path.of("..");
         Set<String> users =
                 javaFiles(sourceRoot).stream()
-                        .filter(file -> portablePath(file).contains("/src/main/java/"))
-                        .filter(DataAccessArchitectureTest::importsJdbcTemplate)
+                        .filter(DataAccessArchitectureTest::importsSpringJdbcQueryApi)
+                        .map(sourceRoot::relativize)
+                        .map(DataAccessArchitectureTest::portablePath)
+                        .collect(Collectors.toSet());
+
+        assertThat(users).isEmpty();
+    }
+
+    @Test
+    void testCodeCannotUseRawJavaSql() throws IOException {
+        Path sourceRoot = Path.of("..");
+        Set<String> users =
+                javaFiles(sourceRoot).stream()
+                        .filter(file -> portablePath(file).contains("/src/test/java/"))
+                        .filter(file -> importsPackage(file, "java.sql."))
                         .map(sourceRoot::relativize)
                         .map(DataAccessArchitectureTest::portablePath)
                         .collect(Collectors.toSet());
@@ -89,16 +102,32 @@ class DataAccessArchitectureTest {
                                 file ->
                                         portablePath(saasRoot.relativize(file))
                                                 .contains("/src/main/java/"))
-                        .filter(
-                                file ->
-                                        read(file)
-                                                .contains("import org.apache.ibatis.annotations."))
+                        .filter(file -> importsPackage(file, "org.apache.ibatis.annotations."))
                         .map(saasRoot::relativize)
                         .map(DataAccessArchitectureTest::portablePath)
                         .collect(Collectors.toSet());
 
         assertThat(mapperSources)
                 .allMatch(path -> path.startsWith("agentscope-saas-dal/src/main/java/"));
+    }
+
+    @Test
+    void testMyBatisMappersRemainInsideTestSupport() throws IOException {
+        Path saasRoot = Path.of("..");
+        Set<String> mapperSources =
+                javaFiles(saasRoot).stream()
+                        .filter(file -> portablePath(file).contains("/src/test/java/"))
+                        .filter(file -> importsPackage(file, "org.apache.ibatis.annotations."))
+                        .map(saasRoot::relativize)
+                        .map(DataAccessArchitectureTest::portablePath)
+                        .collect(Collectors.toSet());
+
+        assertThat(mapperSources)
+                .allMatch(
+                        path ->
+                                path.startsWith(
+                                        "agentscope-saas-app/src/test/java/"
+                                                + "io/agentscope/saas/app/support/"));
     }
 
     @Test
@@ -201,11 +230,15 @@ class DataAccessArchitectureTest {
         }
     }
 
-    private static boolean importsJdbcTemplate(Path file) {
-        String source = read(file);
-        return source.contains("import org.springframework.jdbc.core.JdbcTemplate;")
-                || source.contains(
-                        "import org.springframework.jdbc.core.named.NamedParameterJdbcTemplate;");
+    private static boolean importsSpringJdbcQueryApi(Path file) {
+        return importsPackage(file, "org.springframework.jdbc.core.");
+    }
+
+    private static boolean importsPackage(Path file, String packagePrefix) {
+        return read(file)
+                .lines()
+                .map(String::trim)
+                .anyMatch(line -> line.startsWith("import " + packagePrefix));
     }
 
     private static String portablePath(Path path) {

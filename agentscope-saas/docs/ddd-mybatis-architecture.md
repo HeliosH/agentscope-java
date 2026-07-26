@@ -78,10 +78,16 @@ MyBatis 已覆盖以下关系数据：
 
 - 领域层不引用 Spring、MyBatis 或 JPA；
 - MyBatis Mapper 只能位于 DAL 模块；
-- 生产代码不引用旧持久化包、Spring Data JPA 或 `JdbcTemplate`；
+- 生产代码不引用旧持久化包或 Spring Data JPA；
+- 生产和测试代码均不使用 `JdbcTemplate`、`JdbcClient` 等 Spring JDBC 查询 API；
+- 测试代码不使用原生 `java.sql`，测试 Mapper 只能位于测试支持包；
 - POM 和运行配置不包含 JPA/Hibernate 基础设施；
 - 原生 `java.sql` 只能用于 MyBatis TypeHandler 和租户连接设置；
 - 租户 Task Mapper 必须绑定租户 SqlSession，不能使用管理通道。
+
+集成测试通过测试作用域的 `TestDatabaseMapper` 准备和断言数据库状态。该 Mapper 不参与
+生产扫描，也不进入应用业务代码；其目的在于让数据库契约测试本身遵循 MyBatis 数据访问
+边界，避免测试代码重新形成第二套 JDBC 实现。
 
 数据库契约测试分别在 H2 PostgreSQL 模式和真实 PostgreSQL 上验证仓储 CRUD、生成主键、JSON/BYTEA 映射、事务、RLS 隔离及端到端聊天编排。
 

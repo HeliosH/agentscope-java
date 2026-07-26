@@ -26,6 +26,8 @@ import io.agentscope.core.memory.mem0.Mem0AddRequest;
 import io.agentscope.core.memory.mem0.Mem0AddResponse;
 import io.agentscope.core.memory.mem0.Mem0Client;
 import io.agentscope.saas.app.config.SaasProperties;
+import io.agentscope.saas.app.support.MyBatisRepositoryTestSupport;
+import io.agentscope.saas.app.support.TestDatabaseMapper;
 import io.agentscope.saas.dal.mybatis.admin.MemoryProjectionMapper;
 import io.agentscope.saas.dal.mybatis.type.UuidTypeHandler;
 import io.agentscope.saas.dal.repository.MyBatisMemoryProjectionRepository;
@@ -42,12 +44,11 @@ import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.jdbc.core.JdbcTemplate;
 import reactor.core.publisher.Mono;
 
 class MemoryReplayJobTest {
 
-    private JdbcTemplate jdbc;
+    private TestDatabaseMapper database;
     private Mem0Client mem0;
     private MemoryReplayJob job;
     private SqlSession sqlSession;
@@ -55,27 +56,8 @@ class MemoryReplayJobTest {
     @BeforeEach
     void setUp() {
         DataSource dataSource = dataSource();
-        jdbc = new JdbcTemplate(dataSource);
-        jdbc.execute(
-                """
-                CREATE TABLE memory_events (
-                    id UUID PRIMARY KEY,
-                    org_id UUID NOT NULL,
-                    user_id UUID NOT NULL,
-                    agent_id VARCHAR(255) NOT NULL,
-                    session_id VARCHAR(255),
-                    source VARCHAR(64) NOT NULL,
-                    event_type VARCHAR(64) NOT NULL,
-                    content_json VARCHAR(4000) NOT NULL,
-                    metadata_json VARCHAR(4000),
-                    sync_status VARCHAR(20) NOT NULL,
-                    sync_attempts INTEGER NOT NULL DEFAULT 0,
-                    synced_at TIMESTAMP WITH TIME ZONE,
-                    last_error VARCHAR(4000),
-                    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                    updated_at TIMESTAMP WITH TIME ZONE NOT NULL
-                )
-                """);
+        database = MyBatisRepositoryTestSupport.mapper(dataSource, TestDatabaseMapper.class);
+        database.createMemoryEvents();
         mem0 = mock(Mem0Client.class);
         SaasProperties properties = new SaasProperties();
         properties.getLtm().setEnabled(true);
@@ -163,43 +145,21 @@ class MemoryReplayJobTest {
     private UUID insertEvent(String status, int attempts, String lastError) {
         UUID id = UUID.randomUUID();
         OffsetDateTime now = OffsetDateTime.now();
-        jdbc.update(
-                """
-                INSERT INTO memory_events
-                    (id, org_id, user_id, agent_id, session_id, source, event_type, content_json,
-                     metadata_json, sync_status, sync_attempts, last_error, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                id,
-                UUID.randomUUID(),
-                UUID.randomUUID(),
-                "assistant",
-                "session-1",
-                "mem0",
-                "conversation",
-                "{\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}",
-                "{\"org_id\":\"org-1\",\"agent_id\":\"assistant\",\"session_id\":\"session-1\"}",
-                status,
-                attempts,
-                lastError,
-                now,
-                now);
+        database.insertMemoryEvent(
+                id, UUID.randomUUID(), UUID.randomUUID(), status, attempts, lastError, now);
         return id;
     }
 
     private String status(UUID id) {
-        return jdbc.queryForObject(
-                "SELECT sync_status FROM memory_events WHERE id = ?", String.class, id);
+        return database.memoryState(id).syncStatus();
     }
 
     private Integer attempts(UUID id) {
-        return jdbc.queryForObject(
-                "SELECT sync_attempts FROM memory_events WHERE id = ?", Integer.class, id);
+        return database.memoryState(id).syncAttempts();
     }
 
     private String lastError(UUID id) {
-        return jdbc.queryForObject(
-                "SELECT last_error FROM memory_events WHERE id = ?", String.class, id);
+        return database.memoryState(id).lastError();
     }
 
     private static DataSource dataSource() {

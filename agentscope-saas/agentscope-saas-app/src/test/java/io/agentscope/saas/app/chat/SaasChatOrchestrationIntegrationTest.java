@@ -13,6 +13,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.http.MediaType.TEXT_EVENT_STREAM;
 
+import io.agentscope.saas.app.support.MyBatisRepositoryTestSupport;
+import io.agentscope.saas.app.support.TestDatabaseMapper;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -26,7 +28,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
@@ -44,7 +45,7 @@ class SaasChatOrchestrationIntegrationTest {
     DataSource adminDataSource;
 
     private WebTestClient webClient;
-    private JdbcTemplate jdbc;
+    private TestDatabaseMapper database;
 
     @BeforeEach
     void setUp() {
@@ -53,7 +54,7 @@ class SaasChatOrchestrationIntegrationTest {
                         .responseTimeout(Duration.ofSeconds(30))
                         .baseUrl("http://localhost:" + port)
                         .build();
-        jdbc = new JdbcTemplate(adminDataSource);
+        database = MyBatisRepositoryTestSupport.mapper(adminDataSource, TestDatabaseMapper.class);
     }
 
     @Test
@@ -201,28 +202,9 @@ class SaasChatOrchestrationIntegrationTest {
                 .isEqualTo("RUN_SUCCEEDED");
 
         UUID durableRunId = UUID.fromString(runId);
-        UUID sessionId =
-                jdbc.queryForObject(
-                        "SELECT session_id FROM assistant_runs WHERE id = ?",
-                        UUID.class,
-                        durableRunId);
-        assertThat(
-                        jdbc.queryForObject(
-                                "SELECT COUNT(*) FROM run_events WHERE run_id = ?",
-                                Long.class,
-                                durableRunId))
-                .isEqualTo(6L);
-        assertThat(
-                        jdbc.queryForObject(
-                                "SELECT COUNT(*) FROM orchestration_outbox WHERE aggregate_id = ?",
-                                Long.class,
-                                durableRunId))
-                .isEqualTo(6L);
-        assertThat(
-                        jdbc.queryForObject(
-                                "SELECT COUNT(*) FROM chat_messages WHERE session_id = ?",
-                                Long.class,
-                                sessionId))
-                .isEqualTo(2L);
+        UUID sessionId = database.runState(durableRunId).sessionId();
+        assertThat(database.countRunEvents(durableRunId)).isEqualTo(6L);
+        assertThat(database.countOutboxEvents(durableRunId)).isEqualTo(6L);
+        assertThat(database.countSessionMessages(sessionId)).isEqualTo(2L);
     }
 }

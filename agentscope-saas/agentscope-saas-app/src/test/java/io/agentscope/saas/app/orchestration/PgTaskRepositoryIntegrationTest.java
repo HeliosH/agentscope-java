@@ -16,6 +16,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.subagent.task.TaskRunSpec;
 import io.agentscope.harness.agent.subagent.task.TaskStatus;
+import io.agentscope.saas.app.support.MyBatisRepositoryTestSupport;
+import io.agentscope.saas.app.support.TestDatabaseMapper;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
@@ -35,9 +37,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.jdbc.core.ConnectionCallback;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
 /** Verifies durable Harness task submission, execution state, and parent-result delivery. */
@@ -54,8 +55,9 @@ class PgTaskRepositoryIntegrationTest {
     private static final UUID ORG_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
     private static final UUID USER_ID = UUID.fromString("00000000-0000-0000-0000-0000000000a2");
 
-    private final JdbcTemplate jdbc;
-    private final JdbcTemplate tenantJdbc;
+    private final TestDatabaseMapper database;
+    private final TestDatabaseMapper tenantDatabase;
+    private final String databaseUrl;
 
     @Autowired PgTaskRepository tasks;
     @Autowired RunOrchestrationService runs;
@@ -66,9 +68,13 @@ class PgTaskRepositoryIntegrationTest {
     @Autowired
     PgTaskRepositoryIntegrationTest(
             @Qualifier("adminDataSource") DataSource adminDataSource,
-            @Qualifier("dataSource") DataSource tenantDataSource) {
-        this.jdbc = new JdbcTemplate(adminDataSource);
-        this.tenantJdbc = new JdbcTemplate(tenantDataSource);
+            @Qualifier("dataSource") DataSource tenantDataSource,
+            DataSourceProperties dataSourceProperties) {
+        this.database =
+                MyBatisRepositoryTestSupport.mapper(adminDataSource, TestDatabaseMapper.class);
+        this.tenantDatabase =
+                MyBatisRepositoryTestSupport.mapper(tenantDataSource, TestDatabaseMapper.class);
+        this.databaseUrl = dataSourceProperties.getUrl();
     }
 
     @BeforeEach
@@ -248,12 +254,7 @@ class PgTaskRepositoryIntegrationTest {
         awaitRun(run.runId(), "SUCCEEDED", Duration.ofSeconds(15));
 
         assertThat(tasks.isDelivered(context, sessionId.toString(), "task_auto")).isTrue();
-        assertThat(
-                        jdbc.queryForObject(
-                                "SELECT COUNT(*) FROM chat_messages WHERE source_run_id = ?",
-                                Integer.class,
-                                run.runId()))
-                .isEqualTo(1);
+        assertThat(database.countRunMessages(run.runId())).isEqualTo(1);
     }
 
     @Test
@@ -346,14 +347,10 @@ class PgTaskRepositoryIntegrationTest {
 
     @Test
     void tenantMapperRlsRejectsMismatchedConnectionContext() {
-        String databaseProduct =
-                tenantJdbc.execute(
-                        (ConnectionCallback<String>)
-                                connection -> connection.getMetaData().getDatabaseProductName());
         assumeTrue(
-                "PostgreSQL".equals(databaseProduct),
+                databaseUrl != null && databaseUrl.startsWith("jdbc:postgresql:"),
                 "PostgreSQL is required to verify row-level security");
-        assertThat(tenantJdbc.queryForObject("SELECT current_user", String.class)).isEqualTo("app");
+        assertThat(tenantDatabase.currentUser()).isEqualTo("app");
         UUID agentId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
         seedAgentAndSession(agentId, sessionId);
@@ -371,11 +368,7 @@ class PgTaskRepositoryIntegrationTest {
         try {
             String otherOrgId = UUID.randomUUID().toString();
             TenantContextHolder.setOrgId(otherOrgId);
-            assertThat(
-                            tenantJdbc.queryForObject(
-                                    "SELECT current_setting('app.current_org', true)",
-                                    String.class))
-                    .isEqualTo(otherOrgId);
+            assertThat(tenantDatabase.currentOrg()).isEqualTo(otherOrgId);
             assertThat(tasks.getTask(context, sessionId.toString(), "task_rls")).isNull();
 
             TenantContextHolder.setOrgId(ORG_ID.toString());
@@ -420,12 +413,8 @@ class PgTaskRepositoryIntegrationTest {
                 sessionId.toString(),
                 new TaskRunSpec.DurableLocalTaskRunSpec(
                         subSessionId, "Nested task " + taskId, () -> "not-used"));
-        return jdbc.queryForObject(
-                "SELECT owner_agent_run_id FROM task_nodes "
-                        + "WHERE run_id = ? AND external_task_id = ?",
-                UUID.class,
-                UUID.fromString(context.get(RunOrchestrationService.ATTR_RUN_ID)),
-                taskId);
+        return database.taskOwnerAgentRun(
+                UUID.fromString(context.get(RunOrchestrationService.ATTR_RUN_ID)), taskId);
     }
 
     private void completeCoordinatorContinuation(UUID runId, String workerId) {
@@ -455,26 +444,12 @@ class PgTaskRepositoryIntegrationTest {
     }
 
     private void seedAgentAndSession(UUID agentId, UUID sessionId) {
-        jdbc.update(
-                "INSERT INTO agents (id, org_id, user_id, name, status) VALUES (?, ?, ?, ?, ?)",
-                agentId,
-                ORG_ID,
-                USER_ID,
-                "pg-task-" + agentId,
-                "active");
-        jdbc.update(
-                "INSERT INTO chat_sessions (id, org_id, user_id, agent_id, title) "
-                        + "VALUES (?, ?, ?, ?, ?)",
-                sessionId,
-                ORG_ID,
-                USER_ID,
-                agentId,
-                "PG task integration");
+        database.insertAgent(agentId, ORG_ID, USER_ID, "pg-task-" + agentId);
+        database.insertChatSession(sessionId, ORG_ID, USER_ID, agentId, "PG task integration");
     }
 
     private String runStatus(UUID runId) {
-        return jdbc.queryForObject(
-                "SELECT status FROM assistant_runs WHERE id = ?", String.class, runId);
+        return database.runState(runId).status();
     }
 
     private void awaitRun(UUID runId, String expected, Duration timeout) throws Exception {
@@ -489,12 +464,10 @@ class PgTaskRepositoryIntegrationTest {
     }
 
     private Integer agentRunDepth(UUID agentRunId) {
-        return jdbc.queryForObject(
-                "SELECT depth FROM agent_runs WHERE id = ?", Integer.class, agentRunId);
+        return database.agentRunState(agentRunId).depth();
     }
 
     private UUID agentRunParent(UUID agentRunId) {
-        return jdbc.queryForObject(
-                "SELECT parent_agent_run_id FROM agent_runs WHERE id = ?", UUID.class, agentRunId);
+        return database.agentRunState(agentRunId).parentAgentRunId();
     }
 }

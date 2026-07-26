@@ -11,6 +11,8 @@ package io.agentscope.saas.app.workspace;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.agentscope.saas.app.support.MyBatisRepositoryTestSupport;
+import io.agentscope.saas.app.support.TestDatabaseMapper;
 import io.agentscope.saas.domain.sandbox.SandboxReconciliationRepository;
 import io.agentscope.saas.domain.workspace.FileObjectGcRepository;
 import io.agentscope.saas.domain.workspace.FileObjectGcRepository.ObjectReference;
@@ -21,7 +23,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
 /** Executes administrative maintenance mappers against the configured integration database. */
@@ -32,7 +33,7 @@ class PgMaintenanceRepositoryIntegrationTest {
     private static final UUID ORG_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
     private static final UUID USER_ID = UUID.fromString("00000000-0000-0000-0000-0000000000a2");
 
-    private final JdbcTemplate jdbc;
+    private final TestDatabaseMapper database;
 
     @Autowired SandboxReconciliationRepository sandboxes;
     @Autowired FileObjectGcRepository files;
@@ -40,23 +41,15 @@ class PgMaintenanceRepositoryIntegrationTest {
     @Autowired
     PgMaintenanceRepositoryIntegrationTest(
             @Qualifier("adminDataSource") DataSource adminDataSource) {
-        this.jdbc = new JdbcTemplate(adminDataSource);
+        this.database =
+                MyBatisRepositoryTestSupport.mapper(adminDataSource, TestDatabaseMapper.class);
     }
 
     @Test
     void sandboxReleaseCanBeClaimedOnlyOnce() {
         UUID id = UUID.randomUUID();
-        jdbc.update(
-                """
-                INSERT INTO sandboxes
-                    (id, org_id, user_id, sandbox_type, external_id, status, expires_at)
-                VALUES (?, ?, ?, 'opensandbox', ?, 'active', ?)
-                """,
-                id,
-                ORG_ID,
-                USER_ID,
-                "maintenance-" + id,
-                OffsetDateTime.now().minusMinutes(1));
+        database.insertMaintenanceSandbox(
+                id, ORG_ID, USER_ID, "maintenance-" + id, OffsetDateTime.now().minusMinutes(1));
 
         assertThat(sandboxes.findExpiredActive(OffsetDateTime.now(), 1000))
                 .extracting(SandboxReconciliationRepository.SandboxResource::id)
@@ -74,10 +67,7 @@ class PgMaintenanceRepositoryIntegrationTest {
         UUID deletedVersionId = UUID.randomUUID();
         insertFile(deletedFileId, "deleted", null);
         insertVersion(deletedVersionId, deletedFileId, 1, "maintenance/deleted-" + deletedFileId);
-        jdbc.update(
-                "UPDATE files SET updated_at = ? WHERE id = ?",
-                OffsetDateTime.now().minusDays(2),
-                deletedFileId);
+        database.updateFileTimestamp(deletedFileId, OffsetDateTime.now().minusDays(2));
 
         assertThat(files.findDeletedFiles(OffsetDateTime.now().minusDays(1), 1000))
                 .extracting(FileObjectGcRepository.FileReference::id)
@@ -106,10 +96,7 @@ class PgMaintenanceRepositoryIntegrationTest {
         insertFile(activeFileId, "active", null);
         insertVersion(oldVersionId, activeFileId, 1, "maintenance/old-" + activeFileId);
         insertVersion(currentVersionId, activeFileId, 2, "maintenance/current-" + activeFileId);
-        jdbc.update(
-                "UPDATE files SET current_version_id = ? WHERE id = ?",
-                currentVersionId,
-                activeFileId);
+        database.updateCurrentFileVersion(activeFileId, currentVersionId);
 
         assertThat(files.findPrunableVersions(1, 1000))
                 .extracting(ObjectReference::id)
@@ -121,34 +108,12 @@ class PgMaintenanceRepositoryIntegrationTest {
     }
 
     private void insertFile(UUID fileId, String status, UUID currentVersionId) {
-        jdbc.update(
-                """
-                INSERT INTO files
-                    (id, org_id, user_id, logical_path, current_version_id, source, status)
-                VALUES (?, ?, ?, ?, ?, 'maintenance-test', ?)
-                """,
-                fileId,
-                ORG_ID,
-                USER_ID,
-                "/maintenance/" + fileId,
-                currentVersionId,
-                status);
+        database.insertMaintenanceFile(
+                fileId, ORG_ID, USER_ID, "/maintenance/" + fileId, currentVersionId, status);
     }
 
     private void insertVersion(UUID versionId, UUID fileId, long versionNo, String objectKey) {
-        jdbc.update(
-                """
-                INSERT INTO file_versions
-                    (id, file_id, org_id, user_id, version_no, object_key, storage_backend,
-                     size_bytes, sha256, source)
-                VALUES (?, ?, ?, ?, ?, ?, 'pg', 1, ?, 'maintenance-test')
-                """,
-                versionId,
-                fileId,
-                ORG_ID,
-                USER_ID,
-                versionNo,
-                objectKey,
-                "sha-" + versionId);
+        database.insertMaintenanceVersion(
+                versionId, fileId, ORG_ID, USER_ID, versionNo, objectKey, "sha-" + versionId);
     }
 }

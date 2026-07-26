@@ -22,45 +22,35 @@ import static org.mockito.Mockito.when;
 
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.support.MyBatisRepositoryTestSupport;
+import io.agentscope.saas.app.support.TestDatabaseMapper;
 import io.agentscope.saas.dal.mybatis.admin.FileObjectGcMapper;
 import io.agentscope.saas.dal.repository.MyBatisFileObjectGcRepository;
 import io.agentscope.saas.domain.workspace.FileObjectGcRepository;
 import io.agentscope.saas.storage.FileObjectStore;
+import java.time.OffsetDateTime;
 import java.util.UUID;
+import javax.sql.DataSource;
+import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionTemplate;
 
 class FileObjectGcJobTest {
 
     @Test
     void queuesMetadataDeletionBeforeRemovingUnreferencedObject() throws Exception {
-        DriverManagerDataSource dataSource =
-                new DriverManagerDataSource(
-                        "jdbc:h2:mem:file-gc;DB_CLOSE_DELAY=-1;MODE=PostgreSQL", "sa", "");
-        JdbcTemplate jdbc = new JdbcTemplate(dataSource);
-        createSchema(jdbc);
+        DataSource dataSource = dataSource("file-gc");
+        TestDatabaseMapper database =
+                MyBatisRepositoryTestSupport.mapper(dataSource, TestDatabaseMapper.class);
+        database.createFileGcSchema();
         UUID orgId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         UUID fileId = UUID.randomUUID();
         UUID versionId = UUID.randomUUID();
-        jdbc.update(
-                "INSERT INTO files (id, org_id, user_id, status, updated_at)"
-                        + " VALUES (?, ?, ?, 'deleted', DATEADD('DAY', -2, CURRENT_TIMESTAMP))",
-                fileId,
-                orgId,
-                userId);
-        jdbc.update(
-                "INSERT INTO file_versions"
-                        + " (id, file_id, org_id, user_id, version_no, object_key, storage_backend)"
-                        + " VALUES (?, ?, ?, ?, 1, 'files/object-1', 'pg')",
-                versionId,
-                fileId,
-                orgId,
-                userId);
+        database.insertGcFile(
+                fileId, orgId, userId, null, "deleted", OffsetDateTime.now().minusDays(2));
+        database.insertGcVersion(versionId, fileId, orgId, userId, 1, "files/object-1");
 
         FileObjectStore store = mock(FileObjectStore.class);
         when(store.backend()).thenReturn("pg");
@@ -75,36 +65,27 @@ class FileObjectGcJobTest {
 
         assertThat(summary.deletedFiles()).isEqualTo(1);
         assertThat(summary.objectsDeleted()).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM files", Long.class)).isZero();
-        assertThat(jdbc.queryForObject("SELECT status FROM file_object_gc_queue", String.class))
-                .isEqualTo("succeeded");
+        assertThat(database.countFiles()).isZero();
+        assertThat(database.gcQueueStatus()).isEqualTo("succeeded");
         verify(store).delete(orgId, "files/object-1");
     }
 
     @Test
     void prunesOnlyUnattachedVersionsOutsideRetentionWindow() throws Exception {
-        DriverManagerDataSource dataSource =
-                new DriverManagerDataSource(
-                        "jdbc:h2:mem:file-version-gc;DB_CLOSE_DELAY=-1;MODE=PostgreSQL", "sa", "");
-        JdbcTemplate jdbc = new JdbcTemplate(dataSource);
-        createSchema(jdbc);
+        DataSource dataSource = dataSource("file-version-gc");
+        TestDatabaseMapper database =
+                MyBatisRepositoryTestSupport.mapper(dataSource, TestDatabaseMapper.class);
+        database.createFileGcSchema();
         UUID orgId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         UUID fileId = UUID.randomUUID();
         UUID v1 = UUID.randomUUID();
         UUID v2 = UUID.randomUUID();
         UUID v3 = UUID.randomUUID();
-        jdbc.update(
-                "INSERT INTO files"
-                        + " (id, org_id, user_id, current_version_id, status, updated_at)"
-                        + " VALUES (?, ?, ?, ?, 'active', CURRENT_TIMESTAMP)",
-                fileId,
-                orgId,
-                userId,
-                v3);
-        insertVersion(jdbc, v1, fileId, orgId, userId, 1, "files/v1");
-        insertVersion(jdbc, v2, fileId, orgId, userId, 2, "files/v2");
-        insertVersion(jdbc, v3, fileId, orgId, userId, 3, "files/v3");
+        database.insertGcFile(fileId, orgId, userId, v3, "active", OffsetDateTime.now());
+        database.insertGcVersion(v1, fileId, orgId, userId, 1, "files/v1");
+        database.insertGcVersion(v2, fileId, orgId, userId, 2, "files/v2");
+        database.insertGcVersion(v3, fileId, orgId, userId, 3, "files/v3");
 
         FileObjectStore store = mock(FileObjectStore.class);
         when(store.backend()).thenReturn("pg");
@@ -118,33 +99,12 @@ class FileObjectGcJobTest {
         FileObjectGcJob.GcSummary summary = job(dataSource, provider, properties).collectOnce();
 
         assertThat(summary.prunedVersions()).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM file_versions", Long.class))
-                .isEqualTo(2L);
+        assertThat(database.countFileVersions()).isEqualTo(2L);
         verify(store).delete(orgId, "files/v1");
     }
 
-    private static void insertVersion(
-            JdbcTemplate jdbc,
-            UUID id,
-            UUID fileId,
-            UUID orgId,
-            UUID userId,
-            long versionNo,
-            String objectKey) {
-        jdbc.update(
-                "INSERT INTO file_versions"
-                        + " (id, file_id, org_id, user_id, version_no, object_key, storage_backend)"
-                        + " VALUES (?, ?, ?, ?, ?, ?, 'pg')",
-                id,
-                fileId,
-                orgId,
-                userId,
-                versionNo,
-                objectKey);
-    }
-
     private static FileObjectGcJob job(
-            DriverManagerDataSource dataSource,
+            DataSource dataSource,
             ObjectProvider<FileObjectStore> provider,
             SaasProperties properties) {
         FileObjectGcRepository repository =
@@ -157,24 +117,14 @@ class FileObjectGcJobTest {
                 properties);
     }
 
-    private static void createSchema(JdbcTemplate jdbc) {
-        jdbc.execute(
-                "CREATE TABLE files (id UUID PRIMARY KEY, org_id UUID NOT NULL, user_id UUID NOT"
-                        + " NULL, current_version_id UUID, status VARCHAR(32) NOT NULL, updated_at"
-                        + " TIMESTAMP WITH TIME ZONE NOT NULL)");
-        jdbc.execute(
-                "CREATE TABLE file_versions (id UUID PRIMARY KEY, file_id UUID NOT NULL, org_id"
-                        + " UUID NOT NULL, user_id UUID NOT NULL, version_no BIGINT NOT NULL,"
-                        + " object_key VARCHAR(1024) NOT NULL, storage_backend VARCHAR(32) NOT"
-                        + " NULL)");
-        jdbc.execute(
-                "CREATE TABLE file_attachments (id UUID PRIMARY KEY, file_id UUID NOT NULL,"
-                        + " file_version_id UUID NOT NULL)");
-        jdbc.execute(
-                "CREATE TABLE file_object_gc_queue (id UUID PRIMARY KEY, org_id UUID NOT NULL,"
-                    + " object_key VARCHAR(1024) NOT NULL, storage_backend VARCHAR(32) NOT NULL,"
-                    + " status VARCHAR(32) NOT NULL, attempts INTEGER NOT NULL, last_error"
-                    + " VARCHAR(2000), created_at TIMESTAMP WITH TIME ZONE NOT NULL, updated_at"
-                    + " TIMESTAMP WITH TIME ZONE NOT NULL)");
+    private static DataSource dataSource(String name) {
+        JdbcDataSource dataSource = new JdbcDataSource();
+        dataSource.setURL(
+                "jdbc:h2:mem:"
+                        + name
+                        + "-"
+                        + UUID.randomUUID()
+                        + ";DB_CLOSE_DELAY=-1;MODE=PostgreSQL");
+        return dataSource;
     }
 }

@@ -2,160 +2,134 @@
 
 > 适用范围：`agentscope-saas`
 >
-> 目标：服务接口层、应用/领域层、数据访问层物理分离；业务数据库访问统一收敛到 MyBatis
+> 目标：服务接口层、应用/领域层、数据访问层物理分离；关系数据库访问统一使用 MyBatis
 >
-> 状态：基础分层已实施，认证、运行编排、任务租约、Outbox、治理和记忆投影已完成垂直迁移
+> 状态：迁移和收尾已完成，后续由自动化架构测试持续防回退
 
 ## 1. 核心决策
 
 本项目采用原生 MyBatis，不采用 MyBatis-Plus。
 
-原因是编排、租约、Outbox、资源治理和垃圾回收大量使用条件更新、CTE、行锁、
-`SKIP LOCKED` 和批量领取。此类 SQL 的正确性依赖明确的数据库语义，通用 CRUD
-封装不能降低复杂度，反而容易把数据库模型和 ORM API 暴露到领域层。
+编排、租约、Outbox、资源治理和垃圾回收大量使用条件更新、CTE、行锁、
+`SKIP LOCKED` 和批量领取。这些 SQL 的正确性依赖明确的数据库语义。原生 MyBatis
+能够保留 SQL 的可审查性和并发语义，同时避免通用 CRUD API 渗入领域层。
 
-重构不是把 `JdbcTemplate` 替换成 Mapper 后保留原目录结构，而是同时建立以下依赖方向：
+最终依赖方向如下：
 
 ```text
-server/app  ───────> application/orchestration ───────> domain
-     │                                                   ▲
-     └──────────────── composition root                  │
-                                                         │
-dal/mybatis ───────── implements repository ports ───────┘
+Web / Worker / Job
+        |
+        v
+应用服务 / 编排服务  ------------> 领域模型
+        |                              ^
+        |                              |
+        +------ Repository Port -------+
+                                       |
+                           DAL Repository Adapter
+                                       |
+                           Tenant / Admin Mapper
+                                       |
+                                  PostgreSQL
 ```
+
+应用层定义用例和事务边界，领域层定义业务模型与 Repository Port，DAL 使用 MyBatis
+实现端口。Controller、Worker 和 Job 不感知 SQL、Mapper 或 Data Object。
 
 ## 2. 模块职责
 
-| 模块 | 职责 | 允许依赖 |
+| 模块 | 职责 | 依赖约束 |
 |---|---|---|
-| `agentscope-saas-domain` | 聚合、值对象、领域规则、Repository Port | JDK |
-| `agentscope-saas-orchestration` | 用例编排、事务边界、状态机 | domain、必要的运行框架 |
-| `agentscope-saas-dal` | MyBatis Mapper、Data Object、TypeHandler、Repository Adapter | domain、MyBatis |
-| `agentscope-saas-app` | REST/SSE、认证入口、任务 Worker、Spring 装配 | application、domain、dal |
-| `agentscope-saas-storage` | MinIO/对象存储基础设施适配 | 存储接口与客户端 |
+| `agentscope-saas-domain` | 聚合、值对象、领域规则、Repository Port | 不依赖 Spring、MyBatis 和数据库 |
+| `agentscope-saas-core` | 租户上下文、配额等共享领域能力 | 不包含持久化实体和仓储实现 |
+| `agentscope-saas-orchestration` | Run、Task 等应用编排和状态机 | 通过领域端口访问数据 |
+| `agentscope-saas-dal` | MyBatis Mapper、Data Object、TypeHandler、Repository Adapter | 唯一关系数据访问实现 |
+| `agentscope-saas-storage` | MinIO 和关系库二进制存储适配 | 关系库回退实现委托 DAL Mapper |
+| `agentscope-saas-sandbox` | 沙箱资源生命周期和计量 | 通过领域端口访问资源记录 |
+| `agentscope-saas-app` | REST/SSE、认证入口、Worker、Job 和 Spring 装配 | 不直接执行关系数据库查询 |
 
-`agentscope-saas-core` 当前仍包含 JPA 实体和 Spring Data Repository，是迁移期模块。
-所有新业务不得继续向该目录增加持久化实体或 Repository。
+## 3. 数据源与权限边界
 
-## 3. 强制规则
+系统保留 Tenant 和 Admin 两个 MyBatis 数据访问通道，但它们连接同一套 PostgreSQL
+Schema，不是两个业务数据库，也不存在两份数据。
+
+- Tenant 通道使用普通应用账号。连接获取时设置 `app.current_org`，由 PostgreSQL RLS
+  强制执行组织隔离。普通用户请求和租户业务数据访问走该通道。
+- Admin 通道使用受控管理账号，仅用于登录注册引导、跨租户调度、租约回收、全局对账
+  和运营统计。管理 Mapper 与租户 Mapper 分包扫描，不能混用 SqlSession。
+
+双通道的目的，是把租户隔离和跨租户运维的权限差异固化到连接与 Mapper 边界，而不是
+依靠业务开发者在每条 SQL 中自行记忆权限规则。
+
+## 4. 已完成的持久化覆盖
+
+MyBatis 已覆盖全部 SaaS 关系数据和后台任务：
+
+- 企业、用户、等级策略、租户治理和认证身份；
+- Agent、会话、顺序消息、上下文摘要和交付状态；
+- Run、Task、AgentRun、Attempt、Event、租约、预算、权限快照和 Outbox；
+- 文件目录、不可变版本、附件、删除队列和 PostgreSQL BYTEA 回退存储；
+- 记忆事件、记忆投影、重放和整合审计；
+- Skills/MCP 市场配置、审计日志和使用量；
+- 沙箱资源、运行租约、跨租户回收对账和 PostgreSQL 快照回退存储。
+
+大文件和沙箱快照在线上优先使用 MinIO。PostgreSQL BYTEA 用于本地、测试或降级回退；
+两种实现共享同一应用接口，不改变领域和应用层。
+
+迁移完成后：
+
+- JPA 实体、Spring Data Repository 和 Hibernate 依赖数量为 0；
+- 生产业务代码中的直接 JDBC 数据访问数量为 0；
+- 生产和测试代码均不使用 `JdbcTemplate`、`JdbcClient` 等 Spring JDBC 查询 API；
+- 应用业务代码不直接依赖 DAL Mapper 或 Data Object；
+- 集成测试使用测试作用域 `TestDatabaseMapper` 准备和校验数据，同样遵循 MyBatis 边界。
+
+## 5. 强制架构规则
 
 1. 领域模块不得依赖 Spring、JPA、MyBatis、Web 或数据库驱动。
-2. Controller、Worker 和 Job 不得直接注入 Mapper、`DataSource`、`JdbcTemplate` 或
-   `EntityManager`。
-3. MyBatis Mapper 只存在于 DAL 模块，并返回 DAL Data Object。
+2. Controller、Worker 和 Job 只能通过应用服务或领域 Repository Port 访问数据。
+3. 生产 MyBatis Mapper 只存在于 DAL 模块，并返回 DAL Data Object。
 4. Repository Adapter 负责 Data Object 与领域对象互转。
-5. 事务边界位于应用服务；Mapper 不开启和提交事务。
-6. 复杂并发 SQL 必须保留条件更新、锁和幂等条件，不允许降级为“先查再写”。
-7. 租户 Mapper 与管理 Mapper 使用不同 `SqlSessionFactory` 和不同扫描包。
-8. 管理 Mapper 只允许用于登录引导、跨租户运维和调度，不得进入普通请求用例。
-9. PostgreSQL UUID 通过统一 `UuidTypeHandler` 读写；禁止各 Mapper 自行转字符串。
-10. `TenantAwareDataSourceConfig` 中设置 PostgreSQL RLS GUC 的 JDBC 调用属于连接基础设施，
-    不属于业务 DAL，不迁移为 Mapper。
+5. 事务边界位于应用服务；Mapper 不自行开启或提交事务。
+6. 复杂并发 SQL 必须保留条件更新、锁、租约和幂等条件，不能改为“先查再写”。
+7. Tenant Mapper 与 Admin Mapper 使用不同 `SqlSessionFactory`、`SqlSessionTemplate`
+   和扫描包。
+8. Admin Mapper 只允许用于明确的跨租户系统用例，不得进入普通租户请求。
+9. PostgreSQL UUID 和 JSON 通过统一 TypeHandler 读写，不在 Mapper 中各自转换。
+10. `TenantAwareDataSourceConfig` 设置 PostgreSQL RLS GUC 的原生 JDBC 调用属于连接
+    基础设施；MyBatis TypeHandler 的 `java.sql` 使用属于驱动适配。除此之外禁止
+    生产代码直接使用 `java.sql`。
+11. Flyway 是数据库结构、索引和 RLS 策略的唯一事实源。
 
-## 4. 当前落地
+## 6. 自动化验收
 
-当前已建立：
+`DataAccessArchitectureTest` 在每次构建中检查：
 
-- 纯领域模块 `agentscope-saas-domain`；
-- 独立数据访问模块 `agentscope-saas-dal`；
-- 租户数据源与管理数据源各自独立的 MyBatis `SqlSessionFactory`、`SqlSessionTemplate`
-  和 Mapper 扫描边界；
-- PostgreSQL/H2 通用 UUID TypeHandler；
-- `AuthIdentityRepository` 领域端口及 MyBatis 实现；
-- `DurableTaskRepository` 领域端口及 MyBatis 实现；
-- `DurableTaskLeaseRepository` 领域端口及 MyBatis 状态机实现；
-- `OrchestrationOutboxRepository` 领域端口及 MyBatis 租约实现；
-- `OrchestrationGovernanceRepository` 领域端口及 MyBatis 悲观锁实现；
-- `MemoryProjectionRepository` 领域端口及 MyBatis 条件领取实现；
-- `SandboxReconciliationRepository` 领域端口及 MyBatis 条件领取实现；
-- `FileObjectGcRepository` 领域端口及 MyBatis 删除队列实现；
-- `RunOrchestrationRepository` 领域端口及 MyBatis 聚合实现；
-- 登录、注册、持久化子任务查询、交付状态和租约领取不再直接使用 JDBC；
-- Run、Task、AgentRun、Attempt、Event 与 Outbox 已从同一租户 MyBatis 会话原子写入；
-- Run 事件序号通过数据库原子递增生成，避免并发事件重复；
-- JSON TypeHandler 同时覆盖 PostgreSQL JSONB 和 H2 JSON，避免 JSON 对象被写成字符串；
-- SSE 断连保护的内部订阅会继承请求 Reactor Context，保证任务脱离浏览器连接继续执行时，
-  RLS 租户上下文仍能跨调度线程传播；
-- 用量异步写入按显式 `TenantContext` 绑定和恢复租户，不依赖调用线程残留状态；
-- 助手终态消息按 `source_run_id` 幂等写入，防止重试产生重复回复；
-- Outbox 发布、预算治理、权限快照和记忆重放不再直接使用 JDBC；
-- 记忆投影领取会重新校验状态、重试次数和 stale 时间，防止多 worker 重复投影；
-- 沙箱释放和文件 GC 在调用外部资源前执行条件领取，防止多 worker 重复删除；
-- 文件元数据清理与对象删除队列写入处于同一管理事务，物理对象删除在事务外重试；
-- 租户 Mapper 使用非超级用户数据源并经过 RLS GUC 包装；管理 Mapper 只使用显式
-  管理数据源；
-- PostgreSQL 集成测试覆盖租户切换后的拒绝与恢复，防止 MyBatis 解包数据源代理后绕过
-  RLS；
-- PostgreSQL 17.5 端到端验证覆盖注册、Agent 创建、SSE 任务执行、幂等复用、Run/Task/
-  Attempt/Event 查询、JSONB、Outbox 和终态消息；
-- 迁移期保留默认 JPA 事务管理器，避免改变未迁移用例的事务语义。
+- 领域层保持框架无关；
+- 生产 Mapper 只能位于 DAL 模块；
+- 应用业务代码不能直接依赖 DAL；
+- 所有源码不能使用 Spring JDBC 查询 API；
+- 测试源码不能使用原生 `java.sql`，测试 Mapper 只能位于测试支持包；
+- 生产代码不能引用 JPA、旧持久化包或未授权的原生 JDBC；
+- POM 和运行配置不能重新引入 JPA/Hibernate；
+- Tenant Task Mapper 必须绑定 Tenant SqlSession，不能绕过 RLS 使用 Admin 通道。
 
-当前应用层直接使用 `JdbcTemplate` 的业务类数量为 0。
+功能回归分两层：
 
-`agentscope-saas-core` 中仍有 14 个 Spring Data JPA Repository。基础设施配置中为连接池、
-RLS GUC 和旧存储 adapter 装配而使用的 `DataSource` 不计入上述业务类数量；其中仍依赖
-JPA Repository 的存储 adapter 须在后续批次迁入 DAL。
+- H2 PostgreSQL 模式执行全量测试，覆盖仓储、事务、任务状态机、Outbox、治理、文件、
+  记忆、沙箱租约和端到端聊天编排；
+- 真实 PostgreSQL 执行数据库契约与 RLS 集成测试，覆盖 UUID、JSONB、BYTEA、锁、
+  条件领取、事务回滚、租户隔离和连接复用后的上下文恢复。
 
-## 5. 后续迁移批次
+## 7. 完成定义
 
-### P0：编排控制面
+DDD 与 MyBatis 迁移完成必须同时满足：
 
-迁移以下能力到 `domain + orchestration + dal`：
+- 所有关系数据库读写都通过 MyBatis；
+- 所有业务持久化能力都有领域 Repository Port 和 DAL Adapter；
+- 应用服务不直接依赖 Mapper、SQL 或数据库实现；
+- Tenant 与 Admin 权限通道边界明确且可自动验证；
+- JPA、Spring Data、Hibernate 和 Spring JDBC 查询 API 不再出现；
+- H2 全量回归和真实 PostgreSQL/RLS 验收通过；
+- 架构守卫能阻止上述约束被后续提交破坏。
 
-- `DurableTaskLeaseService`（已完成）
-- `OrchestrationGovernanceService`（已完成）
-- `OrchestrationOutboxPublisher`（已完成）
-- `RunOrchestrationService` 使用的 6 个 JPA Repository（已完成）
-
-验收要求：
-
-- lease 领取仍使用数据库锁和 `SKIP LOCKED`；
-- 任务状态转换全部为条件更新；
-- Outbox 领取、续租、发布、失败重试语义不变；
-- H2 功能测试和 PostgreSQL 并发集成测试通过。
-
-本批次同时删除上述 6 个旧 JPA Repository 和实体，并增加架构测试，禁止 orchestration
-模块重新依赖旧 persistence 模型。
-
-### P1：会话、文件与记忆
-
-迁移会话窗口、消息序列、文件目录、附件、记忆账本和重放作业。
-
-验收要求：
-
-- 长会话仍按 `session_id + seq` 游标分页；
-- 文件二进制仍在 MinIO/对象存储，PG 只保存元数据和引用；
-- 记忆事实与 Mem0 投影职责不变；
-- 文件 GC 的领取、重试和幂等删除保持事务一致性（Job 与删除队列已完成，文件业务
-  Repository 待迁移）。
-
-### P2：租户管理与运行资源
-
-迁移用户、组织、Agent、市场、审计、用量、Tier 和 Sandbox Repository，以及沙箱对账作业。
-
-验收要求：
-
-- 租户查询同时具备显式 `org_id` 条件与 PostgreSQL RLS；
-- 管理查询只能通过管理 Mapper；
-- 配额锁定点和并发创建限制不退化；
-- 沙箱对账作业已完成，租户沙箱业务 Repository 待迁移。
-
-### P3：清理旧持久化层
-
-- 删除 `agentscope-saas-core.persistence.entity`；
-- 删除 `agentscope-saas-core.persistence.repo`；
-- 删除 `spring-boot-starter-data-jpa` 和 Hibernate；
-- 删除生产代码中的 `JdbcTemplate`、`EntityManager` 和业务 `java.sql` 调用；
-- 将 `agentscope-saas-core` 收敛为共享领域能力，或按 bounded context 拆除。
-
-## 6. 完成定义
-
-只有同时满足以下条件，重构才算完成：
-
-- 生产业务代码中 JPA Repository 数量为 0；
-- 生产业务代码中直接 JDBC 数据访问数量为 0；
-- 所有数据库访问从应用服务经过领域 Repository Port 进入 DAL；
-- server/app 不依赖 DAL Data Object 或 Mapper；
-- 管理和租户数据源的 Mapper 扫描边界有自动化测试；
-- H2 回归、PostgreSQL 锁并发测试、认证端到端和任务端到端全部通过；
-- 数据库 SQL、索引、RLS 和 Flyway 仍是唯一数据库结构事实源。
+上述条件已完成实现；本文件后续作为架构基线维护，不再作为迁移待办清单。
