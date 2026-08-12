@@ -24,7 +24,9 @@ export default function LoginPage() {
       } else {
         await register(email.trim(), password, displayName.trim());
       }
-      navigate('/agents', { replace: true });
+      // Land on the chat-first home (`/` → ChatHomePage → most-recent agent's chat),
+      // not the agents hub.
+      navigate('/', { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed');
     } finally {

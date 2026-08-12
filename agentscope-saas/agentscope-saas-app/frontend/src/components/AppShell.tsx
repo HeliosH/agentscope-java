@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useLocation, useNavigate, useOutletContext, Outlet } from 'react-router-dom';
-import AgentRail from './AgentRail';
 import { logout, type MeResponse } from '../auth';
 
 interface ShellContext {
@@ -23,9 +22,7 @@ export default function AppShell() {
   const initial = (me?.email ?? '?').charAt(0).toUpperCase();
 
   return (
-    <div style={{ display: 'flex', height: '100vh', background: '#f8fafc', color: '#0f172a', overflow: 'hidden' }}>
-      <AgentRail />
-
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#f8fafc', color: '#0f172a', overflow: 'hidden' }}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{
           height: 64, background: '#ffffff', borderBottom: '1px solid #e2e8f0',

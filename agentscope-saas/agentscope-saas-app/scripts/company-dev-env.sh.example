@@ -1,0 +1,37 @@
+# ===================================================================
+# Company dev environment - secrets & runtime values (TEMPLATE).
+# Copy to company-dev-env.sh and fill in. company-dev-env.sh is gitignored.
+#   cp company-dev-env.sh.example company-dev-env.sh
+# Used by start-company-dev.sh / stop-company-dev.sh.
+# ===================================================================
+
+# Spring profile + HTTP port
+export SPRING_PROFILES_ACTIVE=company-dev
+export SERVER_PORT="${SERVER_PORT:-8080}"
+
+# ---- PostgreSQL (comac superuser, both datasources) ----
+export SAAS_DB_NAME="test-saas-claw"             # fresh test DB; start script auto-creates it
+export SAAS_DB_USER="comac"
+export SAAS_DB_PASSWORD="REDACTED"                # comac password
+export SAAS_DB_ADMIN_USER="comac"
+export SAAS_DB_ADMIN_PASSWORD="REDACTED"
+
+# ---- Redis (db 2; password URL-encoded: @ -> %40) ----
+export SAAS_REDIS_URI="redis://:REDACTED@192.168.6.15:6379/2"
+
+# ---- MinIO (file-store + sandbox snapshots, bucket cbrain-evolve) ----
+export SAAS_FILE_STORE_MINIO_ACCESS_KEY="REDACTED"
+export SAAS_FILE_STORE_MINIO_SECRET_KEY="REDACTED"
+export SAAS_SANDBOX_MINIO_ACCESS_KEY="$SAAS_FILE_STORE_MINIO_ACCESS_KEY"
+export SAAS_SANDBOX_MINIO_SECRET_KEY="$SAAS_FILE_STORE_MINIO_SECRET_KEY"
+
+# ---- CubeSandbox (company default endpoint; config lives in the yml) ----
+export SAAS_SANDBOX_CUBE_API_KEY=""               # set only if your cube requires auth
+
+# ---- Model gateway (OpenAI-compatible) ----
+export SAAS_MODEL_BASE_URL="https://REDACTED/v1"  # e.g. https://<gateway>/v1
+export SAAS_MODEL_API_KEY=""                       # set if your gateway requires a key
+export SAAS_MODEL_NAME="qwen-max"
+
+# ---- JWT (dev secret - override for shared envs) ----
+export SAAS_JWT_SECRET="company-dev-secret-please-override-0123456789abcdef"

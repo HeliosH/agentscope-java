@@ -83,6 +83,14 @@ export async function getRun(agentId: string, runId: string): Promise<RunView> {
   return json(await fetch(base(agentId, runId)), 'Failed to load run');
 }
 
+/** Lists the most recent runs for an agent, newest first. */
+export async function listRuns(agentId: string, limit = 50): Promise<RunView[]> {
+  return json(
+    await fetch(`/api/agents/${encodeURIComponent(agentId)}/runs?limit=${limit}`),
+    'Failed to load runs',
+  );
+}
+
 export async function getTasks(agentId: string, runId: string): Promise<TaskView[]> {
   return json(await fetch(`${base(agentId, runId)}/tasks`), 'Failed to load tasks');
 }

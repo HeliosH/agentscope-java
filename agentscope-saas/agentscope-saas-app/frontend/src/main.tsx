@@ -4,6 +4,8 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import AgentsHubPage from './pages/AgentsHubPage';
 import AgentCreatePage from './pages/AgentCreatePage';
 import AgentChatPage from './pages/AgentChatPage';
+import TasksPage from './pages/TasksPage';
+import ChatHomePage from './pages/ChatHomePage';
 import AgentWorkspacePage from './pages/AgentWorkspacePage';
 import AgentSkillsPage from './pages/AgentSkillsPage';
 import AgentSubagentsPage from './pages/AgentSubagentsPage';
@@ -29,7 +31,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <Route path="/login" element={<LoginPage />} />
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
-            <Route path="/" element={<Navigate to="/agents" replace />} />
+            <Route path="/" element={<ChatHomePage />} />
             <Route path="/agents" element={<AgentsHubPage />} />
             <Route path="/agents/new" element={<AgentCreatePage />} />
             <Route path="/admin/users" element={<AdminUsersPage />} />
@@ -41,6 +43,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <Route path="/agents/:id" element={<AgentLayout />}>
               <Route index element={<Navigate to="chat" replace />} />
               <Route path="chat" element={<AgentChatPage />} />
+              <Route path="tasks" element={<TasksPage />} />
               <Route path="workspace" element={<AgentWorkspacePage />} />
               <Route path="skills" element={<AgentSkillsPage />} />
               <Route path="subagents" element={<AgentSubagentsPage />} />

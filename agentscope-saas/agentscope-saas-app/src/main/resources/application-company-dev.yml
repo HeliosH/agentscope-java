@@ -1,0 +1,127 @@
+# ===================================================================
+# AgentScope Enterprise SaaS Platform - company-dev profile
+# Functional verification against company dev middleware on 192.168.6.15:
+#   PostgreSQL (comac superuser, both datasources), Redis (db 2),
+#   MinIO (bucket cbrain-evolve), CubeSandbox (cubesandbox.dev.comnova.cc),
+#   and an OpenAI-compatible model gateway.
+#
+# Secrets + the DB name / model endpoint come from scripts/company-dev-env.sh
+# (gitignored). Activate with: --spring.profiles.active=company-dev
+#
+# Prerequisite: the Flyway migrations V10/V12 reference two roles (`app`,
+# `agentscope`) that must exist before first boot. Run
+# scripts/company-dev-provision-roles.sql once against the company Postgres
+# (the start script does this automatically when psql is available).
+# ===================================================================
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  datasource:
+    # comac is a superuser and is used for BOTH the primary pool and the
+    # admin/Flyway pool. Superusers bypass Row-Level Security, so the RLS
+    # tenant isolation from V6/V9 is NOT enforced in this dev profile - that
+    # is acceptable for single-org self-test. Bootstrap login queries (resolve
+    # org/user by email) also run on this connection and succeed because
+    # superusers bypass RLS.
+    url: jdbc:postgresql://192.168.6.15:5432/${SAAS_DB_NAME:agentscope_saas}
+    username: ${SAAS_DB_USER:comac}
+    password: ${SAAS_DB_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
+  flyway:
+    enabled: true
+    locations: classpath:db/migration/postgresql
+    baseline-on-migrate: true
+
+saas:
+  datasource:
+    admin:
+      # Same comac superuser - Flyway runs DDL / RLS / policy / grant
+      # migrations (V1-V16) as comac. The `app`/`agentscope` roles that V10/V12
+      # reference are created by company-dev-provision-roles.sql; comac owns the
+      # schema objects it creates here.
+      url: jdbc:postgresql://192.168.6.15:5432/${SAAS_DB_NAME:agentscope_saas}
+      username: ${SAAS_DB_ADMIN_USER:comac}
+      password: ${SAAS_DB_ADMIN_PASSWORD:}
+      driver-class-name: org.postgresql.Driver
+  model:
+    # OpenAI-compatible model gateway. Provide base-url / api-key / name in
+    # scripts/company-dev-env.sh.
+    type: gateway
+    base-url: ${SAAS_MODEL_BASE_URL:}
+    api-key: ${SAAS_MODEL_API_KEY:}
+    name: ${SAAS_MODEL_NAME:qwen-max}
+  redis:
+    enabled: true
+    # Full URI (password + db index) supplied via env. The password `redis@2025`
+    # is URL-encoded as redis%402025 because `@` separates credentials from host
+    # in a redis:// URI.
+    uri: ${SAAS_REDIS_URI:redis://192.168.6.15:6379/2}
+    key-prefix: ${SAAS_REDIS_PREFIX:agentscope:saas:}
+  file-store:
+    enabled: true
+    # Workspace file bytes to MinIO object storage (bucket cbrain-evolve).
+    backend: minio
+    object-key-prefix: files/
+    minio:
+      endpoint: http://192.168.6.15:9000
+      access-key: ${SAAS_FILE_STORE_MINIO_ACCESS_KEY:}
+      secret-key: ${SAAS_FILE_STORE_MINIO_SECRET_KEY:}
+      bucket: cbrain-evolve
+  sandbox:
+    enabled: true
+    type: cube
+    isolation-scope: USER
+    workspace-root: /home/user
+    idle-ttl-seconds: 600
+    # CubeSandbox (Tencent open-source KVM microVM, E2B-compatible REST API).
+    # API is on :3000 (the :12088 from cube.ai0377.dev.comnova.cc is the web CONSOLE,
+    # not the API). Use the IP directly: the hostname rounds-robin between
+    # 192.168.6.8 (API port closed) and 192.168.48.149 (API reachable).
+    cube-api-url: http://192.168.48.149:3000
+    cube-api-key: ${SAAS_SANDBOX_CUBE_API_KEY:}
+    cube-template-id: tpl-525000c672df4d5fad363695
+    cube-domain: cube.ai0377.dev.comnova.cc
+    cube-envd-host-pattern: "https://{port}-{sandboxId}.{domain}"
+    cube-insecure-skip-tls-verify: true
+    cube-sandbox-timeout-seconds: 300
+    snapshot:
+      enabled: true
+      # Durable workspace snapshots to MinIO (same bucket, snapshots/ prefix).
+      backend: minio
+    minio:
+      endpoint: http://192.168.6.15:9000
+      access-key: ${SAAS_SANDBOX_MINIO_ACCESS_KEY:}
+      secret-key: ${SAAS_SANDBOX_MINIO_SECRET_KEY:}
+      bucket: cbrain-evolve
+      key-prefix: snapshots/
+  rate-limit:
+    max-requests: 1000
+    window-seconds: 60
+  orchestration:
+    # Dev self-test: the agent prompt is large (~10k tokens/model call, mostly
+    # cached) and budget accounting counts full totals per call, so a multi-step
+    # ReAct run quickly exceeds the 80k default task budget. Disable the
+    # production token/cost/call governance for interactive testing.
+    budget-enforcement-enabled: false
+  agent:
+    name: assistant
+    max-iters: 12
+    # Interactive console self-test: auto-allow safe shell + file tools so the
+    # ReAct loop is not paused for every command, but still ASK (HITL confirm
+    # card in the console) for destructive commands. Drop this block to revert
+    # to the production ASK defaults for full human-in-the-loop.
+    permission:
+      # Dev self-test: BYPASS auto-allows every tool call (the PermissionEngine falls through
+      # to BYPASS -> ALLOW for anything not denied), so the agent never pauses for HITL approval
+      # (todo_write, plan_*, skill_*, session_*, memory_* all run unattended). Keep DEFAULT with
+      # allow/ask rules in production for human-in-the-loop safety.
+      mode: BYPASS
+  security:
+    jwt:
+      secret: ${SAAS_JWT_SECRET:company-dev-secret-please-override-0123456789abcdef}
+      ttl-seconds: 43200
+
+logging:
+  level:
+    io.agentscope: DEBUG

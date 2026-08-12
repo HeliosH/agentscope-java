@@ -578,6 +578,18 @@ public class SaasChatController {
                                                                 "Run not found")));
     }
 
+    /** Lists the most recent runs for an agent, newest first. */
+    @GetMapping("/api/agents/{agentId}/runs")
+    public Mono<List<RunOrchestrationService.RunView>> listRuns(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String agentId,
+            @RequestParam(name = "limit", defaultValue = "50") int limit) {
+        TenantContext tenant = tenantResolver.resolve(jwt != null ? jwt.getClaims() : Map.of());
+        return Mono.fromCallable(
+                        () -> orchestration.listRuns(tenant, parseUuid(agentId, "agentId"), limit))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
     @GetMapping("/api/agents/{agentId}/runs/{runId}/tasks")
     public Mono<List<RunOrchestrationService.TaskView>> getRunTasks(
             @AuthenticationPrincipal Jwt jwt,

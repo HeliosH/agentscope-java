@@ -19,6 +19,8 @@ public interface RunOrchestrationRepository {
 
     Optional<AssistantRun> findOwnedRun(UUID runId, UUID orgId, UUID userId, UUID agentId);
 
+    List<AssistantRun> findRecentOwnedRuns(UUID orgId, UUID userId, UUID agentId, int limit);
+
     Optional<AssistantRun> findByIdempotencyKey(
             UUID orgId, UUID userId, UUID agentId, String idempotencyKey);
 

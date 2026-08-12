@@ -85,3 +85,8 @@ logs/
 
 ## harness db
 **/*.db
+
+## Company dev local secrets/runtime (do not commit)
+agentscope-saas/agentscope-saas-app/scripts/company-dev-env.sh
+agentscope-saas/agentscope-saas-app/scripts/company-dev.pid
+agentscope-saas/agentscope-saas-app/scripts/company-dev.log

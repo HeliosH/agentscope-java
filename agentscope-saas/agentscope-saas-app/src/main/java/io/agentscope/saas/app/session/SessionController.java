@@ -444,10 +444,13 @@ public class SessionController {
                 JsonNode blocks = objectMapper.readTree(m.getContentJson());
                 StringBuilder sb = new StringBuilder();
                 for (JsonNode block : blocks) {
+                    // Persisted content blocks are either AG-UI blocks ({type:"text",text:...})
+                    // or bare blocks ({text:...}) with no type discriminator. Extract any
+                    // non-empty text field either way.
                     String type = block.path("type").asText("");
-                    if ("text".equals(type)) {
-                        String t = block.path("text").asText("");
-                        if (!t.isEmpty()) sb.append(t);
+                    String t = block.path("text").asText("");
+                    if (!t.isEmpty()) {
+                        sb.append(t);
                     } else if ("tool_use".equals(type) && toolName == null) {
                         toolName = block.path("name").asText(null);
                         JsonNode input = block.get("input");

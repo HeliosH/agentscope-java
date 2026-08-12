@@ -562,6 +562,20 @@ public class RunOrchestrationService {
                 .map(this::toView);
     }
 
+    /** Lists the most recent owned runs for an agent, newest first. */
+    @Transactional(readOnly = true)
+    public List<RunView> listRuns(TenantContext tenant, UUID agentId, int limit) {
+        return repository
+                .findRecentOwnedRuns(
+                        uuid(tenant.orgId(), "orgId"),
+                        uuid(tenant.userId(), "userId"),
+                        agentId,
+                        Math.max(1, Math.min(limit <= 0 ? 50 : limit, 200)))
+                .stream()
+                .map(this::toView)
+                .toList();
+    }
+
     @Transactional(readOnly = true)
     public List<TaskView> getTasks(TenantContext tenant, UUID agentId, UUID runId) {
         AssistantRun run =

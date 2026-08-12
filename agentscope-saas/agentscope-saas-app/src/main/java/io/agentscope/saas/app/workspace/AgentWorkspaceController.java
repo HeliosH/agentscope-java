@@ -116,11 +116,23 @@ public class AgentWorkspaceController {
         return Mono.fromCallable(
                         () -> {
                             AbstractFilesystem fs = resolveFilesystem(rc, agentId);
-                            boolean agentsMdExists = fs.exists(FS_RC, "/AGENTS.md");
-                            boolean memoryMdExists = fs.exists(FS_RC, "/MEMORY.md");
-                            int skillCount = countLs(fs, "/skills", true, null);
-                            int subagentCount = countLs(fs, "/subagents", false, ".md");
-                            int dailyMemoryCount = countLs(fs, "/memory", false, ".md");
+                            boolean agentsMdExists = false;
+                            boolean memoryMdExists = false;
+                            int skillCount = 0;
+                            int subagentCount = 0;
+                            int dailyMemoryCount = 0;
+                            try {
+                                agentsMdExists = fs.exists(FS_RC, "/AGENTS.md");
+                                memoryMdExists = fs.exists(FS_RC, "/MEMORY.md");
+                                skillCount = countLs(fs, "/skills", true, null);
+                                subagentCount = countLs(fs, "/subagents", false, ".md");
+                                dailyMemoryCount = countLs(fs, "/memory", false, ".md");
+                            } catch (Exception e) {
+                                log.warn(
+                                        "Workspace summary unavailable outside a call ({});"
+                                                + " reporting catalog-only",
+                                        e.getMessage());
+                            }
                             FileCatalogService.FileQuotaUsage quota =
                                     fileCatalogService.currentUsage(TenantContext.from(rc));
                             boolean exists =
@@ -197,16 +209,34 @@ public class AgentWorkspaceController {
                             List<FileCatalogService.CatalogFileSummary> catalogFiles =
                                     fileCatalogService.listActiveFiles(tenant);
                             if (recursive) {
-                                GlobResult gr = fs.glob(FS_RC, "**/*", "/");
-                                if (!gr.isSuccess() || gr.matches() == null) {
+                                GlobResult gr;
+                                try {
+                                    gr = fs.glob(FS_RC, "**/*", "/");
+                                } catch (Exception e) {
+                                    log.warn(
+                                            "Workspace glob unavailable outside a call ({});"
+                                                    + " showing catalog files",
+                                            e.getMessage());
+                                    gr = null;
+                                }
+                                if (gr == null || !gr.isSuccess() || gr.matches() == null) {
                                     return buildTreeFromGlob(
                                             mergeCatalogFileInfos(List.of(), catalogFiles, true));
                                 }
                                 return buildTreeFromGlob(
                                         mergeCatalogFileInfos(gr.matches(), catalogFiles, true));
                             }
-                            LsResult ls = fs.ls(FS_RC, "/");
-                            if (!ls.isSuccess() || ls.entries() == null) {
+                            LsResult ls;
+                            try {
+                                ls = fs.ls(FS_RC, "/");
+                            } catch (Exception e) {
+                                log.warn(
+                                        "Workspace ls unavailable outside a call ({}); showing"
+                                                + " catalog files",
+                                        e.getMessage());
+                                ls = null;
+                            }
+                            if (ls == null || !ls.isSuccess() || ls.entries() == null) {
                                 return flattenShallow(
                                         mergeCatalogFileInfos(List.of(), catalogFiles, false));
                             }
@@ -568,16 +598,27 @@ public class AgentWorkspaceController {
                             TenantContext tenant = TenantContext.from(rc);
                             String abs = toAbsFsPath(path);
                             String rel = toRelFsPath(path);
-                            String absDir = abs.endsWith("/") ? abs : abs + "/";
-                            if (!fs.exists(FS_RC, abs) && !fs.exists(FS_RC, absDir)) {
-                                throw new ResponseStatusException(
-                                        HttpStatus.NOT_FOUND, "Not found: " + path);
-                            }
-                            WriteResult wr = fs.delete(FS_RC, abs);
-                            if (!wr.isSuccess()) {
-                                throw new ResponseStatusException(
-                                        HttpStatus.INTERNAL_SERVER_ERROR,
-                                        "Delete failed: " + wr.error());
+                            try {
+                                String absDir = abs.endsWith("/") ? abs : abs + "/";
+                                if (!fs.exists(FS_RC, abs) && !fs.exists(FS_RC, absDir)) {
+                                    throw new ResponseStatusException(
+                                            HttpStatus.NOT_FOUND, "Not found: " + path);
+                                }
+                                WriteResult wr = fs.delete(FS_RC, abs);
+                                if (!wr.isSuccess()) {
+                                    throw new ResponseStatusException(
+                                            HttpStatus.INTERNAL_SERVER_ERROR,
+                                            "Delete failed: " + wr.error());
+                                }
+                            } catch (ResponseStatusException e) {
+                                throw e;
+                            } catch (Exception e) {
+                                // No active sandbox outside a call: delete from the durable
+                                // catalog.
+                                log.warn(
+                                        "Sandbox delete unavailable outside a call ({}); deleting"
+                                                + " from durable store",
+                                        e.getMessage());
                             }
                             fileCatalogService.markDeleted(tenant, rel);
                         })
@@ -661,12 +702,24 @@ public class AgentWorkspaceController {
 
     private static void uploadToWorkspace(
             AbstractFilesystem fs, String relativePath, byte[] content, String operation) {
-        List<FileUploadResponse> responses =
-                fs.uploadFiles(FS_RC, List.of(Map.entry(relativePath, content)));
-        if (responses.isEmpty() || !responses.get(0).isSuccess()) {
-            String error = responses.isEmpty() ? "no response" : responses.get(0).error();
-            throw new ResponseStatusException(
-                    HttpStatus.INTERNAL_SERVER_ERROR, "Failed to " + operation + ": " + error);
+        try {
+            List<FileUploadResponse> responses =
+                    fs.uploadFiles(FS_RC, List.of(Map.entry(relativePath, content)));
+            if (responses.isEmpty() || !responses.get(0).isSuccess()) {
+                String error = responses.isEmpty() ? "no response" : responses.get(0).error();
+                log.warn(
+                        "Sandbox workspace {} failed ({}); file stays in durable store",
+                        operation,
+                        error);
+            }
+        } catch (Exception e) {
+            // Outside an active sandbox call there is no live sandbox workspace to write into;
+            // the durable file catalog already holds the bytes and projects them into the next
+            // sandbox. Treat the sandbox write as best-effort so uploads work from the UI.
+            log.warn(
+                    "Sandbox workspace {} skipped ({}); file stays in durable store",
+                    operation,
+                    e.getMessage());
         }
     }
 

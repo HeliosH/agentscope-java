@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { ConfirmToolCall, currentSession, stream, type ChatEvent, type ChatRequest, type ConfirmResultInput } from '../api/chat';
 import { TurnEntry, turnsWindow } from '../api/sessions';
-import RunInspector from './RunInspector';
 import ToolCallBlock from './ToolCallBlock';
+import { uploadFile } from '../api/workspace';
 
 type Role = 'user' | 'assistant' | 'system';
 
@@ -38,7 +38,11 @@ const S: Record<string, React.CSSProperties> = {
     background: '#ffffff', border: '1px solid #e2e8f0', color: '#475569',
     padding: '5px 12px', borderRadius: 7, cursor: 'pointer', fontSize: '0.82rem', fontWeight: 500,
   },
-  thread: { flex: 1, overflowY: 'auto', padding: '28px 36px', display: 'flex', flexDirection: 'column', gap: 18 },
+  thread: { flex: 1, overflowY: 'auto' },
+  threadInner: {
+    maxWidth: 820, margin: '0 auto', padding: '28px 24px',
+    display: 'flex', flexDirection: 'column', gap: 18,
+  },
   empty: { color: '#94a3b8', fontSize: '0.95rem', textAlign: 'center', marginTop: 100 },
   bubble: {
     maxWidth: '78%', padding: '14px 18px', borderRadius: 14,
@@ -60,9 +64,10 @@ const S: Record<string, React.CSSProperties> = {
     fontSize: '0.85rem', fontStyle: 'italic',
   },
   composer: {
-    borderTop: '1px solid #e2e8f0', padding: '18px 28px',
-    display: 'flex', gap: 12, background: '#ffffff',
+    borderTop: '1px solid #e2e8f0', padding: '18px 24px',
+    background: '#ffffff', flexShrink: 0,
   },
+  composerInner: { maxWidth: 820, margin: '0 auto', display: 'flex', gap: 12 },
   textarea: {
     flex: 1, padding: '12px 16px',
     background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 10,
@@ -77,6 +82,12 @@ const S: Record<string, React.CSSProperties> = {
     boxShadow: '0 2px 6px rgba(99,102,241,0.35), inset 0 1px 0 rgba(255,255,255,0.18)',
   },
   sendDisabled: { background: '#e2e8f0', color: '#94a3b8', cursor: 'not-allowed', boxShadow: 'none' },
+  uploadBtn: {
+    background: '#ffffff', border: '1px solid #cbd5e1', color: '#475569',
+    borderRadius: 10, padding: '0 14px', cursor: 'pointer',
+    fontSize: '1.05rem', display: 'inline-flex', alignItems: 'center',
+    flexShrink: 0,
+  },
   confirmBox: {
     marginTop: 12, padding: 12, borderRadius: 10,
     border: '1px solid #fed7aa', background: '#fff7ed', color: '#7c2d12',
@@ -135,7 +146,6 @@ function turnsToMessages(turns: TurnEntry[]): Message[] {
 
 export default function ChatPanel({ agentId }: { agentId: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const navigate = useNavigate();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -144,10 +154,11 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
   const [hasEarlier, setHasEarlier] = useState(false);
   const [nextBeforeSeq, setNextBeforeSeq] = useState<number | null>(null);
   const [sessionKey, setSessionKey] = useState<string | null>(null);
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const preserveScrollRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [uploading, setUploading] = useState(false);
 
   const persistSession = useCallback((key: string | null) => {
     if (key) {
@@ -165,7 +176,6 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
     setRestoring(true);
     setHasEarlier(false);
     setNextBeforeSeq(null);
-    setActiveRunId(null);
 
     const urlKey = searchParams.get('session');
     const stored = (() => { try { return localStorage.getItem(storageKey(agentId)); } catch { return null; } })();
@@ -179,12 +189,10 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
           const cur = await currentSession(agentId);
           key = cur.sessionKey;
           exists = cur.exists;
-          setActiveRunId(cur.latestRunId ?? null);
         } else {
           // We have a candidate; just check whether the backend has turns.
           const cur = await currentSession(agentId);
           exists = cur.exists && cur.sessionKey === key;
-          if (exists) setActiveRunId(cur.latestRunId ?? null);
         }
       } catch {
         // ignore — a missing session is fine, we just start empty
@@ -248,9 +256,7 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
   const canSend = useMemo(() => !busy && !restoring && input.trim().length > 0, [busy, restoring, input]);
 
   function applyChatEvent(evt: ChatEvent, replyId: string) {
-    if (evt.type === 'run_started') {
-      if (evt.runId) setActiveRunId(evt.runId);
-    } else if (evt.type === 'token') {
+    if (evt.type === 'token') {
       const chunk = evt.data ?? '';
       setMessages(prev => prev.map(m => m.id === replyId ? { ...m, text: m.text + chunk } : m));
     } else if (evt.type === 'tool_call') {
@@ -311,6 +317,23 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
       : m));
   }
 
+  async function handleUpload(file: File) {
+    if (busy || !file) return;
+    setUploading(true);
+    try {
+      const uploaded = await uploadFile(agentId, file);
+      const marker = uploaded.path
+        ? `[上传文件: ${uploaded.path}，请读取] `
+        : `[上传文件: ${file.name}，请读取] `;
+      setInput(prev => marker + (prev ?? ''));
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : '文件上传失败');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
+
   async function handleSend() {
     if (!canSend) return;
     const text = input.trim();
@@ -365,61 +388,10 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
     }
   }
 
-  function handleNewChat() {
-    if (busy) return;
-    if (messages.length > 0 && !confirm('Start a new chat? The current thread will be cleared (a /reset will be sent to the agent).')) {
-      return;
-    }
-    setMessages([{
-      id: nextId(),
-      role: 'system',
-      text: 'New chat started. Previous turns have been cleared.',
-      tools: [],
-    }]);
-    // Send /reset in the background so the harness clears its in-memory turn history too.
-    (async () => {
-      try {
-        for await (const _ of stream(agentId, { message: '/reset', sessionId: sessionKey ?? undefined })) {
-          // drain
-        }
-      } catch {
-        // best-effort
-      }
-    })();
-  }
-
   return (
-    <div className="chat-run-layout">
     <div style={S.root}>
-      <div style={S.header}>
-        <span>Session</span>
-        {sessionKey ? (
-          <span style={S.sessionTag} title={sessionKey}>{sessionKey.slice(0, 24)}{sessionKey.length > 24 ? '…' : ''}</span>
-        ) : restoring ? (
-          <span style={{ ...S.sessionTag, opacity: 0.6 }}>resolving…</span>
-        ) : (
-          <span style={{ ...S.sessionTag, opacity: 0.6 }}>new — send to start</span>
-        )}
-        <span style={{ flex: 1 }} />
-        <button
-          type="button"
-          style={S.iconBtn}
-          onClick={() => navigate(`/agents/${encodeURIComponent(agentId)}/sessions`)}
-          title="View all sessions for this agent"
-        >
-          📋 All sessions
-        </button>
-        <button
-          type="button"
-          style={S.iconBtn}
-          onClick={handleNewChat}
-          disabled={busy}
-          title="Clear this thread and start fresh"
-        >
-          ✨ New chat
-        </button>
-      </div>
       <div style={S.thread} ref={threadRef}>
+        <div style={S.threadInner}>
         {hasEarlier && (
           <button type="button" style={{ ...S.iconBtn, alignSelf: 'center' }} onClick={() => void loadEarlier()} disabled={loadingEarlier}>
             {loadingEarlier ? 'Loading earlier messages…' : 'Load earlier messages'}
@@ -474,8 +446,29 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
             )}
           </div>
         ))}
+        </div>
       </div>
       <div style={S.composer}>
+        <div style={S.composerInner}>
+        <input
+          ref={fileInputRef}
+          type="file"
+          style={{ display: 'none' }}
+          onChange={e => {
+            const f = e.target.files?.[0];
+            if (f) void handleUpload(f);
+          }}
+          disabled={busy || uploading}
+        />
+        <button
+          type="button"
+          style={S.uploadBtn}
+          onClick={() => fileInputRef.current?.click()}
+          disabled={busy || uploading}
+          title="上传文件到工作区（agent 可读取）"
+        >
+          {uploading ? '…' : '📎'}
+        </button>
         <textarea
           ref={inputRef}
           style={S.textarea}
@@ -494,9 +487,8 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
         >
           {busy ? '…' : 'Send'}
         </button>
+        </div>
       </div>
-    </div>
-    {activeRunId && <RunInspector agentId={agentId} runId={activeRunId} />}
     </div>
   );
 }

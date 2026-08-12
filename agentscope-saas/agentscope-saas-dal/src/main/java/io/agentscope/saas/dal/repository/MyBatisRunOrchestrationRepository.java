@@ -33,6 +33,12 @@ public class MyBatisRunOrchestrationRepository implements RunOrchestrationReposi
     }
 
     @Override
+    public List<AssistantRun> findRecentOwnedRuns(
+            UUID orgId, UUID userId, UUID agentId, int limit) {
+        return mapper.findRecentOwnedRuns(orgId, userId, agentId, limit);
+    }
+
+    @Override
     public Optional<AssistantRun> findByIdempotencyKey(
             UUID orgId, UUID userId, UUID agentId, String idempotencyKey) {
         return first(mapper.findByIdempotencyKey(orgId, userId, agentId, idempotencyKey));
