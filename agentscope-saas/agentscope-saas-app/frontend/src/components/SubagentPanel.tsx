@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { ArrowLeft, Bot, CopyPlus, Plus, Save, Trash2 } from 'lucide-react';
 import {
   SubagentInfo,
   SubagentUpsertRequest,
@@ -26,31 +27,32 @@ const S: Record<string, React.CSSProperties> = {
   },
   title: {
     flex: 1, fontSize: '0.78rem', color: '#94a3b8', fontWeight: 700,
-    textTransform: 'uppercase' as const, letterSpacing: '0.1em',
+    textTransform: 'uppercase' as const, letterSpacing: '0.1em', display: 'flex', alignItems: 'center', gap: 6,
   },
   btn: {
     padding: '7px 14px', background: '#f8fafc', border: '1px solid #e2e8f0',
-    color: '#475569', borderRadius: 8, cursor: 'pointer', fontSize: '0.82rem', fontWeight: 500,
+    color: '#475569', borderRadius: 6, cursor: 'pointer', fontSize: '0.82rem', fontWeight: 500,
+    display: 'inline-flex', alignItems: 'center', gap: 6,
   },
   primaryBtn: {
     padding: '7px 14px',
-    background: 'linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%)',
-    color: '#ffffff', border: 'none', borderRadius: 8, cursor: 'pointer',
+    background: '#176b49',
+    color: '#ffffff', border: 'none', borderRadius: 6, cursor: 'pointer',
     fontSize: '0.82rem', fontWeight: 600,
-    boxShadow: '0 1px 3px rgba(99,102,241,0.3)',
+    display: 'inline-flex', alignItems: 'center', gap: 6,
   },
   dangerBtn: {
     padding: '7px 14px', background: '#ffffff', color: '#dc2626',
-    border: '1px solid #fca5a5', borderRadius: 8, cursor: 'pointer',
+    border: '1px solid #fca5a5', borderRadius: 6, cursor: 'pointer',
     fontSize: '0.82rem', fontWeight: 500,
+    display: 'inline-flex', alignItems: 'center', gap: 6,
   },
   scroll: { flex: 1, overflowY: 'auto' as const, padding: '12px 16px' },
   card: {
-    background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 12,
+    background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 7,
     padding: '16px 20px', marginBottom: 10, cursor: 'pointer',
-    boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
   },
-  cardActive: { borderColor: '#818cf8', background: '#eef2ff' },
+  cardActive: { borderColor: '#6f9d85', background: '#e6f1eb' },
   cardName: { fontWeight: 600, fontSize: '0.95rem', color: '#1e293b' },
   cardDesc: { fontSize: '0.85rem', color: '#64748b', marginTop: 4 },
   badge: {
@@ -68,12 +70,12 @@ const S: Record<string, React.CSSProperties> = {
   },
   input: {
     width: '100%', boxSizing: 'border-box' as const, padding: '10px 12px',
-    background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 8,
+    background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 6,
     color: '#0f172a', fontSize: '0.92rem',
   },
   textarea: {
     width: '100%', boxSizing: 'border-box' as const, padding: '10px 12px',
-    background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 8,
+    background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 6,
     color: '#0f172a', fontSize: '0.92rem', lineHeight: 1.55,
     minHeight: 100, resize: 'vertical' as const,
   },
@@ -84,19 +86,19 @@ const S: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
   },
   dialog: {
-    background: '#ffffff', borderRadius: 14, padding: '24px 28px',
+    background: '#ffffff', borderRadius: 8, padding: '24px 28px',
     width: 480, maxHeight: '80vh', display: 'flex', flexDirection: 'column' as const,
     boxShadow: '0 10px 40px rgba(15,23,42,0.2)',
   },
   dialogTitle: { fontSize: '1.05rem', fontWeight: 700, color: '#1e293b', marginBottom: 16 },
   searchInput: {
     width: '100%', boxSizing: 'border-box' as const, padding: '10px 14px',
-    background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 9,
+    background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6,
     fontSize: '0.92rem', marginBottom: 12,
   },
   dialogList: { flex: 1, overflowY: 'auto' as const, maxHeight: 320 },
   agentRow: {
-    padding: '12px 14px', borderRadius: 9, cursor: 'pointer',
+    padding: '12px 14px', borderRadius: 6, cursor: 'pointer',
     border: '1px solid transparent', marginBottom: 4,
   },
   agentRowHover: { background: '#f8fafc', borderColor: '#e2e8f0' },
@@ -309,7 +311,7 @@ export default function SubagentPanel({ agentId, onChanged }: Props) {
     return (
       <div style={S.root}>
         <div style={S.header}>
-          <button style={S.btn} onClick={() => setView('list')}>← Back</button>
+          <button style={S.btn} onClick={() => setView('list')}><ArrowLeft size={14} />Back</button>
           <span style={S.title}>{isNew ? 'New subagent' : `Edit: ${form.name}`}</span>
         </div>
         <div style={S.scroll}>
@@ -405,10 +407,10 @@ export default function SubagentPanel({ agentId, onChanged }: Props) {
           {formOk && <div style={{ ...S.status, ...S.ok }}>Saved</div>}
           <div style={S.formActions}>
             <button style={S.primaryBtn} onClick={handleSave} disabled={saving}>
-              {saving ? 'Saving…' : 'Save'}
+              <Save size={14} />{saving ? 'Saving…' : 'Save'}
             </button>
             {!isNew && (
-              <button style={S.dangerBtn} onClick={handleDelete}>Delete</button>
+              <button style={S.dangerBtn} onClick={handleDelete}><Trash2 size={14} />Delete</button>
             )}
           </div>
         </div>
@@ -420,9 +422,9 @@ export default function SubagentPanel({ agentId, onChanged }: Props) {
   return (
     <div style={S.root}>
       <div style={S.header}>
-        <span style={S.title}>Subagents</span>
-        <button style={S.btn} onClick={openPicker}>+ From agent</button>
-        <button style={S.primaryBtn} onClick={handleNew}>+ New</button>
+        <span style={S.title}><Bot size={15} /> Subagents</span>
+        <button style={S.btn} onClick={openPicker}><CopyPlus size={14} />From agent</button>
+        <button style={S.primaryBtn} onClick={handleNew}><Plus size={14} />New</button>
       </div>
       <div style={S.scroll}>
         {err && <div style={S.err}>{err}</div>}

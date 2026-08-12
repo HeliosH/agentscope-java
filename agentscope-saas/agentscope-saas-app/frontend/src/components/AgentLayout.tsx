@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
+import { ArrowLeft, Menu } from 'lucide-react';
 import { Outlet, useLocation, useNavigate, useParams, useOutletContext } from 'react-router-dom';
 import { AgentDefinition, getAgent } from '../api/agents';
-import ChatSidebar from '../components/ChatSidebar';
+import ChatSidebar from './ChatSidebar';
 import type { MeResponse } from '../auth';
 
 const SUB_TITLES: Record<string, string> = {
@@ -14,78 +15,78 @@ const SUB_TITLES: Record<string, string> = {
   settings: 'Settings',
 };
 
-/**
- * Chat-first agent layout (OpenClaw/ChatGPT style): a left conversation sidebar
- * (agent switcher + session list + manage menu) and a main area. The chat is the
- * primary full-width view; management sub-pages render a slim header with a
- * "back to chat" affordance.
- */
 export default function AgentLayout() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
   const { me } = useOutletContext<{ me: MeResponse | null }>();
   const [agent, setAgent] = useState<AgentDefinition | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
     getAgent(id)
-      .then(a => { if (!cancelled) setAgent(a); })
-      .catch(() => { /* context agent is optional */ });
+      .then(value => { if (!cancelled) setAgent(value); })
+      .catch(() => undefined);
     return () => { cancelled = true; };
   }, [id]);
 
+  useEffect(() => setSidebarOpen(false), [location.pathname, location.search]);
+
   if (!id) return <div style={{ padding: 32 }}>Missing agent id.</div>;
 
-  const sub =
-    (Object.keys(SUB_TITLES) as string[]).find(t =>
-      location.pathname.startsWith(`/agents/${id}/${t}`)) ?? 'chat';
+  const sub = Object.keys(SUB_TITLES).find(value =>
+    location.pathname.startsWith(`/agents/${id}/${value}`)) ?? 'chat';
+  const chat = sub === 'chat';
 
   return (
-    <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
-      <ChatSidebar />
-      <div
-        style={{
-          flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0,
-          overflow: 'hidden',
-        }}
-      >
-        {sub !== 'chat' && (
-          <div
-            style={{
-              display: 'flex', alignItems: 'center', gap: 12,
-              padding: '12px 24px', borderBottom: '1px solid #e2e8f0',
-              background: '#ffffff', flexShrink: 0,
-            }}
-          >
+    <div className="agent-layout">
+      <ChatSidebar
+        open={sidebarOpen}
+        me={me}
+        onClose={() => setSidebarOpen(false)}
+      />
+      <button
+        className={`sidebar-backdrop${sidebarOpen ? ' is-open' : ''}`}
+        type="button"
+        aria-label="Dismiss navigation"
+        onClick={() => setSidebarOpen(false)}
+      />
+      <section className="agent-layout__main">
+        {!chat && (
+          <header className="workspace-header">
             <button
+              className="icon-button mobile-menu-button"
+              type="button"
+              title="Open navigation"
+              aria-label="Open navigation"
+              onClick={() => setSidebarOpen(true)}
+            >
+              <Menu size={17} />
+            </button>
+            <button
+              className="quiet-button"
               type="button"
               onClick={() => navigate(`/agents/${encodeURIComponent(id)}/chat`)}
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: 6,
-                background: '#ffffff', border: '1px solid #e2e8f0', color: '#475569',
-                borderRadius: 8, padding: '7px 14px', cursor: 'pointer',
-                fontSize: '0.85rem', fontWeight: 500,
-              }}
             >
-              ← Chat
+              <ArrowLeft size={15} />
+              Chat
             </button>
-            <span style={{ fontSize: '1.05rem', fontWeight: 700, color: '#0f172a' }}>
-              {SUB_TITLES[sub] ?? sub}
-            </span>
-            <span style={{ flex: 1 }} />
-            {agent && (
-              <span style={{ fontSize: '0.82rem', color: '#94a3b8' }}>
-                {agent.name}
-              </span>
-            )}
-          </div>
+            <span className="workspace-header__title">{SUB_TITLES[sub] ?? sub}</span>
+            <span className="workspace-header__spacer" />
+            {agent && <span className="workspace-header__agent">{agent.name}</span>}
+          </header>
         )}
-        <div style={{ flex: 1, overflow: 'auto', background: '#f8fafc' }}>
-          <Outlet context={{ agentId: id, agent, me }} />
+        <div className={`agent-layout__content${chat ? ' agent-layout__content--chat' : ''}`}>
+          <Outlet context={{
+            agentId: id,
+            agent,
+            me,
+            openSidebar: () => setSidebarOpen(true),
+          }} />
         </div>
-      </div>
+      </section>
     </div>
   );
 }

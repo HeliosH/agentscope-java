@@ -1,9 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ArrowUp,
+  Bot,
+  Check,
+  FilePlus2,
+  ListTodo,
+  Menu,
+  Paperclip,
+  ShieldAlert,
+  Sparkles,
+  X,
+} from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { ConfirmToolCall, currentSession, stream, type ChatEvent, type ChatRequest, type ConfirmResultInput } from '../api/chat';
 import { TurnEntry, turnsWindow } from '../api/sessions';
 import ToolCallBlock from './ToolCallBlock';
 import { uploadFile } from '../api/workspace';
+import RunInspector from './RunInspector';
 
 type Role = 'user' | 'assistant' | 'system';
 
@@ -22,95 +35,6 @@ interface Message {
   confirmTools?: ConfirmToolCall[];
   pending?: boolean;
 }
-
-const S: Record<string, React.CSSProperties> = {
-  root: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: '#f8fafc' },
-  header: {
-    display: 'flex', alignItems: 'center', gap: 10,
-    padding: '10px 28px', borderBottom: '1px solid #e2e8f0', background: '#ffffff',
-    fontSize: '0.82rem', color: '#64748b', flexShrink: 0,
-  },
-  sessionTag: {
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '0.78rem',
-    background: '#f1f5f9', color: '#475569', padding: '2px 8px', borderRadius: 6,
-  },
-  iconBtn: {
-    background: '#ffffff', border: '1px solid #e2e8f0', color: '#475569',
-    padding: '5px 12px', borderRadius: 7, cursor: 'pointer', fontSize: '0.82rem', fontWeight: 500,
-  },
-  thread: { flex: 1, overflowY: 'auto' },
-  threadInner: {
-    maxWidth: 820, margin: '0 auto', padding: '28px 24px',
-    display: 'flex', flexDirection: 'column', gap: 18,
-  },
-  empty: { color: '#94a3b8', fontSize: '0.95rem', textAlign: 'center', marginTop: 100 },
-  bubble: {
-    maxWidth: '78%', padding: '14px 18px', borderRadius: 14,
-    fontSize: '0.95rem', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-  },
-  user: {
-    alignSelf: 'flex-end',
-    background: 'linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%)',
-    color: '#ffffff',
-    boxShadow: '0 2px 6px rgba(99,102,241,0.25)',
-  },
-  assistant: {
-    alignSelf: 'flex-start', background: '#ffffff', color: '#0f172a',
-    border: '1px solid #e2e8f0',
-    boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
-  },
-  system: {
-    alignSelf: 'center', background: 'transparent', color: '#94a3b8',
-    fontSize: '0.85rem', fontStyle: 'italic',
-  },
-  composer: {
-    borderTop: '1px solid #e2e8f0', padding: '18px 24px',
-    background: '#ffffff', flexShrink: 0,
-  },
-  composerInner: { maxWidth: 820, margin: '0 auto', display: 'flex', gap: 12 },
-  textarea: {
-    flex: 1, padding: '12px 16px',
-    background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 10,
-    color: '#0f172a', fontSize: '0.95rem', resize: 'none',
-    minHeight: 48, maxHeight: 200, lineHeight: 1.55,
-  },
-  send: {
-    padding: '0 24px',
-    background: 'linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%)',
-    color: '#ffffff', border: 'none',
-    borderRadius: 10, cursor: 'pointer', fontSize: '0.95rem', fontWeight: 600,
-    boxShadow: '0 2px 6px rgba(99,102,241,0.35), inset 0 1px 0 rgba(255,255,255,0.18)',
-  },
-  sendDisabled: { background: '#e2e8f0', color: '#94a3b8', cursor: 'not-allowed', boxShadow: 'none' },
-  uploadBtn: {
-    background: '#ffffff', border: '1px solid #cbd5e1', color: '#475569',
-    borderRadius: 10, padding: '0 14px', cursor: 'pointer',
-    fontSize: '1.05rem', display: 'inline-flex', alignItems: 'center',
-    flexShrink: 0,
-  },
-  confirmBox: {
-    marginTop: 12, padding: 12, borderRadius: 10,
-    border: '1px solid #fed7aa', background: '#fff7ed', color: '#7c2d12',
-  },
-  confirmTitle: { fontSize: '0.82rem', fontWeight: 700, marginBottom: 8 },
-  confirmTool: {
-    padding: '8px 10px', borderRadius: 8, background: '#ffffff',
-    border: '1px solid #ffedd5', marginBottom: 8,
-  },
-  confirmPre: {
-    margin: '6px 0 0', padding: 8, borderRadius: 6, background: '#f8fafc',
-    color: '#334155', fontSize: '0.76rem', overflowX: 'auto', whiteSpace: 'pre-wrap',
-  },
-  confirmActions: { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 10 },
-  approve: {
-    border: '1px solid #15803d', background: '#16a34a', color: '#ffffff',
-    borderRadius: 7, padding: '6px 12px', cursor: 'pointer', fontSize: '0.82rem', fontWeight: 700,
-  },
-  deny: {
-    border: '1px solid #fdba74', background: '#ffffff', color: '#9a3412',
-    borderRadius: 7, padding: '6px 12px', cursor: 'pointer', fontSize: '0.82rem', fontWeight: 700,
-  },
-};
 
 let counter = 0;
 const nextId = () => `m${Date.now().toString(36)}-${counter++}`;
@@ -144,8 +68,21 @@ function turnsToMessages(turns: TurnEntry[]): Message[] {
   return out;
 }
 
-export default function ChatPanel({ agentId }: { agentId: string }) {
+interface ChatPanelProps {
+  agentId: string;
+  agentName?: string;
+  onOpenSidebar?: () => void;
+}
+
+const SUGGESTIONS = [
+  { icon: FilePlus2, text: 'Summarize the latest files in my workspace' },
+  { icon: ListTodo, text: 'Create a plan and execute the task step by step' },
+];
+
+export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPanelProps) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const requestedSession = searchParams.get('session');
+  const newTaskNonce = searchParams.get('new');
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -158,7 +95,10 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const preserveScrollRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const skipSessionRestoreRef = useRef<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
 
   const persistSession = useCallback((key: string | null) => {
     if (key) {
@@ -170,36 +110,41 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
 
   // On agent change: pick a session (URL > localStorage > backend default) and rehydrate.
   useEffect(() => {
+    if (requestedSession && skipSessionRestoreRef.current === requestedSession) {
+      skipSessionRestoreRef.current = null;
+      return;
+    }
     let cancelled = false;
     setMessages([]);
     setInput('');
     setRestoring(true);
     setHasEarlier(false);
     setNextBeforeSeq(null);
+    setActiveRunId(null);
+    setInspectorOpen(false);
 
-    const urlKey = searchParams.get('session');
+    const urlKey = requestedSession;
+    const explicitlyNew = newTaskNonce !== null;
     const stored = (() => { try { return localStorage.getItem(storageKey(agentId)); } catch { return null; } })();
-    const initialKey = urlKey || stored || null;
+    const initialKey = explicitlyNew ? null : urlKey || stored || null;
 
     async function run() {
       let key: string | null = initialKey;
-      let exists = false;
       try {
-        if (!key) {
+        if (!key && !explicitlyNew) {
           const cur = await currentSession(agentId);
           key = cur.sessionKey;
-          exists = cur.exists;
-        } else {
-          // We have a candidate; just check whether the backend has turns.
+          if (cur.latestRunId) setActiveRunId(cur.latestRunId);
+        } else if (key) {
           const cur = await currentSession(agentId);
-          exists = cur.exists && cur.sessionKey === key;
+          if (cur.sessionKey === key && cur.latestRunId) setActiveRunId(cur.latestRunId);
         }
       } catch {
-        // ignore — a missing session is fine, we just start empty
+        // A missing current-session pointer does not prevent loading an explicit session.
       }
       if (cancelled) return;
       setSessionKey(key);
-      if (key && exists) {
+      if (key) {
         try {
           const page = await turnsWindow(agentId, key);
           if (cancelled) return;
@@ -215,14 +160,16 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
       // Reflect the resolved key in the URL (replace so we don't pollute history).
       if (key && key !== urlKey) {
         const next = new URLSearchParams(searchParams);
+        next.delete('new');
         next.set('session', key);
+        skipSessionRestoreRef.current = key;
         setSearchParams(next, { replace: true });
       }
     }
     run();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId]);
+  }, [agentId, requestedSession, newTaskNonce]);
 
   async function loadEarlier() {
     if (!sessionKey || !hasEarlier || loadingEarlier) return;
@@ -256,7 +203,12 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
   const canSend = useMemo(() => !busy && !restoring && input.trim().length > 0, [busy, restoring, input]);
 
   function applyChatEvent(evt: ChatEvent, replyId: string) {
-    if (evt.type === 'token') {
+    if (evt.type === 'run_started') {
+      if (evt.runId) {
+        setActiveRunId(evt.runId);
+        setInspectorOpen(true);
+      }
+    } else if (evt.type === 'token') {
       const chunk = evt.data ?? '';
       setMessages(prev => prev.map(m => m.id === replyId ? { ...m, text: m.text + chunk } : m));
     } else if (evt.type === 'tool_call') {
@@ -293,7 +245,9 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
         persistSession(evt.sessionKey);
         const next = new URLSearchParams(searchParams);
         if (next.get('session') !== evt.sessionKey) {
+          next.delete('new');
           next.set('session', evt.sessionKey);
+          skipSessionRestoreRef.current = evt.sessionKey;
           setSearchParams(next, { replace: true });
         }
       }
@@ -338,6 +292,7 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
     if (!canSend) return;
     const text = input.trim();
     setInput('');
+    if (inputRef.current) inputRef.current.style.height = 'auto';
     setBusy(true);
     const userMsg: Message = { id: nextId(), role: 'user', text, tools: [] };
     const replyMsg: Message = { id: nextId(), role: 'assistant', text: '', tools: [], pending: true };
@@ -388,106 +343,219 @@ export default function ChatPanel({ agentId }: { agentId: string }) {
     }
   }
 
+  function resizeComposer(element: HTMLTextAreaElement) {
+    element.style.height = 'auto';
+    element.style.height = `${Math.min(element.scrollHeight, 180)}px`;
+  }
+
+  function chooseSuggestion(text: string) {
+    setInput(text);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }
+
   return (
-    <div style={S.root}>
-      <div style={S.thread} ref={threadRef}>
-        <div style={S.threadInner}>
-        {hasEarlier && (
-          <button type="button" style={{ ...S.iconBtn, alignSelf: 'center' }} onClick={() => void loadEarlier()} disabled={loadingEarlier}>
-            {loadingEarlier ? 'Loading earlier messages…' : 'Load earlier messages'}
+    <div className="chat-root">
+      <header className="chat-header">
+        <button
+          className="icon-button mobile-menu-button"
+          type="button"
+          title="Open navigation"
+          aria-label="Open navigation"
+          onClick={onOpenSidebar}
+        >
+          <Menu size={17} />
+        </button>
+        <span className="chat-header__title">{agentName || 'Assistant'}</span>
+        <span className="chat-header__status">
+          <span className="chat-header__status-dot" />
+          Ready
+        </span>
+        {sessionKey && <span className="chat-header__meta" title={sessionKey}>Session {sessionKey.slice(0, 8)}</span>}
+        <span className="chat-header__spacer" />
+        {activeRunId && (
+          <button
+            className={`quiet-button${inspectorOpen ? ' is-active' : ''}`}
+            type="button"
+            aria-expanded={inspectorOpen}
+            onClick={() => setInspectorOpen(open => !open)}
+          >
+            <ListTodo size={15} />
+            Run details
           </button>
         )}
-        {restoring && messages.length === 0 && (
-          <div style={S.empty}>Loading conversation…</div>
-        )}
-        {!restoring && messages.length === 0 && (
-          <div style={S.empty}>
-            Start a new conversation. Try <code style={{ background: '#e2e8f0', padding: '1px 6px', borderRadius: 4 }}>/reset</code> to clear the session.
-          </div>
-        )}
-        {messages.map(m => (
-          <div key={m.id} style={{
-            ...S.bubble,
-            ...(m.role === 'user' ? S.user : m.role === 'system' ? S.system : S.assistant),
-          }}>
-            {m.tools.length > 0 && (
-              <div style={{ marginBottom: m.text ? 10 : 0 }}>
-                {m.tools.map(t => (
-                  <ToolCallBlock
-                    key={t.id}
-                    toolName={t.name}
-                    toolCallId={t.id}
-                    result={t.result}
-                  />
-                ))}
-              </div>
-            )}
-            {m.text || (m.pending ? <span style={{ color: '#94a3b8' }}>…</span> : null)}
-            {m.confirmTools && m.confirmTools.length > 0 && (
-              <div style={S.confirmBox}>
-                <div style={S.confirmTitle}>Approval required</div>
-                {m.confirmTools.map((tool, idx) => (
-                  <div key={tool.id || `${tool.name}-${idx}`} style={S.confirmTool}>
-                    <div style={{ fontWeight: 700, fontSize: '0.82rem' }}>{tool.name}</div>
-                    {tool.input && (
-                      <pre style={S.confirmPre}>{JSON.stringify(tool.input, null, 2)}</pre>
+      </header>
+
+      <div className="chat-workspace">
+        <main className="chat-main">
+          <div className="chat-thread" ref={threadRef}>
+            <div className="chat-thread__inner">
+              {hasEarlier && (
+                <button
+                  type="button"
+                  className="quiet-button chat-load-earlier"
+                  onClick={() => void loadEarlier()}
+                  disabled={loadingEarlier}
+                >
+                  {loadingEarlier ? 'Loading earlier messages...' : 'Load earlier messages'}
+                </button>
+              )}
+
+              {restoring && messages.length === 0 && (
+                <div className="chat-empty">
+                  <div className="message-pending" aria-label="Loading conversation">
+                    <span /><span /><span />
+                  </div>
+                </div>
+              )}
+
+              {!restoring && messages.length === 0 && (
+                <div className="chat-empty">
+                  <span className="chat-empty__mark"><Sparkles size={19} /></span>
+                  <h1>What should we work on?</h1>
+                  <p>Ask a question or assign a task. The assistant can plan, use internal tools, and return workspace artifacts.</p>
+                  <div className="chat-suggestions">
+                    {SUGGESTIONS.map(suggestion => {
+                      const Icon = suggestion.icon;
+                      return (
+                        <button
+                          key={suggestion.text}
+                          className="chat-suggestion"
+                          type="button"
+                          onClick={() => chooseSuggestion(suggestion.text)}
+                        >
+                          <Icon size={15} />
+                          {suggestion.text}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {messages.map(message => (
+                <article
+                  key={message.id}
+                  className={`message-row message-row--${message.role}`}
+                >
+                  {message.role === 'assistant' && (
+                    <span className="message-avatar" aria-hidden="true"><Bot size={15} /></span>
+                  )}
+                  <div className="message-content">
+                    {message.tools.length > 0 && (
+                      <div>
+                        {message.tools.map(tool => (
+                          <ToolCallBlock
+                            key={tool.id}
+                            toolName={tool.name}
+                            toolCallId={tool.id}
+                            result={tool.result}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {message.text}
+                    {!message.text && message.pending && (
+                      <span className="message-pending" aria-label="Assistant is working">
+                        <span /><span /><span />
+                      </span>
+                    )}
+                    {message.confirmTools && message.confirmTools.length > 0 && (
+                      <div className="approval-box">
+                        <div className="approval-box__title">
+                          <ShieldAlert size={15} />
+                          Approval required
+                        </div>
+                        {message.confirmTools.map((tool, index) => (
+                          <div key={tool.id || `${tool.name}-${index}`} className="approval-tool">
+                            <strong>{tool.name}</strong>
+                            {tool.input && <pre>{JSON.stringify(tool.input, null, 2)}</pre>}
+                          </div>
+                        ))}
+                        <div className="approval-box__actions">
+                          <button
+                            type="button"
+                            className="quiet-button"
+                            disabled={busy}
+                            onClick={() => void handleConfirm(message, false)}
+                          >
+                            <X size={14} />
+                            Deny
+                          </button>
+                          <button
+                            type="button"
+                            className="primary-button"
+                            disabled={busy}
+                            onClick={() => void handleConfirm(message, true)}
+                          >
+                            <Check size={14} />
+                            Approve
+                          </button>
+                        </div>
+                      </div>
                     )}
                   </div>
-                ))}
-                <div style={S.confirmActions}>
-                  <button type="button" style={S.deny} disabled={busy} onClick={() => void handleConfirm(m, false)}>
-                    Deny
-                  </button>
-                  <button type="button" style={S.approve} disabled={busy} onClick={() => void handleConfirm(m, true)}>
-                    Approve
-                  </button>
-                </div>
-              </div>
-            )}
+                </article>
+              ))}
+            </div>
           </div>
-        ))}
-        </div>
-      </div>
-      <div style={S.composer}>
-        <div style={S.composerInner}>
-        <input
-          ref={fileInputRef}
-          type="file"
-          style={{ display: 'none' }}
-          onChange={e => {
-            const f = e.target.files?.[0];
-            if (f) void handleUpload(f);
-          }}
-          disabled={busy || uploading}
-        />
-        <button
-          type="button"
-          style={S.uploadBtn}
-          onClick={() => fileInputRef.current?.click()}
-          disabled={busy || uploading}
-          title="上传文件到工作区（agent 可读取）"
-        >
-          {uploading ? '…' : '📎'}
-        </button>
-        <textarea
-          ref={inputRef}
-          style={S.textarea}
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={restoring ? 'Loading…' : `Message ${agentId}…`}
-          rows={1}
-          autoFocus
-          disabled={restoring}
-        />
-        <button
-          style={{ ...S.send, ...(canSend ? {} : S.sendDisabled) }}
-          onClick={handleSend}
-          disabled={!canSend}
-        >
-          {busy ? '…' : 'Send'}
-        </button>
-        </div>
+
+          <div className="chat-composer">
+            <div className="chat-composer__box">
+              <input
+                ref={fileInputRef}
+                type="file"
+                hidden
+                onChange={event => {
+                  const file = event.target.files?.[0];
+                  if (file) void handleUpload(file);
+                }}
+                disabled={busy || uploading}
+              />
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={busy || uploading}
+                title="Upload a workspace file"
+                aria-label="Upload a workspace file"
+              >
+                {uploading ? <Paperclip size={16} className="is-spinning" /> : <Paperclip size={16} />}
+              </button>
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={event => {
+                  setInput(event.target.value);
+                  resizeComposer(event.target);
+                }}
+                onKeyDown={handleKeyDown}
+                placeholder={restoring ? 'Loading...' : `Message ${agentName || agentId}`}
+                rows={1}
+                autoFocus
+                disabled={restoring}
+              />
+              <button
+                className="chat-send-button"
+                type="button"
+                onClick={handleSend}
+                disabled={!canSend}
+                title="Send message"
+                aria-label="Send message"
+              >
+                <ArrowUp size={17} strokeWidth={2.4} />
+              </button>
+            </div>
+            <div className="chat-composer__hint">Enter to send · Shift + Enter for a new line</div>
+          </div>
+        </main>
+
+        {activeRunId && inspectorOpen && (
+          <RunInspector
+            agentId={agentId}
+            runId={activeRunId}
+            onClose={() => setInspectorOpen(false)}
+          />
+        )}
       </div>
     </div>
   );

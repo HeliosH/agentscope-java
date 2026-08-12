@@ -33,7 +33,7 @@ export default function AgentRail() {
           onClick={() => navigate('/agents/new')}
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            width: '100%', background: 'linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%)',
+            width: '100%', background: '#176b49',
             color: '#ffffff', border: 'none',
             borderRadius: 10, padding: '11px 14px', fontSize: '0.92rem', fontWeight: 600,
             cursor: 'pointer',
@@ -52,7 +52,7 @@ export default function AgentRail() {
             border: '1px solid #e2e8f0', borderRadius: 10, padding: '9px 12px',
             fontSize: '0.88rem', fontWeight: 500, cursor: 'pointer',
           }}
-          onMouseEnter={e => (e.currentTarget.style.background = '#eef2ff')}
+          onMouseEnter={e => (e.currentTarget.style.background = '#e6f1eb')}
           onMouseLeave={e => (e.currentTarget.style.background = '#f8fafc')}
         >
           <span>⊞</span> Agents hub
@@ -94,10 +94,10 @@ function Section({ title, agents, activeId, navigate, loading, err }: {
             onClick={() => navigate(`/agents/${encodeURIComponent(a.id)}/chat`)}
             style={{
               display: 'flex', alignItems: 'center', gap: 10, width: '100%',
-              background: active ? '#eef2ff' : 'transparent',
-              border: active ? '1px solid #c7d2fe' : '1px solid transparent',
+              background: active ? '#e6f1eb' : 'transparent',
+              border: active ? '1px solid #b9d2c5' : '1px solid transparent',
               borderRadius: 9, padding: '9px 10px', cursor: 'pointer',
-              fontSize: '0.9rem', color: active ? '#3730a3' : '#475569',
+              fontSize: '0.9rem', color: active ? '#176b49' : '#475569',
               textAlign: 'left', fontWeight: active ? 600 : 500,
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               marginBottom: 2,

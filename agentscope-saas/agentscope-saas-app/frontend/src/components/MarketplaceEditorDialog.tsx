@@ -67,7 +67,7 @@ const overlayStyle: React.CSSProperties = {
 
 const dialogStyle: React.CSSProperties = {
   background: '#ffffff',
-  borderRadius: 12,
+  borderRadius: 8,
   padding: 24,
   width: '90%',
   maxWidth: 560,
@@ -105,8 +105,8 @@ const hintStyle: React.CSSProperties = {
 const primaryButton: React.CSSProperties = {
   padding: '8px 16px',
   borderRadius: 8,
-  border: '1px solid #6366f1',
-  background: '#6366f1',
+  border: '1px solid #176b49',
+  background: '#176b49',
   color: '#ffffff',
   fontSize: '0.88rem',
   fontWeight: 600,

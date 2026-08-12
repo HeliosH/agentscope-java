@@ -1,35 +1,8 @@
-import React, { useEffect, useState } from 'react';
-import { TurnEntry, turnsWindow, resetSession, deleteSession, markRead } from '../api/sessions';
+import { useEffect, useState } from 'react';
+import { ArrowLeft, MessageSquareText, Play, RotateCcw, Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { deleteSession, markRead, resetSession, TurnEntry, turnsWindow } from '../api/sessions';
 import ToolCallBlock from './ToolCallBlock';
-
-const S: Record<string, React.CSSProperties> = {
-  root: { padding: '28px 32px', minWidth: 0, maxWidth: 1100 },
-  bar: { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 },
-  title: { fontSize: '1.25rem', fontWeight: 700, color: '#0f172a', margin: 0, letterSpacing: '-0.01em' },
-  back: {
-    background: '#ffffff', border: '1px solid #e2e8f0', color: '#475569',
-    padding: '7px 14px', borderRadius: 8, cursor: 'pointer', fontSize: '0.85rem', fontWeight: 500,
-  },
-  btn: {
-    padding: '7px 14px', borderRadius: 8, cursor: 'pointer',
-    fontSize: '0.85rem', fontWeight: 500, border: '1px solid #cbd5e1',
-    background: '#ffffff', color: '#475569',
-  },
-  danger: { color: '#dc2626', borderColor: '#fca5a5' },
-  primary: {
-    background: 'linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%)',
-    color: '#ffffff', border: 'none',
-    boxShadow: '0 2px 6px rgba(99,102,241,0.25), inset 0 1px 0 rgba(255,255,255,0.18)',
-  },
-  meta: { fontSize: '0.82rem', color: '#94a3b8', fontFamily: 'monospace', marginBottom: 22 },
-  msg: { padding: '14px 18px', borderRadius: 12, marginBottom: 14, fontSize: '0.95rem', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
-  user: { background: '#eef2ff', color: '#1e1b4b', borderLeft: '3px solid #6366f1' },
-  assistant: { background: '#ffffff', color: '#0f172a', border: '1px solid #e2e8f0', boxShadow: '0 1px 2px rgba(15,23,42,0.04)' },
-  tool: { background: '#f8fafc', border: '1px dashed #cbd5e1', color: '#475569' },
-  role: { fontSize: '0.74rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 600, marginBottom: 6 },
-  err: { color: '#dc2626', fontSize: '0.9rem' },
-};
 
 const PAGE_SIZE = 100;
 
@@ -40,6 +13,7 @@ export default function SessionTranscript({ agentId, sessionKey }: { agentId: st
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const navigate = useNavigate();
+  const sessionListPath = `/agents/${encodeURIComponent(agentId)}/sessions`;
 
   async function reload() {
     setErr(null);
@@ -48,8 +22,8 @@ export default function SessionTranscript({ agentId, sessionKey }: { agentId: st
       setEntries(page.items);
       setNextBeforeSeq(page.nextBeforeSeq);
       setHasMore(page.hasMore);
-    } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : 'Failed');
+    } catch (error: unknown) {
+      setErr(error instanceof Error ? error.message : 'Failed to load transcript');
     }
   }
 
@@ -59,11 +33,11 @@ export default function SessionTranscript({ agentId, sessionKey }: { agentId: st
     setErr(null);
     try {
       const page = await turnsWindow(agentId, sessionKey, nextBeforeSeq, PAGE_SIZE);
-      setEntries(prev => [...page.items, ...prev]);
+      setEntries(previous => [...page.items, ...previous]);
       setNextBeforeSeq(page.nextBeforeSeq);
       setHasMore(page.hasMore);
-    } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : 'Failed');
+    } catch (error: unknown) {
+      setErr(error instanceof Error ? error.message : 'Failed to load earlier turns');
     } finally {
       setLoadingMore(false);
     }
@@ -77,66 +51,48 @@ export default function SessionTranscript({ agentId, sessionKey }: { agentId: st
 
   async function handleReset() {
     if (!confirm('Reset this session? History will be cleared.')) return;
-    await resetSession(agentId, sessionKey).catch(e => setErr(String(e)));
+    await resetSession(agentId, sessionKey).catch(error => setErr(String(error)));
     reload();
   }
+
   async function handleDelete() {
     if (!confirm('Delete this session entirely?')) return;
     try {
       await deleteSession(agentId, sessionKey);
-      navigate(`/agents/${encodeURIComponent(agentId)}/sessions`, { replace: true });
-    } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : 'Failed');
+      navigate(sessionListPath, { replace: true });
+    } catch (error: unknown) {
+      setErr(error instanceof Error ? error.message : 'Delete failed');
     }
   }
 
   return (
-    <div style={S.root}>
-      <div style={S.bar}>
-        <button style={S.back} onClick={() => navigate(`/agents/${encodeURIComponent(agentId)}/sessions`)}>← Back</button>
-        <h2 style={S.title}>Transcript</h2>
-        <span style={{ flex: 1 }} />
-        <button
-          style={{ ...S.btn, ...S.primary }}
-          onClick={() => navigate(`/agents/${encodeURIComponent(agentId)}/chat?session=${encodeURIComponent(sessionKey)}`)}
-          title="Resume this conversation in the Chat tab"
-        >
-          ▶ Continue in Chat
-        </button>
-        <button style={S.btn} onClick={handleReset}>Reset</button>
-        <button style={{ ...S.btn, ...S.danger }} onClick={handleDelete}>Delete</button>
-      </div>
-      <div style={S.meta}>{sessionKey}</div>
-      {err && <div style={S.err}>{err}</div>}
-      {!err && entries.length === 0 && (
-        <div style={{ color: '#94a3b8', fontSize: '0.85rem' }}>No turns recorded.</div>
-      )}
-      {hasMore && (
-        <button style={{ ...S.btn, marginBottom: 14 }} onClick={loadMore} disabled={loadingMore}>
-          {loadingMore ? 'Loading…' : 'Load earlier'}
-        </button>
-      )}
-      {entries.map(t => {
-        const role = String(t.role).toUpperCase();
-        if (role === 'TOOL') {
+    <div className="transcript-page">
+      <header className="transcript-header">
+        <button className="secondary-button" onClick={() => navigate(sessionListPath)}><ArrowLeft size={15} />Back</button>
+        <div className="transcript-title"><MessageSquareText size={18} /><div><h1>Session transcript</h1><code>{sessionKey}</code></div></div>
+        <div className="transcript-actions">
+          <button className="primary-button" onClick={() => navigate(`/agents/${encodeURIComponent(agentId)}/chat?session=${encodeURIComponent(sessionKey)}`)}><Play size={15} />Continue</button>
+          <button className="secondary-button" onClick={handleReset}><RotateCcw size={15} />Reset</button>
+          <button className="danger-button" onClick={handleDelete}><Trash2 size={15} />Delete</button>
+        </div>
+      </header>
+      {err && <div className="workspace-error">{err}</div>}
+      <div className="transcript-thread">
+        {hasMore && <button className="secondary-button transcript-load-more" onClick={loadMore} disabled={loadingMore}>{loadingMore ? 'Loading...' : 'Load earlier turns'}</button>}
+        {!err && entries.length === 0 && <div className="management-empty">No turns recorded in this session.</div>}
+        {entries.map(turn => {
+          const role = String(turn.role).toUpperCase();
+          if (role === 'TOOL') {
+            return <div key={turn.id} className="transcript-tool"><ToolCallBlock toolName={turn.toolName ?? 'tool'} toolCallId={turn.id} result={turn.toolResult ?? turn.toolInput ?? ''} /></div>;
+          }
           return (
-            <div key={t.id} style={{ marginBottom: 12 }}>
-              <ToolCallBlock
-                toolName={t.toolName ?? 'tool'}
-                toolCallId={t.id}
-                result={t.toolResult ?? t.toolInput ?? ''}
-              />
-            </div>
+            <article key={turn.id} className={`transcript-message transcript-message--${role === 'USER' ? 'user' : 'assistant'}`}>
+              <div className="transcript-role">{role}</div>
+              <div>{turn.content ?? ''}</div>
+            </article>
           );
-        }
-        const style = role === 'USER' ? S.user : role === 'ASSISTANT' ? S.assistant : S.tool;
-        return (
-          <div key={t.id} style={{ ...S.msg, ...style }}>
-            <div style={S.role}>{role}</div>
-            {t.content ?? ''}
-          </div>
-        );
-      })}
+        })}
+      </div>
     </div>
   );
 }

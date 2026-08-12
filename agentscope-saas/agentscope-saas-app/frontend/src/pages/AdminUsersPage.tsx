@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Save, Search, Users } from 'lucide-react';
 import { Navigate, useOutletContext } from 'react-router-dom';
 import {
   listAdminUsers,
@@ -8,6 +9,16 @@ import {
   type TierPolicyView,
 } from '../api/admin';
 import type { MeResponse } from '../auth';
+import {
+  DataPanel,
+  EmptyState,
+  ManagementHeader,
+  ManagementPage,
+  MetricStrip,
+  Notice,
+  RefreshButton,
+  StatusBadge,
+} from '../components/ManagementUI';
 
 type Draft = Pick<AdminUserView, 'displayName' | 'role' | 'tier'>;
 
@@ -27,6 +38,7 @@ export default function AdminUsersPage() {
   const [users, setUsers] = useState<AdminUserView[]>([]);
   const [tiers, setTiers] = useState<TierPolicyView[]>([]);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -39,13 +51,13 @@ export default function AdminUsersPage() {
       const [userRows, tierRows] = await Promise.all([listAdminUsers(200), listTierPolicies()]);
       setUsers(userRows);
       setTiers(tierRows);
-      setDrafts(Object.fromEntries(userRows.map(u => [u.id, {
-        displayName: u.displayName ?? '',
-        role: u.role ?? 'member',
-        tier: u.tier ?? 'standard',
+      setDrafts(Object.fromEntries(userRows.map(user => [user.id, {
+        displayName: user.displayName ?? '',
+        role: user.role ?? 'member',
+        tier: user.tier ?? 'standard',
       }])));
-    } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : String(e));
+    } catch (cause) {
+      setErr(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setLoading(false);
     }
@@ -60,9 +72,14 @@ export default function AdminUsersPage() {
     try {
       const updated = await updateAdminUser(user.id, draft);
       setUsers(rows => rows.map(row => (row.id === user.id ? updated : row)));
+      setDrafts(current => ({ ...current, [user.id]: {
+        displayName: updated.displayName ?? '',
+        role: updated.role,
+        tier: updated.tier,
+      } }));
       setNotice(`Updated ${updated.email}`);
-    } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : String(e));
+    } catch (cause) {
+      setErr(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSavingId(null);
     }
@@ -70,200 +87,155 @@ export default function AdminUsersPage() {
 
   useEffect(() => { void refresh(); }, []);
 
-  const totals = useMemo(() => {
-    const admins = users.filter(u => u.role === 'admin').length;
-    return { users: users.length, admins };
-  }, [users]);
+  const totals = useMemo(() => ({
+    users: users.length,
+    admins: users.filter(user => user.role === 'admin' || user.role === 'platform_admin').length,
+    tiers: new Set(users.map(user => user.tier)).size,
+  }), [users]);
+
+  const visibleUsers = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return users;
+    return users.filter(user => [user.email, user.displayName, user.role, user.tier, user.id]
+      .some(value => value?.toLowerCase().includes(needle)));
+  }, [query, users]);
 
   if (me?.role !== 'admin' && me?.role !== 'platform_admin') {
     return <Navigate to="/agents" replace />;
   }
 
   return (
-    <div style={{ padding: '34px 40px', maxWidth: 1280 }}>
-      <Header title="Users and quotas" onRefresh={() => void refresh()} loading={loading} />
+    <ManagementPage admin>
+      <ManagementHeader
+        icon={Users}
+        title="Users & access"
+        description="Manage organization members, administrative roles, and quota tiers."
+        actions={<RefreshButton loading={loading} onClick={() => void refresh()} />}
+      />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(180px,1fr))', gap: 12, marginBottom: 18 }}>
-        <Summary label="Users" value={totals.users} />
-        <Summary label="Admins" value={totals.admins} />
-        <Summary label="Tier policies" value={tiers.length} />
-      </div>
+      <MetricStrip items={[
+        { label: 'Members', value: totals.users, detail: 'Organization users' },
+        { label: 'Administrators', value: totals.admins, tone: totals.admins ? 'default' : 'warning' },
+        { label: 'Assigned tiers', value: totals.tiers },
+        { label: 'Tier policies', value: tiers.length },
+      ]} />
 
-      {err && <Banner tone="error">{err}</Banner>}
-      {notice && <Banner tone="info">{notice}</Banner>}
+      {err && <Notice tone="error">{err}</Notice>}
+      {notice && <Notice tone="success">{notice}</Notice>}
 
-      <section style={panelStyle}>
-        <div style={{ ...sectionTitle, marginBottom: 12 }}>Tier policies</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(210px,1fr))', gap: 10 }}>
-          {tiers.map(tier => (
-            <div key={tier.tier} style={tierCardStyle}>
-              <div style={{ fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>{tier.tier}</div>
-              <Metric label="agents" value={tier.maxAgents} />
-              <Metric label="sandboxes" value={tier.maxSandboxes} />
-              <Metric label="tokens/mo" value={tier.monthlyTokenQuota} />
-              <Metric label="storage GB" value={tier.storageGb} />
-            </div>
-          ))}
-          {!loading && tiers.length === 0 && <div style={emptyStyle}>No tier policies configured.</div>}
-        </div>
-      </section>
-
-      <section style={panelStyle}>
-        <div style={{ ...sectionTitle, marginBottom: 12 }}>Organization users</div>
-        <div style={{ overflowX: 'auto' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '260px 220px 130px 150px 190px 130px', minWidth: 1080, background: '#f8fafc', borderBottom: '1px solid #e2e8f0', color: '#475569', fontSize: '0.76rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            {['Email', 'Display name', 'Role', 'Tier', 'Created', 'Action'].map(h => <div key={h} style={headCell}>{h}</div>)}
-          </div>
-          {loading && <div style={emptyStyle}>Loading...</div>}
-          {!loading && users.length === 0 && <div style={emptyStyle}>No users in this organization.</div>}
-          {!loading && users.map(user => {
-            const draft = drafts[user.id] ?? { displayName: '', role: user.role, tier: user.tier };
-            const platformAdminUser = user.role === 'platform_admin';
-            const canEdit = !platformAdminUser || me?.role === 'platform_admin';
-            return (
-              <div key={user.id} style={{ display: 'grid', gridTemplateColumns: '260px 220px 130px 150px 190px 130px', minWidth: 1080, borderBottom: '1px solid #f1f5f9', alignItems: 'center' }}>
-                <div style={bodyCell}>
-                  <div style={{ color: '#0f172a', fontWeight: 600 }}>{user.email}</div>
-                  <div style={monoSmall} title={user.id}>{shortId(user.id)}</div>
-                </div>
-                <div style={bodyCell}>
-                  <input
-                    value={draft.displayName ?? ''}
-                    onChange={e => setDrafts(d => ({ ...d, [user.id]: { ...draft, displayName: e.target.value } }))}
-                    disabled={!canEdit}
-                    style={inputStyle}
-                  />
-                </div>
-                <div style={bodyCell}>
-                  <select
-                    value={draft.role}
-                    onChange={e => setDrafts(d => ({ ...d, [user.id]: { ...draft, role: e.target.value } }))}
-                    disabled={!canEdit || platformAdminUser}
-                    style={inputStyle}
-                  >
-                    {platformAdminUser && <option value="platform_admin">platform_admin</option>}
-                    <option value="member">member</option>
-                    <option value="admin">admin</option>
-                  </select>
-                </div>
-                <div style={bodyCell}>
-                  <select
-                    value={draft.tier}
-                    onChange={e => setDrafts(d => ({ ...d, [user.id]: { ...draft, tier: e.target.value } }))}
-                    disabled={!canEdit}
-                    style={inputStyle}
-                  >
-                    {tiers.map(tier => <option key={tier.tier} value={tier.tier}>{tier.tier}</option>)}
-                  </select>
-                </div>
-                <div style={bodyCell}>{formatDate(user.createdAt)}</div>
-                <div style={bodyCell}>
-                  <button type="button" onClick={() => void save(user)} disabled={!canEdit || savingId === user.id} style={smallButton}>
-                    {!canEdit ? 'Restricted' : savingId === user.id ? 'Saving' : 'Save'}
-                  </button>
+      <DataPanel title="Tier policies">
+        {tiers.length > 0 ? (
+          <div className="tier-grid">
+            {tiers.map(tier => (
+              <div className="tier-item" key={tier.tier}>
+                <div className="tier-item__title">{tier.tier}</div>
+                <div className="tier-item__metrics">
+                  <TierMetric label="Agents" value={tier.maxAgents} />
+                  <TierMetric label="Sandboxes" value={tier.maxSandboxes} />
+                  <TierMetric label="Tokens / month" value={tier.monthlyTokenQuota} />
+                  <TierMetric label="Storage GB" value={tier.storageGb} />
                 </div>
               </div>
-            );
-          })}
+            ))}
+          </div>
+        ) : !loading ? <EmptyState>No tier policies configured.</EmptyState> : null}
+      </DataPanel>
+
+      <DataPanel
+        title={`Organization users · ${visibleUsers.length}`}
+        actions={(
+          <label className="compact-search">
+            <Search size={14} />
+            <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search users" />
+          </label>
+        )}
+      >
+        <div className="data-table-wrap">
+          <table className="data-table" style={{ minWidth: 980 }}>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Display name</th>
+                <th>Role</th>
+                <th>Tier</th>
+                <th>Created</th>
+                <th aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {visibleUsers.map(user => {
+                const draft = drafts[user.id] ?? { displayName: '', role: user.role, tier: user.tier };
+                const platformAdmin = user.role === 'platform_admin';
+                const canEdit = !platformAdmin || me?.role === 'platform_admin';
+                const dirty = draft.displayName !== (user.displayName ?? '') || draft.role !== user.role || draft.tier !== user.tier;
+                return (
+                  <tr key={user.id}>
+                    <td>
+                      <strong>{user.email}</strong>
+                      <div className="mono-text" title={user.id}>{shortId(user.id)}</div>
+                    </td>
+                    <td>
+                      <input
+                        className="management-input"
+                        value={draft.displayName ?? ''}
+                        onChange={event => setDrafts(current => ({ ...current, [user.id]: { ...draft, displayName: event.target.value } }))}
+                        disabled={!canEdit}
+                      />
+                    </td>
+                    <td>
+                      <select
+                        className="management-select"
+                        value={draft.role}
+                        onChange={event => setDrafts(current => ({ ...current, [user.id]: { ...draft, role: event.target.value } }))}
+                        disabled={!canEdit || platformAdmin}
+                      >
+                        {platformAdmin && <option value="platform_admin">platform_admin</option>}
+                        <option value="member">member</option>
+                        <option value="admin">admin</option>
+                      </select>
+                    </td>
+                    <td>
+                      <select
+                        className="management-select"
+                        value={draft.tier}
+                        onChange={event => setDrafts(current => ({ ...current, [user.id]: { ...draft, tier: event.target.value } }))}
+                        disabled={!canEdit}
+                      >
+                        {tiers.map(tier => <option key={tier.tier} value={tier.tier}>{tier.tier}</option>)}
+                      </select>
+                    </td>
+                    <td>{formatDate(user.createdAt)}</td>
+                    <td>
+                      {canEdit ? (
+                        <button
+                          className="quiet-button"
+                          type="button"
+                          onClick={() => void save(user)}
+                          disabled={!dirty || savingId === user.id}
+                        >
+                          <Save size={13} />
+                          {savingId === user.id ? 'Saving' : 'Save'}
+                        </button>
+                      ) : <StatusBadge status="restricted" />}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {loading && <EmptyState>Loading users...</EmptyState>}
+          {!loading && visibleUsers.length === 0 && <EmptyState>No users match the current search.</EmptyState>}
         </div>
-      </section>
-    </div>
+      </DataPanel>
+    </ManagementPage>
   );
 }
 
-function Header({ title, onRefresh, loading }: { title: string; onRefresh: () => void; loading: boolean }) {
+function TierMetric({ label, value }: { label: string; value?: number | null }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20, alignItems: 'flex-start', marginBottom: 22 }}>
-      <div>
-        <h1 style={{ margin: 0, fontSize: '1.65rem', fontWeight: 700, color: '#0f172a' }}>{title}</h1>
-        <p style={{ margin: '8px 0 0', color: '#64748b', lineHeight: 1.5, maxWidth: 760 }}>
-          Manage organization users, roles, and the tier policy each user consumes.
-        </p>
-      </div>
-      <button type="button" onClick={onRefresh} disabled={loading} style={primaryButton}>
-        {loading ? 'Refreshing' : 'Refresh'}
-      </button>
+    <div className="tier-item__metric">
+      <span>{label}</span>
+      <strong>{value?.toLocaleString() ?? '-'}</strong>
     </div>
   );
 }
-
-function Summary({ label, value }: { label: string; value: number }) {
-  return (
-    <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '14px 16px' }}>
-      <div style={{ color: '#64748b', fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
-      <div style={{ color: '#0f172a', fontSize: '1.55rem', fontWeight: 700, marginTop: 4 }}>{value}</div>
-    </div>
-  );
-}
-
-function Metric({ label, value }: { label: string; value?: number | null }) {
-  return <div style={{ color: '#475569', fontSize: '0.82rem', marginTop: 4 }}>{label}: <b>{value ?? '-'}</b></div>;
-}
-
-function Banner({ tone, children }: { tone: 'error' | 'info'; children: React.ReactNode }) {
-  const error = tone === 'error';
-  return (
-    <div style={{ color: error ? '#b91c1c' : '#0369a1', background: error ? '#fef2f2' : '#eff6ff', border: `1px solid ${error ? '#fecaca' : '#bfdbfe'}`, borderRadius: 8, padding: '10px 12px', marginBottom: 14 }}>
-      {children}
-    </div>
-  );
-}
-
-const panelStyle: React.CSSProperties = {
-  background: '#ffffff',
-  border: '1px solid #e2e8f0',
-  borderRadius: 10,
-  padding: 16,
-  marginBottom: 18,
-};
-
-const tierCardStyle: React.CSSProperties = {
-  border: '1px solid #e2e8f0',
-  borderRadius: 8,
-  padding: 12,
-  background: '#f8fafc',
-};
-
-const sectionTitle: React.CSSProperties = {
-  color: '#0f172a',
-  fontSize: '1rem',
-  fontWeight: 700,
-};
-
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  minHeight: 34,
-  border: '1px solid #cbd5e1',
-  borderRadius: 8,
-  padding: '7px 9px',
-  background: '#ffffff',
-  color: '#0f172a',
-  fontSize: '0.84rem',
-  boxSizing: 'border-box',
-};
-
-const primaryButton: React.CSSProperties = {
-  background: '#0f172a',
-  color: '#ffffff',
-  border: 'none',
-  borderRadius: 9,
-  padding: '10px 16px',
-  fontWeight: 600,
-  cursor: 'pointer',
-};
-
-const smallButton: React.CSSProperties = {
-  background: '#0f172a',
-  color: '#ffffff',
-  border: 'none',
-  borderRadius: 8,
-  padding: '8px 12px',
-  fontSize: '0.82rem',
-  fontWeight: 600,
-  cursor: 'pointer',
-};
-
-const headCell: React.CSSProperties = { padding: '11px 12px' };
-const bodyCell: React.CSSProperties = { padding: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
-const monoSmall: React.CSSProperties = { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', color: '#64748b', fontSize: '0.75rem', marginTop: 4 };
-const emptyStyle: React.CSSProperties = { padding: 18, color: '#64748b', fontSize: '0.9rem' };

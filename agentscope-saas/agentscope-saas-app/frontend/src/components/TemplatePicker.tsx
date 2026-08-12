@@ -9,13 +9,13 @@ interface Props {
 const S: Record<string, React.CSSProperties> = {
   list: { display: 'flex', flexDirection: 'column', gap: 12 },
   card: {
-    border: '1px solid #e2e8f0', background: '#ffffff', borderRadius: 12,
+    border: '1px solid #e2e8f0', background: '#ffffff', borderRadius: 7,
     padding: '16px 18px', cursor: 'pointer',
     transition: 'border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease',
   },
   cardActive: {
-    border: '1px solid #6366f1', background: '#eef2ff',
-    boxShadow: '0 0 0 3px rgba(99,102,241,0.12)',
+    border: '1px solid #176b49', background: '#e6f1eb',
+    boxShadow: '0 0 0 2px rgba(23,107,73,0.12)',
   },
   head: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 },
   name: { fontSize: '1rem', fontWeight: 600, color: '#0f172a' },

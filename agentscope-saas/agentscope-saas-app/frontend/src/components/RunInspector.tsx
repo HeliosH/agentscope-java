@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Activity,
+  Check,
+  CircleStop,
+  Download,
+  FileOutput,
+  ListChecks,
+  X,
+} from 'lucide-react';
+import {
   cancelRun,
   decidePlan,
   getArtifacts,
@@ -17,9 +26,14 @@ import { downloadFileVersion } from '../api/workspace';
 import './RunInspector.css';
 
 const TERMINAL = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED', 'REJECTED']);
+type InspectorTab = 'tasks' | 'artifacts' | 'events';
 
 function statusClass(status: string) {
-  return `run-inspector__status run-inspector__status--${status.toLowerCase()}`;
+  return `run-status run-status--${status.toLowerCase()}`;
+}
+
+function statusLabel(status: string) {
+  return status.toLowerCase().replace(/_/g, ' ');
 }
 
 function saveBlob(blob: Blob, name: string) {
@@ -31,12 +45,19 @@ function saveBlob(blob: Blob, name: string) {
   URL.revokeObjectURL(url);
 }
 
-export default function RunInspector({ agentId, runId }: { agentId: string; runId: string }) {
+interface RunInspectorProps {
+  agentId: string;
+  runId: string;
+  onClose?: () => void;
+}
+
+export default function RunInspector({ agentId, runId, onClose }: RunInspectorProps) {
   const [run, setRun] = useState<RunView | null>(null);
   const [tasks, setTasks] = useState<TaskView[]>([]);
   const [plan, setPlan] = useState<PlanView | null>(null);
   const [events, setEvents] = useState<RunEventView[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactView[]>([]);
+  const [tab, setTab] = useState<InspectorTab>('tasks');
   const [error, setError] = useState('');
   const [acting, setActing] = useState(false);
   const lastSeq = useRef(0);
@@ -56,11 +77,11 @@ export default function RunInspector({ agentId, runId }: { agentId: string; runI
       setArtifacts(nextArtifacts);
       if (nextEvents.length) {
         lastSeq.current = Math.max(lastSeq.current, ...nextEvents.map(event => event.seq));
-        setEvents(previous => [...previous, ...nextEvents].slice(-40));
+        setEvents(previous => [...previous, ...nextEvents].slice(-80));
       }
       setError('');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Run state is unavailable');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Run state is unavailable');
     }
   }, [agentId, runId]);
 
@@ -80,14 +101,16 @@ export default function RunInspector({ agentId, runId }: { agentId: string; runI
     return result;
   }, [plan]);
 
+  const completed = tasks.filter(task => ['SUCCEEDED', 'COMPLETED'].includes(task.status)).length;
+
   async function decide(decision: 'APPROVE' | 'REJECT') {
     if (!plan || acting) return;
     setActing(true);
     try {
       await decidePlan(agentId, runId, plan.planId, decision);
       await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Plan decision failed');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Plan decision failed');
     } finally {
       setActing(false);
     }
@@ -99,8 +122,8 @@ export default function RunInspector({ agentId, runId }: { agentId: string; runI
     try {
       await cancelRun(agentId, runId);
       await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Run cancellation failed');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Run cancellation failed');
     } finally {
       setActing(false);
     }
@@ -108,119 +131,140 @@ export default function RunInspector({ agentId, runId }: { agentId: string; runI
 
   async function download(artifact: ArtifactView) {
     try {
-      saveBlob(
-        await downloadFileVersion(agentId, artifact.fileVersionId),
-        artifact.logicalPath,
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Artifact download failed');
+      saveBlob(await downloadFileVersion(agentId, artifact.fileVersionId), artifact.logicalPath);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Artifact download failed');
     }
   }
 
+  const tabs: { key: InspectorTab; label: string; count: number; icon: typeof ListChecks }[] = [
+    { key: 'tasks', label: 'Tasks', count: tasks.length, icon: ListChecks },
+    { key: 'artifacts', label: 'Files', count: artifacts.length, icon: FileOutput },
+    { key: 'events', label: 'Activity', count: events.length, icon: Activity },
+  ];
+
   return (
     <aside className="run-inspector" aria-label="Run details">
-      <div className="run-inspector__header">
-        <h2 className="run-inspector__heading">Run</h2>
-        <div className="run-inspector__meta" title={runId}>{runId.slice(0, 12)}</div>
-        {run && <span className={statusClass(run.status)}>{run.status}</span>}
-        {run && !TERMINAL.has(run.status) && (
-          <div className="run-inspector__actions">
-            <button
-              className="run-inspector__button run-inspector__button--danger"
-              type="button"
-              disabled={acting}
-              onClick={() => void cancel()}
-            >
-              Cancel run
-            </button>
-          </div>
+      <header className="run-inspector__header">
+        <div>
+          <h2 className="run-inspector__heading">Run details</h2>
+          <div className="run-inspector__id" title={runId}>{runId.slice(0, 12)}</div>
+        </div>
+        <span className="run-inspector__spacer" />
+        {run && <span className={statusClass(run.status)}>{statusLabel(run.status)}</span>}
+        {onClose && (
+          <button className="icon-button" type="button" title="Close run details" aria-label="Close run details" onClick={onClose}>
+            <X size={16} />
+          </button>
         )}
-      </div>
+      </header>
 
       {error && <div className="run-inspector__error">{error}</div>}
 
-      {plan && (
-        <section className="run-inspector__section">
-          <div className="run-inspector__item-row">
-            <h3 className="run-inspector__section-title">Plan v{plan.version}</h3>
-            <span className={statusClass(plan.status)}>{plan.status}</span>
-          </div>
-          <p className="run-inspector__goal">{plan.goal}</p>
-          {plan.approvalRequired && plan.status === 'PENDING_APPROVAL' && (
-            <div className="run-inspector__actions">
-              <button
-                className="run-inspector__button run-inspector__button--primary"
-                type="button"
-                disabled={acting}
-                onClick={() => void decide('APPROVE')}
-              >
-                Approve
-              </button>
-              <button
-                className="run-inspector__button"
-                type="button"
-                disabled={acting}
-                onClick={() => void decide('REJECT')}
-              >
-                Reject
-              </button>
-            </div>
+      <section className="run-summary">
+        {plan?.goal && <p className="run-summary__goal">{plan.goal}</p>}
+        <div className="run-summary__progress-row">
+          <span>{tasks.length ? `${completed} of ${tasks.length} tasks complete` : 'Preparing tasks'}</span>
+          {run && !TERMINAL.has(run.status) && (
+            <button className="run-summary__cancel" type="button" disabled={acting} onClick={() => void cancel()}>
+              <CircleStop size={13} />
+              Stop
+            </button>
           )}
+        </div>
+        {tasks.length > 0 && (
+          <div className="run-progress" aria-label={`${completed} of ${tasks.length} tasks complete`}>
+            <span style={{ width: `${Math.round((completed / tasks.length) * 100)}%` }} />
+          </div>
+        )}
+      </section>
+
+      {plan?.approvalRequired && plan.status === 'PENDING_APPROVAL' && (
+        <section className="plan-approval">
+          <div className="plan-approval__title">Plan approval required</div>
+          <div className="plan-approval__actions">
+            <button className="quiet-button" type="button" disabled={acting} onClick={() => void decide('REJECT')}>
+              <X size={14} /> Reject
+            </button>
+            <button className="primary-button" type="button" disabled={acting} onClick={() => void decide('APPROVE')}>
+              <Check size={14} /> Approve
+            </button>
+          </div>
         </section>
       )}
 
-      <section className="run-inspector__section">
-        <h3 className="run-inspector__section-title">Tasks</h3>
-        <div className="run-inspector__list">
-          {tasks.map(task => {
-            const deps = dependencies.get(task.id) ?? [];
-            return (
-              <div className="run-inspector__item" key={task.id}>
-                <div className="run-inspector__item-row">
-                  <div className="run-inspector__item-title">{task.title}</div>
-                  <span className={statusClass(task.status)}>{task.status}</span>
+      <div className="run-tabs" role="tablist" aria-label="Run detail views">
+        {tabs.map(item => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.key}
+              className={`run-tab${tab === item.key ? ' is-active' : ''}`}
+              type="button"
+              role="tab"
+              aria-selected={tab === item.key}
+              onClick={() => setTab(item.key)}
+            >
+              <Icon size={13} />
+              {item.label}
+              <span>{item.count}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="run-inspector__body">
+        {tab === 'tasks' && (
+          <div className="run-list">
+            {tasks.map(task => {
+              const deps = dependencies.get(task.id) ?? [];
+              return (
+                <div className="run-task" key={task.id}>
+                  <span className={`run-task__marker run-task__marker--${task.status.toLowerCase()}`} />
+                  <div className="run-task__content">
+                    <div className="run-task__top">
+                      <div className="run-task__title">{task.title || task.id}</div>
+                      <span className={statusClass(task.status)}>{statusLabel(task.status)}</span>
+                    </div>
+                    <div className="run-task__meta">
+                      {task.taskType}{deps.length ? ` · ${deps.length} dependencies` : ''}
+                    </div>
+                  </div>
                 </div>
-                <div className="run-inspector__muted">
-                  {task.taskType}
-                  {deps.length ? ` · ${deps.length} dependencies` : ''}
+              );
+            })}
+            {!tasks.length && <div className="run-empty">Waiting for the plan...</div>}
+          </div>
+        )}
+
+        {tab === 'artifacts' && (
+          <div className="run-list">
+            {artifacts.map(artifact => (
+              <button className="run-file" key={artifact.id} type="button" onClick={() => void download(artifact)}>
+                <FileOutput size={15} />
+                <span>{artifact.logicalPath}</span>
+                <Download size={14} />
+              </button>
+            ))}
+            {!artifacts.length && <div className="run-empty">No files produced yet.</div>}
+          </div>
+        )}
+
+        {tab === 'events' && (
+          <div className="run-list">
+            {events.slice().reverse().map(event => (
+              <div className="run-event" key={event.seq}>
+                <span className="run-event__seq">#{event.seq}</span>
+                <div>
+                  <div className="run-event__title">{statusLabel(event.eventType)}</div>
+                  <div className="run-event__time">{new Date(event.createdAt).toLocaleTimeString()}</div>
                 </div>
               </div>
-            );
-          })}
-          {!tasks.length && <div className="run-inspector__muted">No tasks yet</div>}
-        </div>
-      </section>
-
-      <section className="run-inspector__section">
-        <h3 className="run-inspector__section-title">Artifacts</h3>
-        <div className="run-inspector__list">
-          {artifacts.map(artifact => (
-            <button
-              className="run-inspector__artifact"
-              key={artifact.id}
-              type="button"
-              title="Download artifact"
-              onClick={() => void download(artifact)}
-            >
-              {artifact.logicalPath}
-            </button>
-          ))}
-          {!artifacts.length && <div className="run-inspector__muted">No artifacts yet</div>}
-        </div>
-      </section>
-
-      <section className="run-inspector__section">
-        <h3 className="run-inspector__section-title">Recent events</h3>
-        <div className="run-inspector__list">
-          {events.slice(-12).reverse().map(event => (
-            <div className="run-inspector__item" key={event.seq}>
-              <div className="run-inspector__item-title">{event.eventType}</div>
-              <div className="run-inspector__muted">#{event.seq}</div>
-            </div>
-          ))}
-          {!events.length && <div className="run-inspector__muted">No events yet</div>}
-        </div>
-      </section>
+            ))}
+            {!events.length && <div className="run-empty">No activity yet.</div>}
+          </div>
+        )}
+      </div>
     </aside>
   );
 }

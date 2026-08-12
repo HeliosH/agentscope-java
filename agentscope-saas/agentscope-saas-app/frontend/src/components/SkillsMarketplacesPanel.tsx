@@ -33,7 +33,7 @@ const containerStyle: React.CSSProperties = {
 const cardStyle: React.CSSProperties = {
   background: '#ffffff',
   border: '1px solid #e2e8f0',
-  borderRadius: 12,
+  borderRadius: 7,
   overflow: 'hidden',
 };
 const cardHeaderStyle = (open: boolean): React.CSSProperties => ({
@@ -72,9 +72,9 @@ const skillRowStyle: React.CSSProperties = {
 };
 const installButtonStyle: React.CSSProperties = {
   padding: '6px 14px',
-  borderRadius: 8,
-  border: '1px solid #6366f1',
-  background: '#6366f1',
+  borderRadius: 6,
+  border: '1px solid #176b49',
+  background: '#176b49',
   color: '#ffffff',
   fontSize: '0.82rem',
   fontWeight: 600,
@@ -82,7 +82,7 @@ const installButtonStyle: React.CSSProperties = {
 };
 const previewButtonStyle: React.CSSProperties = {
   padding: '6px 12px',
-  borderRadius: 8,
+  borderRadius: 6,
   border: '1px solid #cbd5e1',
   background: '#ffffff',
   color: '#475569',
@@ -92,9 +92,9 @@ const previewButtonStyle: React.CSSProperties = {
 };
 const addButtonStyle: React.CSSProperties = {
   padding: '8px 14px',
-  borderRadius: 8,
-  border: '1px solid #6366f1',
-  background: '#6366f1',
+  borderRadius: 6,
+  border: '1px solid #176b49',
+  background: '#176b49',
   color: '#ffffff',
   fontSize: '0.85rem',
   fontWeight: 600,
@@ -298,7 +298,7 @@ export default function SkillsMarketplacesPanel({ agentId, role, onInstalled }: 
             padding: 12,
             background: '#fef2f2',
             border: '1px solid #fecaca',
-            borderRadius: 8,
+            borderRadius: 6,
             color: '#dc2626',
             fontSize: '0.85rem',
           }}
@@ -312,7 +312,7 @@ export default function SkillsMarketplacesPanel({ agentId, role, onInstalled }: 
             padding: 18,
             background: '#ffffff',
             border: '1px dashed #cbd5e1',
-            borderRadius: 12,
+            borderRadius: 7,
             color: '#64748b',
             fontSize: '0.9rem',
           }}
@@ -495,7 +495,7 @@ export default function SkillsMarketplacesPanel({ agentId, role, onInstalled }: 
           <div
             style={{
               background: '#ffffff',
-              borderRadius: 12,
+              borderRadius: 8,
               padding: 24,
               maxWidth: '720px',
               width: '90%',
@@ -527,7 +527,7 @@ export default function SkillsMarketplacesPanel({ agentId, role, onInstalled }: 
                 background: '#0f172a',
                 color: '#e2e8f0',
                 padding: 14,
-                borderRadius: 8,
+                borderRadius: 6,
                 fontSize: '0.78rem',
                 lineHeight: 1.5,
                 overflow: 'auto',

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title description">
+  <title id="title">刍狗</title>
+  <desc id="description">以草编结构构成的守护犬图章</desc>
+  <rect width="64" height="64" rx="14" fill="#20211f"/>
+  <path d="M19 22 10 13l3 17m32-8 9-9-3 17" fill="none" stroke="#e9e6dc" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M17 22c4-5 9-7 15-7s11 2 15 7l2 13c1 10-7 18-17 18S14 45 15 35l2-13Z" fill="#e9e6dc"/>
+  <path d="m19 25 26 18M45 25 19 43M22 19l20 30M42 19 22 49" fill="none" stroke="#b8b29f" stroke-width="1.5" opacity=".62"/>
+  <path d="M23 31h1m16 0h1" stroke="#20211f" stroke-width="4" stroke-linecap="round"/>
+  <path d="m27 39 5-3 5 3-5 5-5-5Z" fill="#20211f"/>
+  <path d="M32 44v4m-7-2c2 3 4 4 7 4s5-1 7-4" fill="none" stroke="#20211f" stroke-width="2.4" stroke-linecap="round"/>
+</svg>

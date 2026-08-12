@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Download, Save, Trash2 } from 'lucide-react';
 import {
   WorkspaceSkillInfo,
   WorkspaceSkillDetail,
@@ -40,8 +41,8 @@ const itemStyle = (active: boolean): React.CSSProperties => ({
   padding: '10px 16px',
   borderBottom: '1px solid #f1f5f9',
   cursor: 'pointer',
-  background: active ? '#eef2ff' : 'transparent',
-  borderLeft: active ? '3px solid #6366f1' : '3px solid transparent',
+  background: active ? '#e6f1eb' : 'transparent',
+  borderLeft: active ? '3px solid #176b49' : '3px solid transparent',
 });
 const detailStyle: React.CSSProperties = {
   flex: 1,
@@ -59,11 +60,12 @@ const toolbarStyle: React.CSSProperties = {
   background: '#ffffff',
 };
 const buttonStyle: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: 5,
   padding: '6px 14px',
-  borderRadius: 8,
-  border: '1px solid #c7d2fe',
-  background: '#eef2ff',
-  color: '#4338ca',
+  borderRadius: 6,
+  border: '1px solid #b9d2c5',
+  background: '#e6f1eb',
+  color: '#176b49',
   fontSize: '0.85rem',
   fontWeight: 600,
   cursor: 'pointer',
@@ -90,7 +92,7 @@ const sourceBadgeStyle: React.CSSProperties = {
   alignItems: 'center',
   gap: 4,
   padding: '1px 7px',
-  borderRadius: 999,
+  borderRadius: 5,
   fontSize: '0.68rem',
   fontWeight: 700,
   letterSpacing: '0.04em',
@@ -104,9 +106,9 @@ const sourceBadgeStyle: React.CSSProperties = {
 // just a different palette to avoid implying provenance.
 const customBadgeStyle: React.CSSProperties = {
   ...sourceBadgeStyle,
-  background: '#e0e7ff',
-  color: '#4338ca',
-  border: '1px solid #c7d2fe',
+  background: '#dcebe3',
+  color: '#176b49',
+  border: '1px solid #b9d2c5',
 };
 
 export default function SkillsWorkspacePanel({
@@ -225,7 +227,7 @@ export default function SkillsWorkspacePanel({
             Installed Skills ({skills.length})
           </span>
           <button onClick={onRequestBrowse} style={buttonStyle} disabled={busy}>
-            + Install
+            <Download size={13} /> Install
           </button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -343,16 +345,16 @@ export default function SkillsWorkspacePanel({
                 onClick={handleSave}
                 style={{
                   ...buttonStyle,
-                  background: dirty ? '#6366f1' : '#e0e7ff',
-                  color: dirty ? '#ffffff' : '#6366f1',
-                  border: dirty ? '1px solid #6366f1' : '1px solid #c7d2fe',
+                  background: dirty ? '#176b49' : '#dcebe3',
+                  color: dirty ? '#ffffff' : '#176b49',
+                  border: dirty ? '1px solid #176b49' : '1px solid #b9d2c5',
                 }}
                 disabled={!dirty || busy}
               >
-                Save
+                <Save size={13} /> Save
               </button>
               <button onClick={handleDelete} style={dangerButtonStyle} disabled={busy}>
-                {selectedSkill?.origin === 'marketplace' ? 'Uninstall' : 'Delete'}
+                <Trash2 size={13} />{selectedSkill?.origin === 'marketplace' ? 'Uninstall' : 'Delete'}
               </button>
             </div>
             <textarea

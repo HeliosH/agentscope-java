@@ -1,69 +1,16 @@
-import React, { useEffect, useState } from 'react';
-import { AgentDefinition, updateAgent, deleteAgent } from '../api/agents';
+import { useEffect, useState } from 'react';
+import { Info, LockKeyhole, Save, Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-
-const S: Record<string, React.CSSProperties> = {
-  page: { padding: '32px 36px', maxWidth: 820 },
-  card: {
-    background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 14,
-    padding: '24px 28px', marginBottom: 20,
-    boxShadow: '0 1px 3px rgba(15,23,42,0.04)',
-  },
-  cardLabel: {
-    fontSize: '0.78rem', color: '#94a3b8', fontWeight: 700,
-    textTransform: 'uppercase', letterSpacing: '0.1em',
-    marginBottom: 18, display: 'block',
-  },
-  fieldLabel: {
-    display: 'block', fontSize: '0.88rem', fontWeight: 500,
-    color: '#475569', marginBottom: 8,
-  },
-  input: {
-    width: '100%', boxSizing: 'border-box', padding: '11px 14px',
-    background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 9,
-    color: '#0f172a', fontSize: '0.95rem',
-  },
-  textarea: {
-    width: '100%', boxSizing: 'border-box', padding: '12px 14px',
-    background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 9,
-    color: '#0f172a', fontSize: '0.95rem', lineHeight: 1.55,
-    minHeight: 150, resize: 'vertical',
-  },
-  row: { marginBottom: 18 },
-  saveBtn: {
-    padding: '11px 24px',
-    background: 'linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%)',
-    color: '#ffffff',
-    border: 'none', borderRadius: 9, cursor: 'pointer',
-    fontSize: '0.95rem', fontWeight: 600,
-    boxShadow: '0 2px 6px rgba(99,102,241,0.35), inset 0 1px 0 rgba(255,255,255,0.18)',
-  },
-  dangerBtn: {
-    padding: '11px 20px', background: '#ffffff', color: '#dc2626',
-    border: '1px solid #fca5a5', borderRadius: 9, cursor: 'pointer',
-    fontSize: '0.92rem', fontWeight: 500,
-  },
-  banner: {
-    padding: '14px 18px', borderRadius: 10, marginBottom: 20,
-    background: '#eef2ff', color: '#3730a3', fontSize: '0.9rem',
-    border: '1px solid #c7d2fe',
-  },
-  success: { color: '#059669', fontSize: '0.9rem', marginTop: 10 },
-  error: { color: '#dc2626', fontSize: '0.9rem', marginTop: 10 },
-  meta: {
-    fontSize: '0.85rem', color: '#64748b', fontFamily: 'monospace',
-  },
-};
+import { AgentDefinition, deleteAgent, updateAgent } from '../api/agents';
+import { Notice } from './ManagementUI';
 
 export default function AgentSettingsForm({ agent }: { agent: AgentDefinition }) {
   const navigate = useNavigate();
-  const isBuiltin = agent.builtin;
-  const readOnly = isBuiltin;
-
+  const readOnly = agent.builtin;
   const [name, setName] = useState(agent.name);
   const [description, setDescription] = useState(agent.description ?? '');
   const [sysPrompt, setSysPrompt] = useState(agent.sysPrompt ?? '');
-  const [maxIters, setMaxIters] = useState<string>(String(agent.maxIters ?? 12));
+  const [maxIters, setMaxIters] = useState(String(agent.maxIters ?? 12));
   const [saving, setSaving] = useState(false);
   const [ok, setOk] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -73,7 +20,7 @@ export default function AgentSettingsForm({ agent }: { agent: AgentDefinition })
     setDescription(agent.description ?? '');
     setSysPrompt(agent.sysPrompt ?? '');
     setMaxIters(String(agent.maxIters ?? 12));
-  }, [agent.id]);
+  }, [agent]);
 
   async function handleSave() {
     setOk(false);
@@ -106,97 +53,68 @@ export default function AgentSettingsForm({ agent }: { agent: AgentDefinition })
   }
 
   return (
-    <div style={S.page}>
-      {isBuiltin && (
-        <div style={S.banner}>
-          Built-in agents are read-only from the UI. Edit <code>~/.agentscope/agentscope.json</code> to change them.
-        </div>
+    <div className="settings-page">
+      {readOnly && (
+        <Notice tone="info">
+          <LockKeyhole size={15} /> Built-in agents are read-only. Their managed configuration cannot be changed here.
+        </Notice>
       )}
 
-      <div style={S.card}>
-        <span style={S.cardLabel}>Identity</span>
-
-        <div style={S.row}>
-          <label style={S.fieldLabel}>Agent ID</label>
-          <div style={S.meta}>{agent.id}</div>
+      <section className="settings-section" aria-labelledby="identity-title">
+        <div className="settings-section-heading">
+          <div><h2 id="identity-title">Identity</h2><p>How this agent appears across the workspace.</p></div>
+          <span className="status-badge status-badge-neutral">{readOnly ? 'Built-in' : 'Custom'}</span>
         </div>
-
-        <div style={S.row}>
-          <label style={S.fieldLabel}>Name</label>
-          <input
-            style={S.input}
-            value={name}
-            onChange={e => setName(e.target.value)}
-            disabled={readOnly}
-          />
+        <div className="settings-form-grid">
+          <label className="management-field">
+            <span>Agent ID</span>
+            <code className="settings-static-value">{agent.id}</code>
+          </label>
+          <label className="management-field">
+            <span>Name</span>
+            <input className="management-input" value={name} onChange={event => setName(event.target.value)} disabled={readOnly} />
+          </label>
+          <label className="management-field settings-field-wide">
+            <span>Description</span>
+            <input className="management-input" value={description} onChange={event => setDescription(event.target.value)} disabled={readOnly} placeholder="Short summary shown in agent lists" />
+          </label>
         </div>
+      </section>
 
-        <div style={S.row}>
-          <label style={S.fieldLabel}>Description</label>
-          <input
-            style={S.input}
-            value={description}
-            onChange={e => setDescription(e.target.value)}
-            disabled={readOnly}
-            placeholder="Short summary shown on cards and tabs"
-          />
+      <section className="settings-section" aria-labelledby="behavior-title">
+        <div className="settings-section-heading">
+          <div><h2 id="behavior-title">Runtime behavior</h2><p>Default operating instructions and task execution limits.</p></div>
         </div>
-      </div>
-
-      <div style={S.card}>
-        <span style={S.cardLabel}>Behavior</span>
-
-        <div style={S.row}>
-          <label style={S.fieldLabel}>System prompt</label>
-          <textarea
-            style={S.textarea}
-            value={sysPrompt}
-            onChange={e => setSysPrompt(e.target.value)}
-            disabled={readOnly}
-            placeholder="High-level instructions. Workspace AGENTS.md still takes precedence at runtime."
-          />
+        <div className="settings-form-grid">
+          <label className="management-field settings-field-wide">
+            <span>System prompt</span>
+            <textarea className="management-input settings-prompt" value={sysPrompt} onChange={event => setSysPrompt(event.target.value)} disabled={readOnly} placeholder="High-level instructions for this agent" />
+            <small><Info size={13} /> Workspace instructions still take precedence at runtime.</small>
+          </label>
+          <label className="management-field settings-number-field">
+            <span>Max iterations</span>
+            <input className="management-input" type="number" min={1} max={64} value={maxIters} onChange={event => setMaxIters(event.target.value)} disabled={readOnly} />
+          </label>
         </div>
+      </section>
 
-        <div style={S.row}>
-          <label style={S.fieldLabel}>Max iterations</label>
-          <input
-            style={{ ...S.input, width: 140 }}
-            type="number"
-            min={1}
-            max={64}
-            value={maxIters}
-            onChange={e => setMaxIters(e.target.value)}
-            disabled={readOnly}
-          />
-        </div>
-      </div>
-
-      {!isBuiltin && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-          <button style={S.saveBtn} onClick={handleSave} disabled={saving}>
-            {saving ? 'Saving…' : 'Save changes'}
-          </button>
-          <button style={S.dangerBtn} onClick={handleDelete}>Delete agent</button>
+      {!readOnly && (
+        <div className="settings-actions">
+          <button className="primary-button" onClick={handleSave} disabled={saving}><Save size={16} />{saving ? 'Saving...' : 'Save changes'}</button>
+          <button className="danger-button" onClick={handleDelete}><Trash2 size={16} />Delete agent</button>
         </div>
       )}
-      {ok && <p style={S.success}>Saved.</p>}
-      {err && <p style={S.error}>{err}</p>}
+      {ok && <Notice tone="success">Agent settings saved.</Notice>}
+      {err && <Notice tone="error">{err}</Notice>}
 
-      <div style={{ ...S.card, marginTop: 24 }}>
-        <span style={S.cardLabel}>Metadata</span>
-        <div style={S.row}>
-          <label style={S.fieldLabel}>Kind</label>
-          <div style={S.meta}>{isBuiltin ? 'built-in' : 'custom'}</div>
-        </div>
-        <div style={S.row}>
-          <label style={S.fieldLabel}>Created</label>
-          <div style={S.meta}>{new Date(agent.createdAt).toLocaleString()}</div>
-        </div>
-        <div style={S.row}>
-          <label style={S.fieldLabel}>Updated</label>
-          <div style={S.meta}>{new Date(agent.updatedAt).toLocaleString()}</div>
-        </div>
-      </div>
+      <section className="settings-section settings-metadata" aria-labelledby="metadata-title">
+        <div className="settings-section-heading"><div><h2 id="metadata-title">Metadata</h2><p>Read-only lifecycle information.</p></div></div>
+        <dl className="settings-definition-list">
+          <div><dt>Kind</dt><dd>{readOnly ? 'Built-in' : 'Custom'}</dd></div>
+          <div><dt>Created</dt><dd>{new Date(agent.createdAt).toLocaleString()}</dd></div>
+          <div><dt>Updated</dt><dd>{new Date(agent.updatedAt).toLocaleString()}</dd></div>
+        </dl>
+      </section>
     </div>
   );
 }

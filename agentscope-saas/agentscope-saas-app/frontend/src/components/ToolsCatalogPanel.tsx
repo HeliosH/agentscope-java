@@ -20,7 +20,7 @@ type Tab = 'builtin' | 'mcp';
 function tabStyle(active: boolean): React.CSSProperties {
   return {
     background: 'transparent', border: 'none',
-    borderBottom: `2px solid ${active ? '#6366f1' : 'transparent'}`,
+    borderBottom: `2px solid ${active ? '#176b49' : 'transparent'}`,
     padding: '10px 16px', cursor: 'pointer',
     fontSize: '0.88rem', color: active ? '#0f172a' : '#64748b',
     fontWeight: active ? 600 : 500, marginBottom: -1,
@@ -41,7 +41,7 @@ const S: Record<string, React.CSSProperties> = {
   },
   row: {
     display: 'flex', alignItems: 'flex-start', gap: 12,
-    background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 10,
+    background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 6,
     padding: '12px 14px', marginBottom: 8,
   },
   cb: { marginTop: 4 },
@@ -49,8 +49,8 @@ const S: Record<string, React.CSSProperties> = {
   rowDesc: { color: '#64748b', fontSize: '0.82rem', marginTop: 2, lineHeight: 1.45 },
   addBtn: {
     marginLeft: 'auto', flexShrink: 0,
-    padding: '6px 14px', borderRadius: 7, border: '1px solid #c7d2fe',
-    background: '#eef2ff', color: '#4338ca',
+    padding: '6px 14px', borderRadius: 7, border: '1px solid #b9d2c5',
+    background: '#e6f1eb', color: '#176b49',
     fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer',
   },
   installedTag: {
@@ -65,8 +65,8 @@ const S: Record<string, React.CSSProperties> = {
   },
   status: { fontSize: '0.82rem', color: '#64748b', flex: 1 },
   saveBtn: {
-    padding: '8px 18px', background: 'linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%)',
-    color: '#ffffff', border: 'none', borderRadius: 8, cursor: 'pointer',
+    padding: '8px 18px', background: '#176b49',
+    color: '#ffffff', border: 'none', borderRadius: 6, cursor: 'pointer',
     fontSize: '0.86rem', fontWeight: 600,
   },
   saveBtnDisabled: { background: '#e2e8f0', color: '#94a3b8', cursor: 'not-allowed' },
@@ -76,7 +76,7 @@ const S: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 90,
   },
   formCard: {
-    background: '#ffffff', borderRadius: 12, width: 'min(520px, 92vw)',
+    background: '#ffffff', borderRadius: 8, width: 'min(520px, 92vw)',
     maxHeight: '85vh', overflow: 'auto', padding: '20px 22px',
     boxShadow: '0 24px 60px rgba(15,23,42,0.3)',
   },
@@ -301,7 +301,7 @@ function McpTab({ agentId, onSaved }: { agentId: string; onSaved: () => void }) 
                     href={entry.docsUrl}
                     target="_blank"
                     rel="noreferrer"
-                    style={{ fontSize: '0.78rem', color: '#4338ca', marginTop: 4, display: 'inline-block' }}
+                    style={{ fontSize: '0.78rem', color: '#176b49', marginTop: 4, display: 'inline-block' }}
                   >
                     docs ↗
                   </a>
@@ -437,7 +437,7 @@ function McpAddForm({ entry, existingNames, onCancel, onSubmit }: AddFormProps) 
             disabled={busy || !name.trim()}
             style={{
               padding: '7px 18px', border: 'none', borderRadius: 7,
-              background: 'linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%)',
+              background: '#176b49',
               color: '#ffffff', cursor: busy ? 'not-allowed' : 'pointer',
               fontSize: '0.86rem', fontWeight: 600,
               opacity: busy || !name.trim() ? 0.6 : 1,

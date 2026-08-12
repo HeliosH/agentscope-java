@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Sparkles } from 'lucide-react';
 import { AgentDraft, draftAgentWithAi } from '../api/agents';
 
 interface Props {
@@ -11,21 +12,21 @@ const S: Record<string, React.CSSProperties> = {
   root: { display: 'flex', flexDirection: 'column', gap: 14 },
   textarea: {
     width: '100%', boxSizing: 'border-box', padding: '12px 14px',
-    background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 9,
+    background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 6,
     color: '#0f172a', fontSize: '0.95rem', lineHeight: 1.55,
     minHeight: 130, resize: 'vertical',
   },
   btn: {
     alignSelf: 'flex-start', padding: '10px 22px',
-    background: 'linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%)',
+    background: '#176b49',
     color: '#ffffff',
-    border: 'none', borderRadius: 9, cursor: 'pointer', fontSize: '0.92rem', fontWeight: 600,
-    boxShadow: '0 2px 6px rgba(99,102,241,0.35), inset 0 1px 0 rgba(255,255,255,0.18)',
+    border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: '0.92rem', fontWeight: 600,
+    display: 'inline-flex', alignItems: 'center', gap: 6,
   },
   btnDisabled: { background: '#e2e8f0', color: '#94a3b8', cursor: 'not-allowed', boxShadow: 'none' },
   err: { color: '#dc2626', fontSize: '0.9rem' },
   draftCard: {
-    background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12,
+    background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 7,
     padding: '18px 20px',
   },
   draftLabel: {
@@ -35,7 +36,7 @@ const S: Record<string, React.CSSProperties> = {
   draftField: { fontSize: '0.95rem', color: '#0f172a', marginBottom: 10, lineHeight: 1.55 },
   bullet: { fontSize: '0.88rem', color: '#475569', lineHeight: 1.55 },
   unavailable: {
-    padding: '16px 20px', background: '#f1f5f9', borderRadius: 10,
+    padding: '16px 20px', background: '#f1f5f9', borderRadius: 7,
     color: '#475569', fontSize: '0.92rem', border: '1px solid #cbd5e1',
   },
 };
@@ -78,7 +79,7 @@ export default function AiDescribeForm({ available, draft, onDraft }: Props) {
         onClick={handleDraft}
         disabled={busy || !desc.trim()}
       >
-        {busy ? 'Drafting…' : draft ? 'Redraft' : 'Draft with AI'}
+        <Sparkles size={15} />{busy ? 'Drafting…' : draft ? 'Redraft' : 'Draft with AI'}
       </button>
       {err && <div style={S.err}>{err}</div>}
 

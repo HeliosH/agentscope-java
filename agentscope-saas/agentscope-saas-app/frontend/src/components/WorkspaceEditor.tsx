@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Download, History, RotateCcw, WrapText } from 'lucide-react';
 import {
   downloadCurrentFile,
   downloadFileVersion,
@@ -21,7 +22,7 @@ const S: Record<string, React.CSSProperties> = {
     height: 48, padding: '0 18px', display: 'flex', alignItems: 'center', gap: 12,
     borderBottom: '1px solid #e2e8f0', background: '#ffffff', flexShrink: 0,
   },
-  pathTxt: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '0.88rem', color: '#3730a3', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 },
+  pathTxt: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '0.88rem', color: '#176b49', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 },
   readonlyBadge: {
     background: '#f1f5f9', color: '#64748b',
     border: '1px solid #e2e8f0', borderRadius: 6,
@@ -38,15 +39,15 @@ const S: Record<string, React.CSSProperties> = {
   wrapToggle: {
     background: '#f8fafc', border: '1px solid #e2e8f0', color: '#475569',
     borderRadius: 6, padding: '3px 9px', cursor: 'pointer',
-    fontSize: '0.75rem', fontWeight: 500,
+    fontSize: '0.75rem', fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 5,
   },
   wrapToggleActive: {
-    background: '#eef2ff', borderColor: '#c7d2fe', color: '#4338ca',
+    background: '#e6f1eb', borderColor: '#b9d2c5', color: '#176b49',
   },
   actionBtn: {
     background: '#ffffff', border: '1px solid #cbd5e1', color: '#475569',
     borderRadius: 6, padding: '3px 9px', cursor: 'pointer',
-    fontSize: '0.75rem', fontWeight: 500,
+    fontSize: '0.75rem', fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 5,
   },
   versions: {
     borderTop: '1px solid #e2e8f0', background: '#ffffff', flexShrink: 0,
@@ -169,10 +170,10 @@ export default function WorkspaceEditor({ agentId, path, refreshKey, onChanged }
     <div style={S.root}>
       <div style={S.bar}>
         <span style={S.pathTxt}>{path}</span>
-        <span style={S.readonlyBadge}>read-only</span>
+        <span style={S.readonlyBadge}>Read only</span>
         {(err || actionMsg) && <span style={{ ...S.status, ...(err ? S.err : {}) }}>{err ?? actionMsg}</span>}
         <button type="button" style={S.actionBtn} onClick={handleDownload} title="Download current file">
-          Download
+          <Download size={13} /> Download
         </button>
         <button
           type="button"
@@ -180,7 +181,7 @@ export default function WorkspaceEditor({ agentId, path, refreshKey, onChanged }
           onClick={() => setSoftWrap(w => !w)}
           title={softWrap ? 'Soft-wrap on (display only)' : 'No wrap — long lines scroll horizontally'}
         >
-          {softWrap ? 'wrap: on' : 'wrap: off'}
+          <WrapText size={13} /> {softWrap ? 'Wrap on' : 'Wrap off'}
         </button>
       </div>
       {loading ? (
@@ -203,7 +204,7 @@ export default function WorkspaceEditor({ agentId, path, refreshKey, onChanged }
       )}
       <div style={S.versions}>
         <div style={{ ...S.versionRow, fontWeight: 700, color: '#334155' }}>
-          <span>Version</span>
+          <span><History size={13} /> Version</span>
           <span>Size</span>
           <span>Source</span>
           <span />
@@ -220,10 +221,10 @@ export default function WorkspaceEditor({ agentId, path, refreshKey, onChanged }
             <span>{v.sizeBytes} B</span>
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.source ?? '-'}</span>
             <button type="button" style={S.actionBtn} onClick={() => handleVersionDownload(v)}>
-              Download
+              <Download size={12} /> Download
             </button>
             <button type="button" style={S.actionBtn} disabled={v.current} onClick={() => handleRestore(v)}>
-              Restore
+              <RotateCcw size={12} /> Restore
             </button>
           </div>
         ))}

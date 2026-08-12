@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, Ban, Plus, RefreshCw } from 'lucide-react';
 import {
   ActiveTool,
   ActiveToolsResponse,
@@ -22,19 +23,19 @@ const S: Record<string, React.CSSProperties> = {
   sub: { fontSize: '0.82rem', color: '#64748b' },
   primaryBtn: {
     padding: '8px 16px',
-    background: 'linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%)',
-    color: '#ffffff', border: 'none', borderRadius: 8, cursor: 'pointer',
+    background: '#176b49',
+    color: '#ffffff', border: 'none', borderRadius: 6, cursor: 'pointer',
     fontSize: '0.86rem', fontWeight: 600,
-    boxShadow: '0 1px 3px rgba(99,102,241,0.3)',
+    display: 'inline-flex', alignItems: 'center', gap: 6,
   },
   refreshBtn: {
     background: '#f8fafc', border: '1px solid #e2e8f0', color: '#475569',
     borderRadius: 7, padding: '6px 12px', cursor: 'pointer',
-    fontSize: '0.78rem', fontWeight: 500,
+    fontSize: '0.78rem', fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 5,
   },
   warnings: {
     background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e',
-    borderRadius: 8, padding: '10px 14px', fontSize: '0.82rem', lineHeight: 1.5,
+    borderRadius: 6, padding: '10px 14px', fontSize: '0.82rem', lineHeight: 1.5,
   },
   groupHeader: {
     fontSize: '0.74rem', fontWeight: 700, color: '#94a3b8',
@@ -46,18 +47,18 @@ const S: Record<string, React.CSSProperties> = {
     overflow: 'auto', flex: 1, minHeight: 0,
   },
   card: {
-    border: '1px solid #e2e8f0', borderRadius: 10, padding: '12px 14px',
+    border: '1px solid #e2e8f0', borderRadius: 6, padding: '12px 14px',
     background: '#ffffff', display: 'flex', alignItems: 'flex-start', gap: 12,
   },
   cardName: { fontWeight: 600, color: '#0f172a', fontSize: '0.92rem' },
   cardDesc: { color: '#64748b', fontSize: '0.82rem', marginTop: 3, lineHeight: 1.45 },
   badge: {
-    fontSize: '0.7rem', fontWeight: 600, padding: '2px 8px', borderRadius: 999,
-    background: '#eef2ff', color: '#4338ca', border: '1px solid #c7d2fe',
+    fontSize: '0.7rem', fontWeight: 600, padding: '2px 8px', borderRadius: 5,
+    background: '#e6f1eb', color: '#176b49', border: '1px solid #b9d2c5',
     textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0,
   },
   mcpBadge: {
-    fontSize: '0.7rem', fontWeight: 600, padding: '2px 8px', borderRadius: 999,
+    fontSize: '0.7rem', fontWeight: 600, padding: '2px 8px', borderRadius: 5,
     background: '#ecfeff', color: '#0e7490', border: '1px solid #a5f3fc',
     textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0,
   },
@@ -65,6 +66,7 @@ const S: Record<string, React.CSSProperties> = {
     background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c',
     borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
     fontSize: '0.74rem', fontWeight: 500, marginLeft: 'auto', flexShrink: 0,
+    display: 'inline-flex', alignItems: 'center', gap: 4,
   },
   empty: { padding: 32, textAlign: 'center', color: '#94a3b8', fontSize: '0.88rem' },
   err: { color: '#dc2626', fontSize: '0.85rem' },
@@ -126,16 +128,16 @@ export default function ToolsActivePanel({ agentId, refreshKey, onChange, onRequ
           </div>
         </div>
         <button style={S.refreshBtn} onClick={() => onChange()} disabled={loading}>
-          {loading ? '…' : '↻ refresh'}
+          <RefreshCw size={13} className={loading ? 'is-spinning' : ''} /> Refresh
         </button>
         <button style={S.primaryBtn} onClick={onRequestBrowse}>
-          + Add / configure
+          <Plus size={14} /> Add / configure
         </button>
       </div>
 
       {data?.warnings && data.warnings.length > 0 && (
         <div style={S.warnings}>
-          {data.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+          {data.warnings.map((warning, index) => <div key={index} style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}><AlertTriangle size={14} />{warning}</div>)}
         </div>
       )}
       {actionErr && <div style={S.err}>{actionErr}</div>}
@@ -160,7 +162,7 @@ export default function ToolsActivePanel({ agentId, refreshKey, onChange, onRequ
                   onClick={() => disableTool(t)}
                   title={t.source === 'built-in' ? 'Add to deny list' : 'Remove this MCP server'}
                 >
-                  Disable
+                  <Ban size={12} /> Disable
                 </button>
               </div>
             ))}

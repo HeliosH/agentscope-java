@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronRight, Eye, EyeOff, File, Folder, FolderOpen, RefreshCw } from 'lucide-react';
 import { FileNode, tree as fetchTree } from '../api/workspace';
 
 interface Props {
@@ -44,7 +45,7 @@ const S: Record<string, React.CSSProperties> = {
     color: '#334155', borderRadius: 7, userSelect: 'none',
     whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
   },
-  rowActive: { background: '#eef2ff', color: '#3730a3', fontWeight: 500 },
+  rowActive: { background: '#e6f1eb', color: '#176b49', fontWeight: 500 },
   rowHover: { background: '#f8fafc' },
   caret: { width: 12, color: '#94a3b8', flexShrink: 0 },
   err: { padding: 14, fontSize: '0.88rem', color: '#dc2626' },
@@ -104,7 +105,6 @@ interface NodeViewProps {
 }
 
 function NodeView({ node, depth, selectedPath, onSelect, expanded, toggle }: NodeViewProps) {
-  const [hover, setHover] = useState(false);
   const isDir = node.type === 'dir';
   const isOpen = expanded.has(node.path);
   const active = selectedPath === node.path;
@@ -119,16 +119,17 @@ function NodeView({ node, depth, selectedPath, onSelect, expanded, toggle }: Nod
         style={{
           ...S.row,
           paddingLeft: 8 + depth * 12,
-          ...(active ? S.rowActive : hover ? S.rowHover : {}),
+          ...(active ? S.rowActive : {}),
           ...(dimmed ? { opacity: 0.55, fontStyle: 'italic' } : {}),
         }}
         onClick={handleClick}
-        onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => setHover(false)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') handleClick(); }}
         title={node.path}
       >
-        <span style={S.caret}>{isDir ? (isOpen ? '▾' : '▸') : ''}</span>
-        <span>{isDir ? '📁' : '📄'}</span>
+        <span style={S.caret}>{isDir ? (isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />) : null}</span>
+        <span style={{ display: 'inline-flex', color: isDir ? '#9a6a25' : '#64748b' }}>{isDir ? (isOpen ? <FolderOpen size={16} /> : <Folder size={16} />) : <File size={15} />}</span>
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{node.name}</span>
       </div>
       {isDir && isOpen && node.children?.map(c => (
@@ -204,7 +205,7 @@ export default function WorkspaceFileTree({ agentId, selectedPath, onSelect, ref
           disabled={loading}
           title="Refresh file tree"
         >
-          {loading ? '…' : '↻'} <span style={{ fontSize: '0.7rem' }}>refresh</span>
+          <RefreshCw size={13} className={loading ? 'is-spinning' : ''} /> <span style={{ fontSize: '0.7rem' }}>Refresh</span>
         </button>
       </div>
       {hiddenCount > 0 && (
@@ -216,7 +217,7 @@ export default function WorkspaceFileTree({ agentId, selectedPath, onSelect, ref
             onClick={() => setShowHidden(s => !s)}
             title={showHidden ? 'Hide internal files' : 'Show internal/dotfile entries'}
           >
-            {showHidden ? '👁 hide' : '👁 show all'}
+            {showHidden ? <EyeOff size={13} /> : <Eye size={13} />}{showHidden ? 'Hide' : 'Show all'}
           </button>
         </div>
       )}
