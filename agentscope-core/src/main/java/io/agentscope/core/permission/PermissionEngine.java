@@ -140,10 +140,19 @@ public final class PermissionEngine {
         Objects.requireNonNull(tool, "tool must not be null");
         Map<String, Object> input = toolInput == null ? Map.of() : toolInput;
 
+        PermissionDecision securityDecision = ToolInputSecurityGuard.inspect(tool, input);
+        if (securityDecision.getBehavior() == PermissionBehavior.DENY) {
+            return Mono.just(securityDecision.withSuggestedRules(tool.generateSuggestions(input)));
+        }
+
         // 1. Deny rules (highest priority)
         PermissionDecision denyDecision = checkDenyRules(tool, input);
         if (denyDecision != null) {
             return Mono.just(denyDecision);
+        }
+
+        if (securityDecision.getBehavior() == PermissionBehavior.ASK) {
+            return Mono.just(securityDecision.withSuggestedRules(tool.generateSuggestions(input)));
         }
 
         // 2. Ask rules

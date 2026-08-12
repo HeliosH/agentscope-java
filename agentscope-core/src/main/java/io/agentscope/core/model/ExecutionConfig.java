@@ -17,6 +17,7 @@
 package io.agentscope.core.model;
 
 import io.agentscope.core.model.exception.BadRequestException;
+import io.agentscope.core.model.exception.OpenAIException;
 import io.agentscope.core.model.exception.RateLimitException;
 import io.agentscope.core.model.transport.HttpTransportException;
 import java.io.IOException;
@@ -111,6 +112,10 @@ public class ExecutionConfig {
         }
         if (error instanceof RateLimitException) {
             return true;
+        }
+        if (error instanceof OpenAIException openAI) {
+            Integer status = openAI.getStatusCode();
+            return status != null && (status == 429 || status >= 500 && status < 600);
         }
 
         // Timeout errors are retryable

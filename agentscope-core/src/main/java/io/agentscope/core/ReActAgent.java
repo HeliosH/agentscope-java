@@ -91,9 +91,11 @@ import io.agentscope.core.model.ModelRegistry;
 import io.agentscope.core.model.ToolSchema;
 import io.agentscope.core.permission.PermissionBehavior;
 import io.agentscope.core.permission.PermissionContextState;
+import io.agentscope.core.permission.PermissionDecision;
 import io.agentscope.core.permission.PermissionEngine;
 import io.agentscope.core.permission.PermissionMode;
 import io.agentscope.core.permission.PermissionRule;
+import io.agentscope.core.permission.ToolInputSecurityGuard;
 import io.agentscope.core.rag.GenericRAGHook;
 import io.agentscope.core.rag.Knowledge;
 import io.agentscope.core.rag.KnowledgeRetrievalTools;
@@ -2542,15 +2544,25 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
         }
 
         private Mono<PermissionVerdict> evaluateOne(ToolUseBlock use, boolean useEngine) {
-            // Tools already promoted to ALLOWED by user confirmation skip the engine entirely.
-            if (use.getState() == ToolCallState.ALLOWED) {
-                return Mono.just(new PermissionVerdict(use, PermissionBehavior.ALLOW));
-            }
             AgentTool tool = toolkit.getTool(use.getName());
             if (!(tool instanceof ToolBase tb)) {
                 return Mono.just(new PermissionVerdict(use, PermissionBehavior.ALLOW));
             }
             Map<String, Object> input = use.getInput() == null ? Map.of() : use.getInput();
+            PermissionDecision securityDecision = ToolInputSecurityGuard.inspect(tb, input);
+            if (securityDecision.getBehavior() == PermissionBehavior.DENY) {
+                return Mono.just(new PermissionVerdict(use, PermissionBehavior.DENY));
+            }
+            // ASK findings can be resumed after explicit user approval; DENY findings above cannot.
+            if (securityDecision.getBehavior() == PermissionBehavior.ASK
+                    && use.getState() != ToolCallState.ALLOWED
+                    && !useEngine) {
+                return Mono.just(new PermissionVerdict(use, PermissionBehavior.ASK));
+            }
+            // Tools already promoted to ALLOWED by user confirmation skip ordinary rule evaluation.
+            if (use.getState() == ToolCallState.ALLOWED) {
+                return Mono.just(new PermissionVerdict(use, PermissionBehavior.ALLOW));
+            }
             if (useEngine) {
                 return permissionEngine
                         .checkPermission(tb, input)

@@ -25,6 +25,7 @@ agentscope-java 的关键能力**已逐项核实存在于代码中**（非画饼
 | 多副本 | `RedisSandboxExecutionGuard`/`RedisStore`/`RedisSession` | 分布式锁/状态现成 |
 | 可观测 | `AgentTraceMiddleware`（OTel 1.61）/ admin-starter(`MetricsRecorder`) | 生产级追踪+指标 |
 | 调度/记忆/多 Agent | scheduler 扩展 / `LongTermMemory` / A2A+Nacos / `SubAgentTool` | 复用底座 |
+| QwenPaw 后端能力复核 | [21-qwenpaw-backend-gap-closure.md](21-qwenpaw-backend-gap-closure.md) | 当前能力矩阵、P0 补齐和后续边界 |
 
 ## 但必须诚实：这是"重建"，不是"搬运"
 

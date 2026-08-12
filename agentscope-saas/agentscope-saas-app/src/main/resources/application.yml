@@ -50,6 +50,16 @@ saas:
     base-url: ${SAAS_MODEL_BASE_URL:}
     api-key: ${SAAS_MODEL_API_KEY:}
     name: ${SAAS_MODEL_NAME:qwen-max}
+    # Ordered fallback endpoints are supplied in deployment-specific YAML as saas.model.fallbacks[].
+    fallbacks: []
+    traffic:
+      enabled: ${SAAS_MODEL_TRAFFIC_ENABLED:true}
+      max-concurrent: ${SAAS_MODEL_MAX_CONCURRENT:8}
+      max-queries-per-minute: ${SAAS_MODEL_MAX_QPM:0}
+      acquire-timeout-seconds: ${SAAS_MODEL_ACQUIRE_TIMEOUT_SECONDS:30}
+      rate-limit-cooldown-seconds: ${SAAS_MODEL_RATE_LIMIT_COOLDOWN_SECONDS:5}
+      circuit-failure-threshold: ${SAAS_MODEL_CIRCUIT_FAILURE_THRESHOLD:3}
+      circuit-open-seconds: ${SAAS_MODEL_CIRCUIT_OPEN_SECONDS:30}
   redis:
     enabled: ${SAAS_REDIS_ENABLED:true}
     uri: ${SAAS_REDIS_URI:redis://localhost:6379}
@@ -152,6 +162,10 @@ saas:
     max-iters: ${SAAS_AGENT_MAX_ITERS:10}
     task-list-enabled: ${SAAS_AGENT_TASK_LIST_ENABLED:true}
     plan-mode-enabled: ${SAAS_AGENT_PLAN_MODE_ENABLED:true}
+    loop-guard:
+      enabled: ${SAAS_AGENT_LOOP_GUARD_ENABLED:true}
+      repeat-threshold: ${SAAS_AGENT_LOOP_GUARD_REPEAT_THRESHOLD:4}
+      window-size: ${SAAS_AGENT_LOOP_GUARD_WINDOW_SIZE:8}
     conversation:
       compaction-enabled: ${SAAS_AGENT_COMPACTION_ENABLED:true}
       max-context-tokens: ${SAAS_AGENT_MAX_CONTEXT_TOKENS:32000}

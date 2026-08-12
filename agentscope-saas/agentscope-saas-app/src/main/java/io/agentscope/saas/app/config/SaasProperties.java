@@ -15,6 +15,7 @@
  */
 package io.agentscope.saas.app.config;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -89,6 +90,11 @@ public class SaasProperties {
         /** Model name to request (e.g. qwen-max, gpt-4o). */
         private String name = "qwen-max";
 
+        /** Ordered failover endpoints. Applied only when traffic governance is enabled. */
+        private List<ModelEndpoint> fallbacks = new ArrayList<>();
+
+        @NestedConfigurationProperty private final ModelTraffic traffic = new ModelTraffic();
+
         public String getType() {
             return type;
         }
@@ -119,6 +125,125 @@ public class SaasProperties {
 
         public void setName(String name) {
             this.name = name;
+        }
+
+        public List<ModelEndpoint> getFallbacks() {
+            return fallbacks;
+        }
+
+        public void setFallbacks(List<ModelEndpoint> fallbacks) {
+            this.fallbacks = fallbacks == null ? new ArrayList<>() : new ArrayList<>(fallbacks);
+        }
+
+        public ModelTraffic getTraffic() {
+            return traffic;
+        }
+    }
+
+    /** One ordered fallback model endpoint. */
+    public static class ModelEndpoint {
+        private String type = "gateway";
+        private String baseUrl;
+        private String apiKey;
+        private String name;
+
+        public String getType() {
+            return type;
+        }
+
+        public void setType(String type) {
+            this.type = type;
+        }
+
+        public String getBaseUrl() {
+            return baseUrl;
+        }
+
+        public void setBaseUrl(String baseUrl) {
+            this.baseUrl = baseUrl;
+        }
+
+        public String getApiKey() {
+            return apiKey;
+        }
+
+        public void setApiKey(String apiKey) {
+            this.apiKey = apiKey;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+    }
+
+    /** Per-model traffic limits, coordinated 429 cooldown, and circuit-breaker policy. */
+    public static class ModelTraffic {
+        private boolean enabled = true;
+        private int maxConcurrent = 8;
+        private int maxQueriesPerMinute = 0;
+        private int acquireTimeoutSeconds = 30;
+        private int rateLimitCooldownSeconds = 5;
+        private int circuitFailureThreshold = 3;
+        private int circuitOpenSeconds = 30;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int getMaxConcurrent() {
+            return maxConcurrent;
+        }
+
+        public void setMaxConcurrent(int maxConcurrent) {
+            this.maxConcurrent = maxConcurrent;
+        }
+
+        public int getMaxQueriesPerMinute() {
+            return maxQueriesPerMinute;
+        }
+
+        public void setMaxQueriesPerMinute(int maxQueriesPerMinute) {
+            this.maxQueriesPerMinute = maxQueriesPerMinute;
+        }
+
+        public int getAcquireTimeoutSeconds() {
+            return acquireTimeoutSeconds;
+        }
+
+        public void setAcquireTimeoutSeconds(int acquireTimeoutSeconds) {
+            this.acquireTimeoutSeconds = acquireTimeoutSeconds;
+        }
+
+        public int getRateLimitCooldownSeconds() {
+            return rateLimitCooldownSeconds;
+        }
+
+        public void setRateLimitCooldownSeconds(int rateLimitCooldownSeconds) {
+            this.rateLimitCooldownSeconds = rateLimitCooldownSeconds;
+        }
+
+        public int getCircuitFailureThreshold() {
+            return circuitFailureThreshold;
+        }
+
+        public void setCircuitFailureThreshold(int circuitFailureThreshold) {
+            this.circuitFailureThreshold = circuitFailureThreshold;
+        }
+
+        public int getCircuitOpenSeconds() {
+            return circuitOpenSeconds;
+        }
+
+        public void setCircuitOpenSeconds(int circuitOpenSeconds) {
+            this.circuitOpenSeconds = circuitOpenSeconds;
         }
     }
 
@@ -1085,6 +1210,7 @@ public class SaasProperties {
         @NestedConfigurationProperty private final Conversation conversation = new Conversation();
         @NestedConfigurationProperty private final Skills skills = new Skills();
         @NestedConfigurationProperty private final Permission permission = new Permission();
+        @NestedConfigurationProperty private final LoopGuard loopGuard = new LoopGuard();
 
         public String getName() {
             return name;
@@ -1136,6 +1262,41 @@ public class SaasProperties {
 
         public Permission getPermission() {
             return permission;
+        }
+
+        public LoopGuard getLoopGuard() {
+            return loopGuard;
+        }
+    }
+
+    /** Call-scoped repeated tool invocation guard. */
+    public static class LoopGuard {
+        private boolean enabled = true;
+        private int repeatThreshold = 4;
+        private int windowSize = 8;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int getRepeatThreshold() {
+            return repeatThreshold;
+        }
+
+        public void setRepeatThreshold(int repeatThreshold) {
+            this.repeatThreshold = repeatThreshold;
+        }
+
+        public int getWindowSize() {
+            return windowSize;
+        }
+
+        public void setWindowSize(int windowSize) {
+            this.windowSize = windowSize;
         }
     }
 

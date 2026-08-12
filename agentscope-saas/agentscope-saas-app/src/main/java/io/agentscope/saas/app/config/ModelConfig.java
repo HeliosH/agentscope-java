@@ -18,8 +18,12 @@ package io.agentscope.saas.app.config;
 import io.agentscope.core.model.DashScopeChatModel;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.OpenAIChatModel;
+import io.agentscope.core.model.ResilientModel;
 import io.agentscope.saas.model.ScriptedToolModel;
 import io.agentscope.saas.model.StubChatModel;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -47,26 +51,56 @@ public class ModelConfig {
     @Bean
     public Model chatModel(SaasProperties properties) {
         SaasProperties.Model cfg = properties.getModel();
-        String type = cfg.getType() == null ? "stub" : cfg.getType().toLowerCase();
+        Model primary = create(cfg.getType(), cfg.getBaseUrl(), cfg.getApiKey(), cfg.getName());
+        SaasProperties.ModelTraffic traffic = cfg.getTraffic();
+        if (!traffic.isEnabled() || isLocalModel(cfg.getType())) {
+            return primary;
+        }
+
+        List<Model> routes = new ArrayList<>();
+        routes.add(primary);
+        for (SaasProperties.ModelEndpoint fallback : cfg.getFallbacks()) {
+            routes.add(
+                    create(
+                            fallback.getType(),
+                            fallback.getBaseUrl(),
+                            fallback.getApiKey(),
+                            fallback.getName()));
+        }
+        ResilientModel.Policy policy =
+                new ResilientModel.Policy(
+                        traffic.getMaxConcurrent(),
+                        traffic.getMaxQueriesPerMinute(),
+                        Duration.ofSeconds(traffic.getAcquireTimeoutSeconds()),
+                        Duration.ofSeconds(traffic.getRateLimitCooldownSeconds()),
+                        traffic.getCircuitFailureThreshold(),
+                        Duration.ofSeconds(traffic.getCircuitOpenSeconds()));
+        log.info(
+                "Model traffic governance enabled: routes={} maxConcurrent={} maxQpm={}",
+                routes.stream().map(Model::getModelName).toList(),
+                traffic.getMaxConcurrent(),
+                traffic.getMaxQueriesPerMinute());
+        return new ResilientModel(routes, policy);
+    }
+
+    private Model create(String configuredType, String baseUrl, String apiKey, String name) {
+        String type = configuredType == null ? "stub" : configuredType.toLowerCase();
         switch (type) {
             case "gateway" -> {
                 log.info(
                         "Using OpenAI-compatible model gateway: baseUrl={} model={}",
-                        cfg.getBaseUrl(),
-                        cfg.getName());
+                        baseUrl,
+                        name);
                 return OpenAIChatModel.builder()
-                        .apiKey(cfg.getApiKey())
-                        .baseUrl(cfg.getBaseUrl())
-                        .modelName(cfg.getName())
+                        .apiKey(apiKey)
+                        .baseUrl(baseUrl)
+                        .modelName(name)
                         .stream(true)
                         .build();
             }
             case "dashscope" -> {
-                log.info("Using DashScope model: {}", cfg.getName());
-                return DashScopeChatModel.builder()
-                        .apiKey(cfg.getApiKey())
-                        .modelName(cfg.getName())
-                        .stream(true)
+                log.info("Using DashScope model: {}", name);
+                return DashScopeChatModel.builder().apiKey(apiKey).modelName(name).stream(true)
                         .build();
             }
             case "scripted" -> {
@@ -78,5 +112,10 @@ public class ModelConfig {
                 return new StubChatModel();
             }
         }
+    }
+
+    private static boolean isLocalModel(String configuredType) {
+        String type = configuredType == null ? "stub" : configuredType.toLowerCase();
+        return "stub".equals(type) || "scripted".equals(type);
     }
 }

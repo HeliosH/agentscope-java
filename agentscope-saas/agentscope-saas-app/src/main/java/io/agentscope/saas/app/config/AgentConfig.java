@@ -18,6 +18,7 @@ package io.agentscope.saas.app.config;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.memory.mem0.Mem0Client;
+import io.agentscope.core.middleware.ToolLoopGuardMiddleware;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.permission.PermissionBehavior;
 import io.agentscope.core.permission.PermissionContextState;
@@ -143,6 +144,13 @@ public class AgentConfig {
                                 new OrchestrationGovernanceMiddleware(
                                         orchestrationGovernance, objectMapper))
                         .middleware(new UsageMeteringMiddleware(usageService));
+
+        if (agentCfg.getLoopGuard().isEnabled()) {
+            builder.middleware(
+                    new ToolLoopGuardMiddleware(
+                            agentCfg.getLoopGuard().getRepeatThreshold(),
+                            agentCfg.getLoopGuard().getWindowSize()));
+        }
 
         if (properties.getSubagents().isDurable()) {
             if (!properties.getOrchestration().isEnabled()
