@@ -2004,7 +2004,8 @@ public class HarnessAgent implements Agent, AutoCloseable {
                                 wsManager,
                                 name != null ? name : "ReActAgent",
                                 environmentMemory,
-                                maxContextTokens);
+                                maxContextTokens,
+                                model);
                 markdownMw.setAdditionalContextFiles(additionalContextFiles);
                 inner.middleware(markdownMw);
             }

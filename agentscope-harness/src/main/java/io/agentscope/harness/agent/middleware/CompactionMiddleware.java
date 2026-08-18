@@ -23,11 +23,15 @@ import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.middleware.MiddlewareBase;
 import io.agentscope.core.middleware.ReasoningInput;
+import io.agentscope.core.model.ContextWindowAwareModel;
 import io.agentscope.core.model.Model;
+import io.agentscope.core.model.ModelContextProfile;
 import io.agentscope.core.state.AgentState;
 import io.agentscope.harness.agent.memory.MemoryFlushManager;
 import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
+import io.agentscope.harness.agent.memory.compaction.ContextWindowExceededException;
 import io.agentscope.harness.agent.memory.compaction.ConversationCompactor;
+import io.agentscope.harness.agent.memory.compaction.TokenCounterUtil;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
 import java.util.ArrayList;
 import java.util.List;
@@ -101,12 +105,16 @@ public class CompactionMiddleware implements MiddlewareBase {
                     ConversationCompactor compactor =
                             new ConversationCompactor(model, flushManager);
                     final Msg sys = systemMsg;
+                    ModelContextProfile profile = resolveProfile(messages);
+                    CompactionConfig effectiveConfig =
+                            profile != null ? effectiveConfig(profile, sys, input.tools()) : config;
 
                     return compactor
-                            .compactIfNeeded(rc, conversation, config, agentId, sessionId)
+                            .compactIfNeeded(rc, conversation, effectiveConfig, agentId, sessionId)
                             .flatMapMany(
                                     optResult -> {
                                         if (optResult.isEmpty()) {
+                                            verifyFits(profile, input.messages(), input.tools());
                                             return next.apply(input);
                                         }
                                         List<Msg> compacted = optResult.get();
@@ -121,12 +129,14 @@ public class CompactionMiddleware implements MiddlewareBase {
                                             newMessages.add(sys);
                                         }
                                         newMessages.addAll(compacted);
+                                        verifyFits(profile, newMessages, input.tools());
                                         return next.apply(
                                                 new ReasoningInput(
                                                         newMessages,
                                                         input.tools(),
                                                         input.options()));
                                     })
+                            .onErrorResume(ContextWindowExceededException.class, Flux::error)
                             .onErrorResume(
                                     e -> {
                                         log.warn(
@@ -136,6 +146,73 @@ public class CompactionMiddleware implements MiddlewareBase {
                                         return next.apply(input);
                                     });
                 });
+    }
+
+    private ModelContextProfile resolveProfile(List<Msg> messages) {
+        if (model instanceof ContextWindowAwareModel awareModel) {
+            return awareModel.resolveContextProfile(messages);
+        }
+        return null;
+    }
+
+    private CompactionConfig effectiveConfig(
+            ModelContextProfile profile,
+            Msg systemMsg,
+            List<io.agentscope.core.model.ToolSchema> tools) {
+        int fixedTokens =
+                TokenCounterUtil.calculateToken(
+                        systemMsg != null ? List.of(systemMsg) : List.of(), tools);
+        int conversationBudget = profile.inputTokenBudget() - fixedTokens;
+        if (conversationBudget < 256) {
+            throw exceeded(profile, fixedTokens, profile.inputTokenBudget());
+        }
+        int configuredTrigger = config.getTriggerTokens();
+        int triggerTokens =
+                configuredTrigger > 0
+                        ? Math.min(configuredTrigger, conversationBudget)
+                        : conversationBudget;
+        int configuredKeep = config.getKeepTokens();
+        int keepTokens =
+                Math.min(
+                        configuredKeep > 0 ? configuredKeep : conversationBudget / 2,
+                        Math.max(128, conversationBudget / 2));
+        return CompactionConfig.builder()
+                .triggerMessages(config.getTriggerMessages())
+                .triggerTokens(triggerTokens)
+                .keepMessages(config.getKeepMessages())
+                .keepTokens(keepTokens)
+                .summaryPrompt(config.getSummaryPrompt())
+                .flushBeforeCompact(config.isFlushBeforeCompact())
+                .offloadBeforeCompact(config.isOffloadBeforeCompact())
+                .truncateArgs(config.getTruncateArgsConfig())
+                .maxSummaryInputTokens(profile.inputTokenBudget())
+                .build();
+    }
+
+    private static void verifyFits(
+            ModelContextProfile profile,
+            List<Msg> messages,
+            List<io.agentscope.core.model.ToolSchema> tools) {
+        if (profile == null) {
+            return;
+        }
+        int estimatedTokens = TokenCounterUtil.calculateToken(messages, tools);
+        if (estimatedTokens > profile.inputTokenBudget()) {
+            throw exceeded(profile, estimatedTokens, profile.inputTokenBudget());
+        }
+    }
+
+    private static ContextWindowExceededException exceeded(
+            ModelContextProfile profile, int estimatedTokens, int inputBudget) {
+        return new ContextWindowExceededException(
+                "Input is too large for model '"
+                        + profile.modelId()
+                        + "' after compaction (estimated "
+                        + estimatedTokens
+                        + " tokens, input budget "
+                        + inputBudget
+                        + "). Remove large attachments or choose a model with a larger context"
+                        + " window.");
     }
 
     private static void applyToContext(AgentState state, List<Msg> compacted) {

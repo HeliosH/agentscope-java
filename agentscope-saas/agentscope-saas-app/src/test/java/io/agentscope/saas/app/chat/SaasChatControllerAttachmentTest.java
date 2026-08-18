@@ -30,6 +30,7 @@ class SaasChatControllerAttachmentTest {
                 new ChatRequest(
                         null,
                         null,
+                        null,
                         "总结文件",
                         List.of(
                                 new AttachedFileInput("inputs/report.pdf", "report.pdf", 12L),

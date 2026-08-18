@@ -18,6 +18,8 @@ package io.agentscope.harness.agent.middleware;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.middleware.MiddlewareBase;
+import io.agentscope.core.model.ContextWindowAwareModel;
+import io.agentscope.core.model.Model;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.CompositeFilesystem;
 import io.agentscope.harness.agent.filesystem.OverlayFilesystem;
@@ -92,14 +94,15 @@ public class WorkspaceContextMiddleware implements MiddlewareBase {
     private final String agentName;
     private final String environmentMemory;
     private final int maxContextTokens;
+    private final Model model;
     private List<String> additionalContextFiles = List.of();
 
     public WorkspaceContextMiddleware(WorkspaceManager workspaceManager) {
-        this(workspaceManager, "HarnessAgent", null, DEFAULT_MAX_CONTEXT_TOKENS);
+        this(workspaceManager, "HarnessAgent", null, DEFAULT_MAX_CONTEXT_TOKENS, null);
     }
 
     public WorkspaceContextMiddleware(WorkspaceManager workspaceManager, int maxContextTokens) {
-        this(workspaceManager, "HarnessAgent", null, maxContextTokens);
+        this(workspaceManager, "HarnessAgent", null, maxContextTokens, null);
     }
 
     public WorkspaceContextMiddleware(
@@ -107,10 +110,20 @@ public class WorkspaceContextMiddleware implements MiddlewareBase {
             String agentName,
             String environmentMemory,
             int maxContextTokens) {
+        this(workspaceManager, agentName, environmentMemory, maxContextTokens, null);
+    }
+
+    public WorkspaceContextMiddleware(
+            WorkspaceManager workspaceManager,
+            String agentName,
+            String environmentMemory,
+            int maxContextTokens,
+            Model model) {
         this.workspaceManager = workspaceManager;
         this.agentName = agentName != null && !agentName.isBlank() ? agentName : "HarnessAgent";
         this.environmentMemory = environmentMemory;
         this.maxContextTokens = maxContextTokens;
+        this.model = model;
     }
 
     public void setAdditionalContextFiles(List<String> files) {
@@ -145,7 +158,7 @@ public class WorkspaceContextMiddleware implements MiddlewareBase {
                         + estimateTokens(knowledgeBlock)
                         + estimateTokens(additionalBlock);
         int memoryTokens = estimateTokens(memoryContent);
-        int available = maxContextTokens - fixedTokens;
+        int available = effectiveMaxContextTokens(rc) - fixedTokens;
         if (available > 0 && memoryTokens > available) {
             memoryContent = truncateToTokenBudget(memoryContent, available);
         }
@@ -157,6 +170,14 @@ public class WorkspaceContextMiddleware implements MiddlewareBase {
                         agentsContent, memoryContent, knowledgeBlock, additionalBlock, rc);
         return assembleSection(
                 sessionContext, GUIDANCE_TEMPLATE, workspaceParagraph, loadedContext);
+    }
+
+    private int effectiveMaxContextTokens(RuntimeContext rc) {
+        if (model instanceof ContextWindowAwareModel awareModel) {
+            int inputBudget = awareModel.resolveContextProfile(rc).inputTokenBudget();
+            return Math.min(maxContextTokens, Math.max(512, inputBudget / 2));
+        }
+        return maxContextTokens;
     }
 
     private static String assembleSection(

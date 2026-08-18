@@ -112,6 +112,7 @@ public class CompactionConfig {
     private final boolean offloadBeforeCompact;
     private final TruncateArgsConfig truncateArgsConfig;
     private final Model model;
+    private final int maxSummaryInputTokens;
 
     private CompactionConfig(Builder b) {
         this.triggerMessages = b.triggerMessages;
@@ -123,6 +124,7 @@ public class CompactionConfig {
         this.offloadBeforeCompact = b.offloadBeforeCompact;
         this.truncateArgsConfig = b.truncateArgsConfig;
         this.model = b.model;
+        this.maxSummaryInputTokens = b.maxSummaryInputTokens;
     }
 
     /** Message count above which compaction is triggered (0 = disabled). */
@@ -188,6 +190,11 @@ public class CompactionConfig {
         return model;
     }
 
+    /** Maximum estimated input tokens for the summarization call (0 means unbounded). */
+    public int getMaxSummaryInputTokens() {
+        return maxSummaryInputTokens;
+    }
+
     public static Builder builder() {
         return new Builder();
     }
@@ -203,6 +210,7 @@ public class CompactionConfig {
         private boolean offloadBeforeCompact = true;
         private TruncateArgsConfig truncateArgsConfig = null;
         private Model model = null;
+        private int maxSummaryInputTokens = 0;
 
         /** Trigger compaction when conversation has at least this many messages (0 = disabled). */
         public Builder triggerMessages(int triggerMessages) {
@@ -279,6 +287,12 @@ public class CompactionConfig {
          */
         public Builder model(String modelId) {
             this.model = ModelRegistry.resolve(modelId);
+            return this;
+        }
+
+        /** Bounds the compaction prompt itself so summarization cannot overflow the model. */
+        public Builder maxSummaryInputTokens(int maxSummaryInputTokens) {
+            this.maxSummaryInputTokens = Math.max(0, maxSummaryInputTokens);
             return this;
         }
 

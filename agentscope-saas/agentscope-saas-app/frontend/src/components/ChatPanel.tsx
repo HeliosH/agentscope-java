@@ -3,6 +3,7 @@ import {
   ArrowUp,
   Bot,
   Check,
+  Cpu,
   Download,
   FileText,
   FilePlus2,
@@ -14,7 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
-import { ConfirmToolCall, currentSession, stream, type ChatEvent, type ChatRequest, type ConfirmResultInput } from '../api/chat';
+import { ConfirmToolCall, currentSession, getModelCatalog, stream, type ChatEvent, type ChatRequest, type ConfirmResultInput, type ModelOption } from '../api/chat';
 import { TurnEntry, turnsWindow } from '../api/sessions';
 import ToolCallBlock from './ToolCallBlock';
 import {
@@ -60,6 +61,7 @@ const nextId = () => `m${Date.now().toString(36)}-${counter++}`;
 
 const STORAGE_PREFIX = 'claw_chat_session:';
 const storageKey = (agentId: string) => `${STORAGE_PREFIX}${agentId}`;
+const modelStorageKey = (agentId: string) => `claw_chat_model:${agentId}`;
 
 function turnsToMessages(turns: TurnEntry[]): Message[] {
   const out: Message[] = [];
@@ -119,6 +121,8 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
   const [pendingFiles, setPendingFiles] = useState<MessageFile[]>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState('');
 
   const persistSession = useCallback((key: string | null) => {
     if (key) {
@@ -127,6 +131,34 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
       try { localStorage.removeItem(storageKey(agentId)); } catch { /* ignore */ }
     }
   }, [agentId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getModelCatalog()
+      .then(catalog => {
+        if (cancelled) return;
+        const stored = (() => {
+          try { return localStorage.getItem(modelStorageKey(agentId)); } catch { return null; }
+        })();
+        const selected = catalog.models.some(model => model.id === stored)
+          ? stored as string
+          : catalog.defaultModelId;
+        setModels(catalog.models);
+        setSelectedModelId(selected);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setModels([]);
+          setSelectedModelId('');
+        }
+      });
+    return () => { cancelled = true; };
+  }, [agentId]);
+
+  function selectModel(modelId: string) {
+    setSelectedModelId(modelId);
+    try { localStorage.setItem(modelStorageKey(agentId), modelId); } catch { /* ignore */ }
+  }
 
   // On agent change: pick a session (URL > localStorage > backend default) and rehydrate.
   useEffect(() => {
@@ -382,6 +414,7 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
       await runChatStream({
         message: text || '请处理上传的文件',
         sessionId: sessionKey ?? undefined,
+        modelId: selectedModelId || undefined,
         attachments: attachedFiles.map(file => ({
           path: file.path,
           name: file.name,
@@ -414,6 +447,7 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
       await runChatStream({
         message: '',
         sessionId: sessionKey ?? undefined,
+        modelId: selectedModelId || undefined,
         confirmResults,
       }, replyMsg.id);
     } catch (e: unknown) {
@@ -476,6 +510,23 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
         </span>
         {sessionKey && <span className="chat-header__meta" title={sessionKey}>Session {sessionKey.slice(0, 8)}</span>}
         <span className="chat-header__spacer" />
+        {models.length > 0 && (
+          <label className="chat-model-picker" title="Select model">
+            <Cpu size={15} aria-hidden="true" />
+            <select
+              aria-label="Model"
+              value={selectedModelId}
+              onChange={event => selectModel(event.target.value)}
+              disabled={busy}
+            >
+              {models.map(model => (
+                <option key={model.id} value={model.id}>
+                  {model.displayName} · {formatContextWindow(model.contextWindowTokens)}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         {activeRunId && (
           <button
             className={`quiet-button${inspectorOpen ? ' is-active' : ''}`}
@@ -724,6 +775,12 @@ function formatBytes(value: number): string {
   const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
   const amount = value / 1024 ** index;
   return `${amount >= 10 || index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
+}
+
+function formatContextWindow(tokens: number): string {
+  if (tokens >= 1_000_000) return `${Math.round(tokens / 1_000_000)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
+  return String(tokens);
 }
 
 function isUserFacingArtifact(path: string): boolean {

@@ -50,6 +50,23 @@ saas:
     base-url: ${SAAS_MODEL_BASE_URL:}
     api-key: ${SAAS_MODEL_API_KEY:}
     name: ${SAAS_MODEL_NAME:qwen-max}
+    default-id: ${SAAS_MODEL_DEFAULT_ID:default}
+    display-name: ${SAAS_MODEL_DISPLAY_NAME:}
+    context-window-tokens: ${SAAS_MODEL_CONTEXT_WINDOW_TOKENS:32000}
+    max-output-tokens: ${SAAS_MODEL_MAX_OUTPUT_TOKENS:4096}
+    safety-margin-tokens: ${SAAS_MODEL_SAFETY_MARGIN_TOKENS:1024}
+    # User-selectable routes are deployment configuration, never user-managed data. Example:
+    # catalog:
+    #   - id: qwen-long
+    #     display-name: Qwen Long
+    #     type: gateway
+    #     base-url: https://model-gateway.internal/v1
+    #     api-key: ${QWEN_LONG_API_KEY}
+    #     name: qwen-long
+    #     context-window-tokens: 131072
+    #     max-output-tokens: 8192
+    #     safety-margin-tokens: 2048
+    catalog: []
     # Ordered fallback endpoints are supplied in deployment-specific YAML as saas.model.fallbacks[].
     fallbacks: []
     traffic:

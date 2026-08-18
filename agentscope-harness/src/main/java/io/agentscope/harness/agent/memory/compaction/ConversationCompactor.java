@@ -22,6 +22,7 @@ import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.core.model.ContextWindowAwareModel;
 import io.agentscope.core.model.Model;
 import io.agentscope.harness.agent.memory.MemoryFlushManager;
 import io.agentscope.harness.agent.memory.compaction.CompactionConfig.TruncateArgsConfig;
@@ -168,11 +169,12 @@ public class ConversationCompactor {
         }
 
         // Step 4: LLM summarization of the prefix, combined with the offload result.
+        Map<String, Object> routingMetadata = routingMetadata(messages);
         return flushStep
                 .then(offloadStep)
                 .flatMap(
                         offloadPath ->
-                                summarizePrefix(prefix, config)
+                                summarizePrefix(prefix, routingMetadata, config)
                                         .map(
                                                 summary -> {
                                                     String filePath =
@@ -180,7 +182,10 @@ public class ConversationCompactor {
                                                                     ? null
                                                                     : offloadPath;
                                                     Msg summaryMsg =
-                                                            buildSummaryMessage(summary, filePath);
+                                                            buildSummaryMessage(
+                                                                    summary,
+                                                                    filePath,
+                                                                    routingMetadata);
                                                     List<Msg> compacted = new ArrayList<>();
                                                     compacted.add(summaryMsg);
                                                     compacted.addAll(tail);
@@ -326,12 +331,14 @@ public class ConversationCompactor {
     // Summarization
     // -------------------------------------------------------------------------
 
-    private Mono<String> summarizePrefix(List<Msg> prefix, CompactionConfig config) {
+    private Mono<String> summarizePrefix(
+            List<Msg> prefix, Map<String, Object> routingMetadata, CompactionConfig config) {
         if (prefix.isEmpty()) {
             return Mono.just("No previous conversation history.");
         }
 
         String formatted = formatMessagesForSummary(prefix);
+        formatted = boundSummaryText(formatted, config);
         String prompt = config.getSummaryPrompt().replace("{messages}", formatted);
 
         List<Msg> summarizationInput =
@@ -339,6 +346,7 @@ public class ConversationCompactor {
                         Msg.builder()
                                 .role(MsgRole.USER)
                                 .content(TextBlock.builder().text(prompt).build())
+                                .metadata(routingMetadata)
                                 .build());
 
         return model.stream(summarizationInput, null, null)
@@ -363,6 +371,38 @@ public class ConversationCompactor {
                             log.warn("Summarization LLM call failed: {}", e.getMessage());
                             return Mono.just("(Summarization failed: " + e.getMessage() + ")");
                         });
+    }
+
+    private static String boundSummaryText(String formatted, CompactionConfig config) {
+        int maxInputTokens = config.getMaxSummaryInputTokens();
+        if (maxInputTokens <= 0) {
+            return formatted;
+        }
+        String promptWithoutMessages = config.getSummaryPrompt().replace("{messages}", "");
+        int availableTokens =
+                Math.max(
+                        128,
+                        maxInputTokens
+                                - TokenCounterUtil.calculateTextToken(promptWithoutMessages));
+        if (TokenCounterUtil.calculateTextToken(formatted) <= availableTokens) {
+            return formatted;
+        }
+        int maxCharacters = Math.max(256, (int) Math.floor(availableTokens * 2.5));
+        int start = Math.max(0, formatted.length() - maxCharacters);
+        return "[Earlier details were offloaded; showing the newest compactable history.]\n"
+                + formatted.substring(start);
+    }
+
+    private static Map<String, Object> routingMetadata(List<Msg> messages) {
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            Map<String, Object> metadata = messages.get(i).getMetadata();
+            Object modelId =
+                    metadata != null ? metadata.get(ContextWindowAwareModel.MODEL_ID_KEY) : null;
+            if (modelId != null) {
+                return Map.of(ContextWindowAwareModel.MODEL_ID_KEY, modelId);
+            }
+        }
+        return Map.of();
     }
 
     /**
@@ -433,7 +473,8 @@ public class ConversationCompactor {
      * <p>The message name is set to {@link #SUMMARY_MSG_NAME} so hooks can identify and
      * skip summary messages during future flush/offload cycles.
      */
-    private static Msg buildSummaryMessage(String summary, String filePath) {
+    private static Msg buildSummaryMessage(
+            String summary, String filePath, Map<String, Object> routingMetadata) {
         String content;
         if (filePath != null) {
             content =
@@ -452,6 +493,7 @@ public class ConversationCompactor {
                 .role(MsgRole.USER)
                 .name(SUMMARY_MSG_NAME)
                 .content(TextBlock.builder().text(content).build())
+                .metadata(routingMetadata)
                 .build();
     }
 

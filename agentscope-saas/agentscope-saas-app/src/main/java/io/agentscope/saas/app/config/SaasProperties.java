@@ -90,6 +90,24 @@ public class SaasProperties {
         /** Model name to request (e.g. qwen-max, gpt-4o). */
         private String name = "qwen-max";
 
+        /** Stable id selected by clients. Used for the legacy root model and as catalog default. */
+        private String defaultId = "default";
+
+        /** User-facing name for the legacy root model. */
+        private String displayName;
+
+        /** Total provider context window, including input and generated output. */
+        private int contextWindowTokens = 32_000;
+
+        /** Output tokens reserved and enforced for every generation call. */
+        private int maxOutputTokens = 4_096;
+
+        /** Conservative estimation margin kept outside input and output budgets. */
+        private int safetyMarginTokens = 1_024;
+
+        /** Deploy-time model choices. Empty keeps the legacy single-model behavior. */
+        private List<ModelDefinition> catalog = new ArrayList<>();
+
         /** Ordered failover endpoints. Applied only when traffic governance is enabled. */
         private List<ModelEndpoint> fallbacks = new ArrayList<>();
 
@@ -127,6 +145,54 @@ public class SaasProperties {
             this.name = name;
         }
 
+        public String getDefaultId() {
+            return defaultId;
+        }
+
+        public void setDefaultId(String defaultId) {
+            this.defaultId = defaultId;
+        }
+
+        public String getDisplayName() {
+            return displayName;
+        }
+
+        public void setDisplayName(String displayName) {
+            this.displayName = displayName;
+        }
+
+        public int getContextWindowTokens() {
+            return contextWindowTokens;
+        }
+
+        public void setContextWindowTokens(int contextWindowTokens) {
+            this.contextWindowTokens = contextWindowTokens;
+        }
+
+        public int getMaxOutputTokens() {
+            return maxOutputTokens;
+        }
+
+        public void setMaxOutputTokens(int maxOutputTokens) {
+            this.maxOutputTokens = maxOutputTokens;
+        }
+
+        public int getSafetyMarginTokens() {
+            return safetyMarginTokens;
+        }
+
+        public void setSafetyMarginTokens(int safetyMarginTokens) {
+            this.safetyMarginTokens = safetyMarginTokens;
+        }
+
+        public List<ModelDefinition> getCatalog() {
+            return catalog;
+        }
+
+        public void setCatalog(List<ModelDefinition> catalog) {
+            this.catalog = catalog == null ? new ArrayList<>() : new ArrayList<>(catalog);
+        }
+
         public List<ModelEndpoint> getFallbacks() {
             return fallbacks;
         }
@@ -137,6 +203,73 @@ public class SaasProperties {
 
         public ModelTraffic getTraffic() {
             return traffic;
+        }
+    }
+
+    /** One user-selectable model route configured by the deployment. */
+    public static class ModelDefinition extends ModelEndpoint {
+        private String id;
+        private String displayName;
+        private boolean enabled = true;
+        private int contextWindowTokens = 32_000;
+        private int maxOutputTokens = 4_096;
+        private int safetyMarginTokens = 1_024;
+        private List<ModelEndpoint> fallbacks = new ArrayList<>();
+
+        public String getId() {
+            return id;
+        }
+
+        public void setId(String id) {
+            this.id = id;
+        }
+
+        public String getDisplayName() {
+            return displayName;
+        }
+
+        public void setDisplayName(String displayName) {
+            this.displayName = displayName;
+        }
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int getContextWindowTokens() {
+            return contextWindowTokens;
+        }
+
+        public void setContextWindowTokens(int contextWindowTokens) {
+            this.contextWindowTokens = contextWindowTokens;
+        }
+
+        public int getMaxOutputTokens() {
+            return maxOutputTokens;
+        }
+
+        public void setMaxOutputTokens(int maxOutputTokens) {
+            this.maxOutputTokens = maxOutputTokens;
+        }
+
+        public int getSafetyMarginTokens() {
+            return safetyMarginTokens;
+        }
+
+        public void setSafetyMarginTokens(int safetyMarginTokens) {
+            this.safetyMarginTokens = safetyMarginTokens;
+        }
+
+        public List<ModelEndpoint> getFallbacks() {
+            return fallbacks;
+        }
+
+        public void setFallbacks(List<ModelEndpoint> fallbacks) {
+            this.fallbacks = fallbacks == null ? new ArrayList<>() : new ArrayList<>(fallbacks);
         }
     }
 

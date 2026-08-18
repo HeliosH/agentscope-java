@@ -26,11 +26,13 @@ import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.core.model.ContextWindowAwareModel;
 import io.agentscope.core.util.JsonUtils;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.tool.PlanModeTools;
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.degradation.DegradationManager;
+import io.agentscope.saas.app.model.ModelCatalog;
 import io.agentscope.saas.app.observability.AgentRunMetrics;
 import io.agentscope.saas.app.orchestration.WorkspaceArtifactService;
 import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
@@ -87,6 +89,7 @@ public class SaasChatController {
     public record ChatRequest(
             String sessionId,
             String requestId,
+            String modelId,
             String message,
             List<AttachedFileInput> attachments,
             List<ConfirmResultInput> confirmResults) {
@@ -108,6 +111,7 @@ public class SaasChatController {
     private final AgentRunMetrics metrics;
     private final RunOrchestrationService orchestration;
     private final WorkspaceArtifactService workspaceArtifactService;
+    private final ModelCatalog modelCatalog;
     private final boolean orchestrationEnabled;
     private final boolean plannerEnabled;
     private final TaskComplexityRouter complexityRouter = new TaskComplexityRouter();
@@ -124,6 +128,7 @@ public class SaasChatController {
             AgentRunMetrics metrics,
             RunOrchestrationService orchestration,
             WorkspaceArtifactService workspaceArtifactService,
+            ModelCatalog modelCatalog,
             SaasProperties properties) {
         this.agent = agent;
         this.tenantResolver = tenantResolver;
@@ -134,6 +139,7 @@ public class SaasChatController {
         this.metrics = metrics != null ? metrics : AgentRunMetrics.noop();
         this.orchestration = orchestration;
         this.workspaceArtifactService = workspaceArtifactService;
+        this.modelCatalog = modelCatalog;
         this.orchestrationEnabled =
                 properties != null
                         && properties.getOrchestration() != null
@@ -214,6 +220,11 @@ public class SaasChatController {
         if (request == null
                 || ((request.message() == null || request.message().isBlank()) && !hasConfirm)) {
             return Flux.error(new IllegalArgumentException("message is required"));
+        }
+        try {
+            modelCatalog.requireOption(request.modelId());
+        } catch (IllegalArgumentException e) {
+            return Flux.error(e);
         }
 
         // In dev (auth bypass) the principal is null; the TenantResolver (a DevTenantResolver)
@@ -337,6 +348,9 @@ public class SaasChatController {
                                 resolved.agentId() != null ? resolved.agentId().toString() : null)
                         .put(RunOrchestrationService.ATTR_RUN_ID, runId)
                         .put(TaskComplexityRouter.ATTR_ROUTE, route.name())
+                        .put(
+                                ContextWindowAwareModel.MODEL_ID_KEY,
+                                modelCatalog.requireOption(request.modelId()).id())
                         .put(PlanModeTools.STRUCTURED_PLANNING_REQUIRED, structuredPlanning)
                         .put(
                                 RunOrchestrationService.ATTR_AGENT_RUN_ID,
@@ -742,9 +756,13 @@ public class SaasChatController {
      * resume), they are attached under {@link Msg#METADATA_CONFIRM_RESULTS} so the agent applies
      * the user's approve/deny decisions to the paused tool calls. Returns an empty map otherwise.
      */
-    private static Map<String, Object> buildMetadata(ChatRequest request) {
+    private Map<String, Object> buildMetadata(ChatRequest request) {
+        Map<String, Object> metadata = new HashMap<>();
+        metadata.put(
+                ContextWindowAwareModel.MODEL_ID_KEY,
+                modelCatalog.requireOption(request.modelId()).id());
         if (request.confirmResults() == null || request.confirmResults().isEmpty()) {
-            return Map.of();
+            return Map.copyOf(metadata);
         }
         List<ConfirmResult> results =
                 request.confirmResults().stream()
@@ -766,7 +784,8 @@ public class SaasChatController {
                                                     .build());
                                 })
                         .toList();
-        return Map.of(Msg.METADATA_CONFIRM_RESULTS, results);
+        metadata.put(Msg.METADATA_CONFIRM_RESULTS, results);
+        return Map.copyOf(metadata);
     }
 
     /** Persistence requires UUID-shaped tenant ids (production JWT); dev bypass uses string ids. */

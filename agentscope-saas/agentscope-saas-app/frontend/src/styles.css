@@ -551,6 +551,34 @@ button {
   background: #2f9e67;
 }
 
+.chat-model-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  background: var(--surface);
+}
+
+.chat-model-picker select {
+  min-width: 0;
+  max-width: 210px;
+  height: 30px;
+  padding: 0 22px 0 0;
+  border: 0;
+  color: var(--text);
+  background-color: transparent;
+  font-size: 0.76rem;
+}
+
+.chat-model-picker select:focus-visible {
+  outline: none;
+}
+
 .chat-workspace {
   flex: 1;
   display: flex;
@@ -2248,6 +2276,10 @@ button:disabled {
   .chat-header__meta,
   .chat-header__status {
     display: none;
+  }
+
+  .chat-model-picker select {
+    max-width: 120px;
   }
 
   .chat-thread__inner {

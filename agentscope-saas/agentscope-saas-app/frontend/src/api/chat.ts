@@ -14,8 +14,29 @@ export interface ConfirmToolCall {
 export interface ChatRequest {
   message: string;
   sessionId?: string;
+  modelId?: string;
   attachments?: Array<{ path: string; name: string; sizeBytes: number }>;
   confirmResults?: ConfirmResultInput[];
+}
+
+export interface ModelOption {
+  id: string;
+  displayName: string;
+  modelName: string;
+  contextWindowTokens: number;
+  maxOutputTokens: number;
+  defaultModel: boolean;
+}
+
+export interface ModelCatalog {
+  defaultModelId: string;
+  models: ModelOption[];
+}
+
+export async function getModelCatalog(): Promise<ModelCatalog> {
+  const res = await fetch('/api/models');
+  if (!res.ok) throw new Error(`Failed to load models: ${res.status}`);
+  return res.json();
 }
 
 /**
@@ -61,6 +82,7 @@ export async function* stream(agentId: string, req: ChatRequest): AsyncGenerator
     body: JSON.stringify({
       message: req.message,
       sessionId: req.sessionId,
+      modelId: req.modelId,
       attachments: req.attachments,
       confirmResults: req.confirmResults,
     }),

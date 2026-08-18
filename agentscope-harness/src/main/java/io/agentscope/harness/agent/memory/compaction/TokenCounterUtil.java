@@ -20,6 +20,7 @@ import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.core.model.ToolSchema;
 import java.util.List;
 import java.util.Map;
 
@@ -80,6 +81,30 @@ public class TokenCounterUtil {
         }
 
         return totalTokens;
+    }
+
+    /** Estimates messages and tool schemas as they are sent in one model request. */
+    public static int calculateToken(List<Msg> messages, List<ToolSchema> tools) {
+        int total = calculateToken(messages);
+        if (tools == null) {
+            return total;
+        }
+        for (ToolSchema tool : tools) {
+            if (tool == null) {
+                continue;
+            }
+            total += 12;
+            total += estimateTextTokens(tool.getName());
+            total += estimateTextTokens(tool.getDescription());
+            total += estimateTextTokens(String.valueOf(tool.getParameters()));
+            total += estimateTextTokens(String.valueOf(tool.getOutputSchema()));
+        }
+        return total;
+    }
+
+    /** Public text estimator used to bound generated compaction prompts. */
+    public static int calculateTextToken(String text) {
+        return estimateTextTokens(text);
     }
 
     /**

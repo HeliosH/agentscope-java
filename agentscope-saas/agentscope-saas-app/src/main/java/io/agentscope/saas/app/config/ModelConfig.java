@@ -17,8 +17,10 @@ package io.agentscope.saas.app.config;
 
 import io.agentscope.core.model.DashScopeChatModel;
 import io.agentscope.core.model.Model;
+import io.agentscope.core.model.ModelContextProfile;
 import io.agentscope.core.model.OpenAIChatModel;
 import io.agentscope.core.model.ResilientModel;
+import io.agentscope.saas.app.model.ModelCatalog;
 import io.agentscope.saas.model.ScriptedToolModel;
 import io.agentscope.saas.model.StubChatModel;
 import java.time.Duration;
@@ -49,17 +51,75 @@ public class ModelConfig {
     private static final Logger log = LoggerFactory.getLogger(ModelConfig.class);
 
     @Bean
-    public Model chatModel(SaasProperties properties) {
+    public ModelCatalog chatModel(SaasProperties properties) {
         SaasProperties.Model cfg = properties.getModel();
-        Model primary = create(cfg.getType(), cfg.getBaseUrl(), cfg.getApiKey(), cfg.getName());
-        SaasProperties.ModelTraffic traffic = cfg.getTraffic();
-        if (!traffic.isEnabled() || isLocalModel(cfg.getType())) {
+        List<ModelCatalog.Route> catalogRoutes = new ArrayList<>();
+        if (cfg.getCatalog().isEmpty()) {
+            Model routeModel =
+                    createGovernedRoute(
+                            cfg.getType(),
+                            cfg.getBaseUrl(),
+                            cfg.getApiKey(),
+                            cfg.getName(),
+                            cfg.getFallbacks(),
+                            cfg.getTraffic());
+            catalogRoutes.add(
+                    route(
+                            cfg.getDefaultId(),
+                            cfg.getDisplayName(),
+                            cfg.getName(),
+                            cfg.getContextWindowTokens(),
+                            cfg.getMaxOutputTokens(),
+                            cfg.getSafetyMarginTokens(),
+                            true,
+                            routeModel));
+        } else {
+            for (SaasProperties.ModelDefinition definition : cfg.getCatalog()) {
+                if (!definition.isEnabled()) {
+                    continue;
+                }
+                Model routeModel =
+                        createGovernedRoute(
+                                definition.getType(),
+                                definition.getBaseUrl(),
+                                definition.getApiKey(),
+                                definition.getName(),
+                                definition.getFallbacks(),
+                                cfg.getTraffic());
+                catalogRoutes.add(
+                        route(
+                                definition.getId(),
+                                definition.getDisplayName(),
+                                definition.getName(),
+                                definition.getContextWindowTokens(),
+                                definition.getMaxOutputTokens(),
+                                definition.getSafetyMarginTokens(),
+                                cfg.getDefaultId().equals(definition.getId()),
+                                routeModel));
+            }
+        }
+        ModelCatalog catalog = new ModelCatalog(cfg.getDefaultId(), catalogRoutes);
+        log.info(
+                "Configured selectable models: default={} models={}",
+                catalog.getDefaultId(),
+                catalog.getOptions().stream().map(ModelCatalog.ModelOption::id).toList());
+        return catalog;
+    }
+
+    private Model createGovernedRoute(
+            String type,
+            String baseUrl,
+            String apiKey,
+            String name,
+            List<SaasProperties.ModelEndpoint> fallbacks,
+            SaasProperties.ModelTraffic traffic) {
+        Model primary = create(type, baseUrl, apiKey, name);
+        if (!traffic.isEnabled() || isLocalModel(type)) {
             return primary;
         }
-
         List<Model> routes = new ArrayList<>();
         routes.add(primary);
-        for (SaasProperties.ModelEndpoint fallback : cfg.getFallbacks()) {
+        for (SaasProperties.ModelEndpoint fallback : fallbacks) {
             routes.add(
                     create(
                             fallback.getType(),
@@ -81,6 +141,35 @@ public class ModelConfig {
                 traffic.getMaxConcurrent(),
                 traffic.getMaxQueriesPerMinute());
         return new ResilientModel(routes, policy);
+    }
+
+    private static ModelCatalog.Route route(
+            String id,
+            String displayName,
+            String configuredModelName,
+            int contextWindowTokens,
+            int maxOutputTokens,
+            int safetyMarginTokens,
+            boolean defaultModel,
+            Model model) {
+        String label =
+                displayName != null && !displayName.isBlank()
+                        ? displayName
+                        : configuredModelName != null && !configuredModelName.isBlank()
+                                ? configuredModelName
+                                : id;
+        ModelContextProfile profile =
+                new ModelContextProfile(
+                        id, contextWindowTokens, maxOutputTokens, safetyMarginTokens);
+        ModelCatalog.ModelOption option =
+                new ModelCatalog.ModelOption(
+                        id,
+                        label,
+                        configuredModelName != null ? configuredModelName : model.getModelName(),
+                        contextWindowTokens,
+                        maxOutputTokens,
+                        defaultModel);
+        return new ModelCatalog.Route(option, profile, model);
     }
 
     private Model create(String configuredType, String baseUrl, String apiKey, String name) {

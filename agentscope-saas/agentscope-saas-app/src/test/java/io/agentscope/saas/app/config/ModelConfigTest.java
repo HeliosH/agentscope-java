@@ -10,11 +10,11 @@
 package io.agentscope.saas.app.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import io.agentscope.core.model.Model;
-import io.agentscope.core.model.ResilientModel;
-import io.agentscope.saas.model.ScriptedToolModel;
+import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.model.ContextWindowAwareModel;
+import io.agentscope.saas.app.model.ModelCatalog;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -36,10 +36,12 @@ class ModelConfigTest {
         fallback.setName("fallback-model");
         properties.getModel().setFallbacks(List.of(fallback));
 
-        Model model = config.chatModel(properties);
+        ModelCatalog model = config.chatModel(properties);
 
-        assertInstanceOf(ResilientModel.class, model);
-        assertEquals("primary-model+failover", model.getModelName());
+        assertEquals("default", model.getDefaultId());
+        assertEquals("primary-model", model.getOptions().get(0).modelName());
+        assertEquals(
+                26_880, model.resolveContextProfile(RuntimeContext.empty()).inputTokenBudget());
     }
 
     @Test
@@ -47,8 +49,41 @@ class ModelConfigTest {
         SaasProperties properties = new SaasProperties();
         properties.getModel().setType("scripted");
 
-        Model model = config.chatModel(properties);
+        ModelCatalog model = config.chatModel(properties);
 
-        assertInstanceOf(ScriptedToolModel.class, model);
+        assertEquals("default", model.getDefaultId());
+        assertEquals(1, model.getOptions().size());
+    }
+
+    @Test
+    void createsSelectableCatalogAndRejectsUnknownModel() {
+        SaasProperties properties = new SaasProperties();
+        properties.getModel().setDefaultId("small");
+        SaasProperties.ModelDefinition small = definition("small", 8_192, 1_024);
+        SaasProperties.ModelDefinition large = definition("large", 131_072, 8_192);
+        properties.getModel().setCatalog(List.of(small, large));
+
+        ModelCatalog model = config.chatModel(properties);
+
+        assertEquals(
+                List.of("small", "large"),
+                model.getOptions().stream().map(ModelCatalog.ModelOption::id).toList());
+        RuntimeContext smallContext =
+                RuntimeContext.builder().put(ContextWindowAwareModel.MODEL_ID_KEY, "small").build();
+        assertEquals(6_144, model.resolveContextProfile(smallContext).inputTokenBudget());
+        assertThrows(IllegalArgumentException.class, () -> model.requireOption("missing"));
+    }
+
+    private static SaasProperties.ModelDefinition definition(
+            String id, int contextWindowTokens, int maxOutputTokens) {
+        SaasProperties.ModelDefinition definition = new SaasProperties.ModelDefinition();
+        definition.setId(id);
+        definition.setDisplayName(id);
+        definition.setType("stub");
+        definition.setName(id + "-model");
+        definition.setContextWindowTokens(contextWindowTokens);
+        definition.setMaxOutputTokens(maxOutputTokens);
+        definition.setSafetyMarginTokens(1_024);
+        return definition;
     }
 }
