@@ -16,9 +16,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export SANDBOX_SMOKE_EMAIL="${SANDBOX_SMOKE_EMAIL:-opensandbox-smoke-$(date +%s)@e2e.test}"
 export SANDBOX_SMOKE_PASSWORD="${SANDBOX_SMOKE_PASSWORD:-pw-opensandbox-smoke}"
 export SANDBOX_SMOKE_MARKER="${SANDBOX_SMOKE_MARKER:-opensandbox-enterprise-ok}"
-export SANDBOX_SMOKE_FILE="${SANDBOX_SMOKE_FILE:-generated/opensandbox-report.txt}"
+export SANDBOX_SMOKE_FILE="${SANDBOX_SMOKE_FILE:-outputs/opensandbox-report.txt}"
 if [ -z "${SANDBOX_SMOKE_COMMAND:-}" ]; then
-  SANDBOX_SMOKE_COMMAND="mkdir -p generated && printf '%s\n' $SANDBOX_SMOKE_MARKER > $SANDBOX_SMOKE_FILE && cat $SANDBOX_SMOKE_FILE"
+  SANDBOX_SMOKE_COMMAND="grep -q '^browser-upload-' inputs/browser-upload.txt && mkdir -p outputs && printf '%s\n' $SANDBOX_SMOKE_MARKER > $SANDBOX_SMOKE_FILE && cat $SANDBOX_SMOKE_FILE"
 fi
 export SANDBOX_SMOKE_COMMAND
 export SANDBOX_SMOKE_TIMEOUT="${SANDBOX_SMOKE_TIMEOUT:-180}"

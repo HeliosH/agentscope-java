@@ -28,6 +28,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import org.apache.commons.compress.archivers.ArchiveOutputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.slf4j.Logger;
@@ -103,6 +104,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             Sandbox sandbox = result.getSandbox();
             try {
                 sandbox.start();
+                filesystemProxy.hydrateRemoteWorkspace(ctx, sandbox);
                 restoreWorkspace(ctx, sandbox);
                 long durationNanos = System.nanoTime() - acquireStartNanos;
                 ctx.put(Sandbox.class, sandbox);
@@ -148,6 +150,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
         long totalBytes = 0L;
         ByteArrayOutputStream archiveBytes = new ByteArrayOutputStream();
         try (TarArchiveOutputStream archive = new TarArchiveOutputStream(archiveBytes)) {
+            ArchiveOutputStream<TarArchiveEntry> compatibleArchive = archive;
             archive.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
             for (WorkspaceRestorePlan.WorkspaceFile file : plan.files()) {
                 if (file.size() > RESTORE_MAX_FILE_BYTES) {
@@ -164,7 +167,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
                 TarArchiveEntry entry = new TarArchiveEntry(file.path());
                 entry.setSize(content.length);
                 entry.setMode(0644);
-                archive.putArchiveEntry(entry);
+                compatibleArchive.putArchiveEntry(entry);
                 archive.write(content);
                 archive.closeArchiveEntry();
             }

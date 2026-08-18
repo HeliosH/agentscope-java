@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, Eye, EyeOff, File, Folder, FolderOpen, RefreshCw } from 'lucide-react';
+import { ChevronDown, ChevronRight, Eye, EyeOff, File, FileInput, FileOutput, Folder, FolderOpen, RefreshCw, Settings } from 'lucide-react';
 import { FileNode, tree as fetchTree } from '../api/workspace';
 
 interface Props {
@@ -9,6 +9,8 @@ interface Props {
   refreshKey?: number;
   onRefresh?: () => void;
 }
+
+type FileCategory = 'inputs' | 'outputs' | 'system';
 
 const S: Record<string, React.CSSProperties> = {
   root: {
@@ -27,6 +29,17 @@ const S: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
     fontSize: '0.74rem', color: '#94a3b8',
   },
+  categories: {
+    padding: '7px 8px', borderBottom: '1px solid #f1f5f9',
+    display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 3,
+  },
+  category: {
+    minWidth: 0, minHeight: 32, border: 'none', borderRadius: 6,
+    background: 'transparent', color: '#64748b', cursor: 'pointer',
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+    fontSize: '0.7rem', fontWeight: 600, padding: '5px 4px',
+  },
+  categoryActive: { background: '#e6f1eb', color: '#176b49' },
   miniToggle: {
     display: 'inline-flex', alignItems: 'center', gap: 5,
     background: 'transparent', border: 'none', padding: 0,
@@ -153,6 +166,7 @@ export default function WorkspaceFileTree({ agentId, selectedPath, onSelect, ref
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [showHidden, setShowHidden] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [category, setCategory] = useState<FileCategory>('inputs');
 
   async function reload() {
     setErr(null);
@@ -187,12 +201,16 @@ export default function WorkspaceFileTree({ agentId, selectedPath, onSelect, ref
     });
   };
 
-  const visibleNodes = useMemo(
-    () => (showHidden ? nodes : filterTree(nodes)),
-    [nodes, showHidden],
-  );
-  const hiddenCount = useMemo(() => countHidden(nodes), [nodes]);
-  const list = visibleNodes;
+  const categoryNodes = useMemo(() => {
+    const inputs = nodes.find(node => node.type === 'dir' && node.name === 'inputs')?.children ?? [];
+    const outputRoots = nodes.filter(node => node.type === 'dir' && (node.name === 'outputs' || node.name === 'generated'));
+    const outputs = outputRoots.flatMap(node => node.children ?? []);
+    const system = nodes.filter(node => node.name !== 'inputs' && node.name !== 'outputs' && node.name !== 'generated');
+    return { inputs, outputs, system };
+  }, [nodes]);
+  const selectedCategoryNodes = categoryNodes[category];
+  const hiddenCount = useMemo(() => countHidden(selectedCategoryNodes), [selectedCategoryNodes]);
+  const list = showHidden ? selectedCategoryNodes : filterTree(selectedCategoryNodes);
 
   return (
     <div style={S.root}>
@@ -208,7 +226,26 @@ export default function WorkspaceFileTree({ agentId, selectedPath, onSelect, ref
           <RefreshCw size={13} className={loading ? 'is-spinning' : ''} /> <span style={{ fontSize: '0.7rem' }}>Refresh</span>
         </button>
       </div>
-      {hiddenCount > 0 && (
+      <div style={S.categories} role="tablist" aria-label="File categories">
+        {([
+          ['inputs', 'Uploads', FileInput],
+          ['outputs', 'Generated', FileOutput],
+          ['system', 'System', Settings],
+        ] as const).map(([key, label, Icon]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={category === key}
+            style={{ ...S.category, ...(category === key ? S.categoryActive : {}) }}
+            onClick={() => setCategory(key)}
+            title={label}
+          >
+            <Icon size={13} /> <span>{label}</span>
+          </button>
+        ))}
+      </div>
+      {category === 'system' && hiddenCount > 0 && (
         <div style={S.subbar}>
           <span>{showHidden ? `${hiddenCount} hidden item${hiddenCount === 1 ? '' : 's'} shown` : `${hiddenCount} item${hiddenCount === 1 ? '' : 's'} hidden`}</span>
           <button
@@ -224,7 +261,9 @@ export default function WorkspaceFileTree({ agentId, selectedPath, onSelect, ref
       <div style={S.scroll}>
         {err && <div style={S.err}>{err}</div>}
         {!err && list.length === 0 && (
-          <div style={{ padding: 14, fontSize: '0.88rem', color: '#94a3b8' }}>Empty workspace.</div>
+          <div style={{ padding: 14, fontSize: '0.82rem', color: '#94a3b8' }}>
+            {category === 'inputs' ? 'No uploaded files.' : category === 'outputs' ? 'No generated files.' : 'No system files.'}
+          </div>
         )}
         {list.map(n => (
           <NodeView

@@ -25,6 +25,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.harness.agent.sandbox.ExecResult;
 import io.agentscope.harness.agent.sandbox.SandboxException;
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import okhttp3.Interceptor;
 import okhttp3.MediaType;
@@ -116,6 +117,39 @@ class OpenSandboxPlatformHttpTest {
         assertEquals(7, ex.getExitCode());
         assertEquals("before\n", ex.getStdout());
         assertTrue(ex.getStderr().contains("exit status 7"));
+    }
+
+    @Test
+    void runCommandRetriesWhileExecdBackendIsStarting() throws Exception {
+        AtomicInteger attempts = new AtomicInteger();
+        OpenSandboxPlatformHttp http =
+                new OpenSandboxPlatformHttp(
+                        options(
+                                chain -> {
+                                    if (attempts.incrementAndGet() < 3) {
+                                        return jsonResponse(
+                                                chain,
+                                                502,
+                                                """
+                                                {"message":"Could not connect to the backend sandbox endpoint: All connection attempts failed"}
+                                                """);
+                                    }
+                                    return textResponse(
+                                            chain,
+                                            200,
+                                            """
+                                            {"type":"stdout","text":"ready\\n"}
+
+                                            {"type":"execution_complete","execution_time":1}
+
+                                            """);
+                                }));
+
+        ExecResult result = http.runCommand(state(), "/workspace", "true", 5);
+
+        assertTrue(result.ok());
+        assertEquals("ready\n", result.stdout());
+        assertEquals(3, attempts.get());
     }
 
     private static OpenSandboxClientOptions options(Interceptor interceptor) {

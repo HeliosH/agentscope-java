@@ -28,6 +28,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.apache.commons.compress.archivers.ArchiveOutputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 
@@ -64,6 +65,7 @@ public final class WorkspaceProjectionApplier {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         try (TarArchiveOutputStream tar = new TarArchiveOutputStream(baos)) {
+            ArchiveOutputStream<TarArchiveEntry> compatibleArchive = tar;
             tar.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
             for (Map.Entry<String, Path> file : ordered) {
                 String rel = file.getKey();
@@ -76,7 +78,7 @@ public final class WorkspaceProjectionApplier {
 
                 TarArchiveEntry entry = new TarArchiveEntry(rel);
                 entry.setSize(content.length);
-                tar.putArchiveEntry(entry);
+                compatibleArchive.putArchiveEntry(entry);
                 tar.write(content);
                 tar.closeArchiveEntry();
             }

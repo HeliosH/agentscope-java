@@ -14,6 +14,7 @@ export interface ConfirmToolCall {
 export interface ChatRequest {
   message: string;
   sessionId?: string;
+  attachments?: Array<{ path: string; name: string; sizeBytes: number }>;
   confirmResults?: ConfirmResultInput[];
 }
 
@@ -60,6 +61,7 @@ export async function* stream(agentId: string, req: ChatRequest): AsyncGenerator
     body: JSON.stringify({
       message: req.message,
       sessionId: req.sessionId,
+      attachments: req.attachments,
       confirmResults: req.confirmResults,
     }),
   });

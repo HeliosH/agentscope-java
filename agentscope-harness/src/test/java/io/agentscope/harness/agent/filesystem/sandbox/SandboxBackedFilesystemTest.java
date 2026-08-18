@@ -15,6 +15,7 @@
  */
 package io.agentscope.harness.agent.filesystem.sandbox;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -36,6 +37,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.junit.jupiter.api.Test;
 
@@ -296,6 +298,29 @@ class SandboxBackedFilesystemTest {
         assertTrue(fs.hasRemoteFallback());
     }
 
+    @Test
+    void hydratesBrowserUploadsIntoNewSandboxAndExcludesSessionMirrors() throws Exception {
+        InMemoryStore store = new InMemoryStore();
+        RemoteFilesystem remote = new RemoteFilesystem(store, NS);
+        byte[] upload = new byte[] {0, 1, (byte) 0xff, 2};
+        remote.uploadFiles(
+                RC,
+                List.of(
+                        Map.entry("inputs/source.bin", upload),
+                        Map.entry(
+                                "sessions/session-1.jsonl",
+                                "internal".getBytes(StandardCharsets.UTF_8))));
+        SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        FakeSandbox sandbox = new FakeSandbox();
+
+        int count = fs.hydrateRemoteWorkspace(RC, sandbox);
+
+        assertEquals(1, count);
+        assertArrayEquals(upload, archivedFile(sandbox.hydratedArchive, "inputs/source.bin"));
+        assertEquals(null, archivedFile(sandbox.hydratedArchive, "sessions/session-1.jsonl"));
+    }
+
     private static RuntimeContext contextWithSandbox(Sandbox sandbox) {
         RuntimeContext rc = RuntimeContext.empty();
         rc.put(Sandbox.class, sandbox);
@@ -306,6 +331,7 @@ class SandboxBackedFilesystemTest {
     private static final class FakeSandbox implements Sandbox {
         private final byte[] workspaceArchive;
         private final String execOutput;
+        private byte[] hydratedArchive;
 
         private FakeSandbox() {
             this(new byte[0], "");
@@ -354,7 +380,9 @@ class SandboxBackedFilesystemTest {
         }
 
         @Override
-        public void hydrateWorkspace(InputStream archive) {}
+        public void hydrateWorkspace(InputStream archive) throws Exception {
+            hydratedArchive = archive.readAllBytes();
+        }
     }
 
     /** A BaseStore that throws on every write, to verify projection failure is swallowed. */
@@ -380,5 +408,21 @@ class SandboxBackedFilesystemTest {
             tar.finish();
         }
         return baos.toByteArray();
+    }
+
+    private static byte[] archivedFile(byte[] archive, String path) throws Exception {
+        if (archive == null) {
+            return null;
+        }
+        try (TarArchiveInputStream tar =
+                new TarArchiveInputStream(new ByteArrayInputStream(archive))) {
+            TarArchiveEntry entry;
+            while ((entry = tar.getNextTarEntry()) != null) {
+                if (path.equals(entry.getName())) {
+                    return tar.readAllBytes();
+                }
+            }
+        }
+        return null;
     }
 }

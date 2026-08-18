@@ -40,6 +40,8 @@ final class OpenSandboxPlatformHttp {
     private static final int OUTPUT_TRUNCATE_CHARS = 512 * 1024;
     private static final String API_KEY_HEADER = "OPEN-SANDBOX-API-KEY";
     private static final String EXECD_ACCESS_TOKEN_HEADER = "X-EXECD-ACCESS-TOKEN";
+    private static final long EXECD_READY_RETRY_MILLIS = 500L;
+    private static final int EXECD_READY_MAX_WAIT_SECONDS = 20;
 
     private final OkHttpClient http;
     private final ObjectMapper json = new ObjectMapper();
@@ -143,16 +145,49 @@ final class OpenSandboxPlatformHttp {
                                 .callTimeout(timeoutSeconds + 10L, TimeUnit.SECONDS)
                                 .build()
                         : http;
-        try (Response res = callClient.newCall(req).execute()) {
-            String text = res.body() != null ? res.body().string() : "";
-            if (!res.isSuccessful()) {
+        long readyDeadline =
+                System.nanoTime()
+                        + TimeUnit.SECONDS.toNanos(
+                                Math.min(
+                                        EXECD_READY_MAX_WAIT_SECONDS,
+                                        Math.max(1, opt.getWaitTimeoutSeconds())));
+        while (true) {
+            try (Response res = callClient.newCall(req).execute()) {
+                String text = res.body() != null ? res.body().string() : "";
+                if (res.isSuccessful()) {
+                    return parseCommandEvents(text);
+                }
+                if (execdBackendNotReady(res.code(), text) && System.nanoTime() < readyDeadline) {
+                    sleepForExecdReadiness();
+                    continue;
+                }
                 throw new SandboxException.SandboxRuntimeException(
                         SandboxErrorCode.EXEC_NONZERO,
                         "OpenSandbox execd command failed HTTP " + res.code() + ": " + text);
+            } catch (InterruptedIOException e) {
+                throw new SandboxException.ExecTimeoutException(command, timeoutSeconds);
             }
-            return parseCommandEvents(text);
-        } catch (InterruptedIOException e) {
-            throw new SandboxException.ExecTimeoutException(command, timeoutSeconds);
+        }
+    }
+
+    private static boolean execdBackendNotReady(int status, String body) {
+        if (status != 502 || body == null) {
+            return false;
+        }
+        String message = body.toLowerCase(java.util.Locale.ROOT);
+        return message.contains("could not connect to the backend sandbox endpoint")
+                || message.contains("all connection attempts failed");
+    }
+
+    private static void sleepForExecdReadiness() throws InterruptedIOException {
+        try {
+            Thread.sleep(EXECD_READY_RETRY_MILLIS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            InterruptedIOException interrupted =
+                    new InterruptedIOException("Interrupted while waiting for OpenSandbox execd");
+            interrupted.initCause(e);
+            throw interrupted;
         }
     }
 

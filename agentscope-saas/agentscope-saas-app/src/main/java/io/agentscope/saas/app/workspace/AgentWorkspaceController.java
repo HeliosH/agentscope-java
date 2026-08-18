@@ -367,7 +367,7 @@ public class AgentWorkspaceController {
                                     TEXT_PLAIN,
                                     FileCatalogService.SOURCE_WORKSPACE_WRITE,
                                     Map.of("api", "workspace.write", "existed", existed),
-                                    () -> uploadToWorkspace(fs, rel, bytes, "write file"));
+                                    () -> uploadToWorkspace(fs, rc, rel, bytes, "write file"));
                             return new FileNode(
                                     basename(rel), rel, "file", (long) bytes.length, null);
                         })
@@ -408,7 +408,9 @@ public class AgentWorkspaceController {
                                     TEXT_PLAIN,
                                     FileCatalogService.SOURCE_WORKSPACE_CREATE,
                                     Map.of("api", "workspace.create"),
-                                    () -> uploadToWorkspace(fs, rel, new byte[0], "create file"));
+                                    () ->
+                                            uploadToWorkspace(
+                                                    fs, rc, rel, new byte[0], "create file"));
                             return new FileNode(basename(rel), rel, "file", 0L, null);
                         })
                 .subscribeOn(Schedulers.boundedElastic());
@@ -524,6 +526,7 @@ public class AgentWorkspaceController {
                                                     () ->
                                                             uploadToWorkspace(
                                                                     fs,
+                                                                    rc,
                                                                     rel,
                                                                     stored.content(),
                                                                     "restore file"))
@@ -673,7 +676,7 @@ public class AgentWorkspaceController {
                                 staged.contentType(),
                                 FileCatalogService.SOURCE_WORKSPACE_UPLOAD,
                                 Map.of("api", "workspace.upload", "filename", staged.filename()),
-                                () -> uploadToWorkspace(fs, rel, bytes, "upload file"))
+                                () -> uploadToWorkspace(fs, rc, rel, bytes, "upload file"))
                         .orElseThrow(
                                 () ->
                                         new ResponseStatusException(
@@ -701,10 +704,14 @@ public class AgentWorkspaceController {
     }
 
     private static void uploadToWorkspace(
-            AbstractFilesystem fs, String relativePath, byte[] content, String operation) {
+            AbstractFilesystem fs,
+            RuntimeContext runtimeContext,
+            String relativePath,
+            byte[] content,
+            String operation) {
         try {
             List<FileUploadResponse> responses =
-                    fs.uploadFiles(FS_RC, List.of(Map.entry(relativePath, content)));
+                    fs.uploadFiles(runtimeContext, List.of(Map.entry(relativePath, content)));
             if (responses.isEmpty() || !responses.get(0).isSuccess()) {
                 String error = responses.isEmpty() ? "no response" : responses.get(0).error();
                 log.warn(
@@ -723,10 +730,10 @@ public class AgentWorkspaceController {
         }
     }
 
-    private static String uploadTargetPath(String requestedPath, String filename) {
+    static String uploadTargetPath(String requestedPath, String filename) {
         String safeName = safeFilename(filename);
         if (requestedPath == null || requestedPath.isBlank()) {
-            return toRelFsPath(safeName);
+            return toRelFsPath("inputs/" + safeName);
         }
         String trimmed = requestedPath.trim();
         if (trimmed.endsWith("/")) {

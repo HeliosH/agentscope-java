@@ -39,7 +39,10 @@ export default function AgentWorkspacePage() {
     setUploading(true);
     setUploadErr(null);
     try {
-      const uploaded = await uploadFile(agentId, file, uploadPath || undefined);
+      const destination = uploadPath.trim()
+        ? `inputs/${uploadPath.trim().replace(/^\/+/, '').replace(/^inputs\//, '')}`
+        : undefined;
+      const uploaded = await uploadFile(agentId, file, destination);
       setSelected(uploaded.path);
       setRefreshKey(key => key + 1);
       setSummary(await fetchSummary(agentId));
@@ -60,7 +63,8 @@ export default function AgentWorkspacePage() {
         </div>
       )}
       <div className="workspace-upload-bar">
-        <input className="management-input" value={uploadPath} onChange={event => setUploadPath(event.target.value)} placeholder="Optional destination path, e.g. reports/result.csv" />
+        <span className="workspace-upload-prefix">inputs/</span>
+        <input className="management-input" value={uploadPath} onChange={event => setUploadPath(event.target.value)} placeholder="Optional path, e.g. reports/source.csv" />
         <input ref={fileInput} type="file" hidden onChange={event => handleFilePicked(event.target.files?.[0])} />
         <button className="secondary-button" type="button" onClick={() => fileInput.current?.click()} disabled={uploading}><Upload size={15} />{uploading ? 'Uploading...' : 'Upload'}</button>
         {summary && <span className="workspace-usage" title={`Organization: ${formatBytes(summary.orgFileBytes)} / ${formatBytes(summary.orgFileLimitBytes)}; max file: ${formatBytes(summary.maxFileBytes)}`}>{formatBytes(summary.userFileBytes)} / {formatBytes(summary.userFileLimitBytes)}</span>}

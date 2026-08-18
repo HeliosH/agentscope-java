@@ -20,8 +20,8 @@ BASE="${BASE:-http://localhost:18080}"
 EMAIL="${SANDBOX_SMOKE_EMAIL:-${CUBE_SMOKE_EMAIL:-sandbox-smoke@e2e.test}}"
 PASSWORD="${SANDBOX_SMOKE_PASSWORD:-${CUBE_SMOKE_PASSWORD:-pw-sandbox-smoke}}"
 MARKER="${SANDBOX_SMOKE_MARKER:-${CUBE_SMOKE_MARKER:-sandbox-smoke-ok}}"
-FILE_PATH="${SANDBOX_SMOKE_FILE:-${CUBE_SMOKE_FILE:-generated/report.txt}}"
-COMMAND="${SANDBOX_SMOKE_COMMAND:-${CUBE_SMOKE_COMMAND:-mkdir -p generated && printf '%s\n' $MARKER > $FILE_PATH && cat $FILE_PATH}}"
+FILE_PATH="${SANDBOX_SMOKE_FILE:-${CUBE_SMOKE_FILE:-outputs/report.txt}}"
+COMMAND="${SANDBOX_SMOKE_COMMAND:-${CUBE_SMOKE_COMMAND:-grep -q '^browser-upload-' inputs/browser-upload.txt && mkdir -p \"\$(dirname \"$FILE_PATH\")\" && printf '%s\n' $MARKER > $FILE_PATH && cat $FILE_PATH}}"
 TIMEOUT="${SANDBOX_SMOKE_TIMEOUT:-${CUBE_SMOKE_TIMEOUT:-120}}"
 BACKEND_RELEASE_TIMEOUT="${SANDBOX_SMOKE_BACKEND_RELEASE_TIMEOUT:-${CUBE_SMOKE_BACKEND_RELEASE_TIMEOUT:-0}}"
 BACKEND_RELEASE_POLL_SECONDS="${SANDBOX_SMOKE_BACKEND_RELEASE_POLL_SECONDS:-2}"
@@ -243,17 +243,17 @@ fi
 UPLOAD_MARKER="browser-upload-$RUN_ID"
 printf '%s\n' "$UPLOAD_MARKER" > "$UPLOAD_SOURCE"
 HTTP_UPLOAD="$(curl -s -o "$UPLOAD_JSON" -w '%{http_code}' -X POST \
-  "$BASE/api/agents/$AGID/workspace/file/upload?path=uploads/browser-upload.txt" \
+  "$BASE/api/agents/$AGID/workspace/file/upload?path=inputs/browser-upload.txt" \
   -H "Authorization: Bearer $TOK" -F "file=@$UPLOAD_SOURCE;type=text/plain")"
 UPLOAD_PATH="$(printf '%s' "$(cat "$UPLOAD_JSON" 2>/dev/null)" | json_get path)"
-if [ "$HTTP_UPLOAD" = "201" ] && [ "$UPLOAD_PATH" = "uploads/browser-upload.txt" ]; then
+if [ "$HTTP_UPLOAD" = "201" ] && [ "$UPLOAD_PATH" = "inputs/browser-upload.txt" ]; then
   ok "browser multipart upload is cataloged"
 else
   bad "browser multipart upload failed (HTTP $HTTP_UPLOAD): $(cat "$UPLOAD_JSON" 2>/dev/null)"
 fi
 
 HTTP_UPLOAD_DOWNLOAD="$(curl -s -o "$UPLOAD_DOWNLOAD" -w '%{http_code}' \
-  "$BASE/api/agents/$AGID/workspace/file/download?path=uploads/browser-upload.txt" \
+  "$BASE/api/agents/$AGID/workspace/file/download?path=inputs/browser-upload.txt" \
   -H "Authorization: Bearer $TOK")"
 if [ "$HTTP_UPLOAD_DOWNLOAD" = "200" ] && grep -q "$UPLOAD_MARKER" "$UPLOAD_DOWNLOAD"; then
   ok "uploaded file is downloadable with unchanged content"

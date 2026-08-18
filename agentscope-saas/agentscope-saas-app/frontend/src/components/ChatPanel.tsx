@@ -3,6 +3,8 @@ import {
   ArrowUp,
   Bot,
   Check,
+  Download,
+  FileText,
   FilePlus2,
   ListTodo,
   Menu,
@@ -15,7 +17,15 @@ import { useSearchParams } from 'react-router-dom';
 import { ConfirmToolCall, currentSession, stream, type ChatEvent, type ChatRequest, type ConfirmResultInput } from '../api/chat';
 import { TurnEntry, turnsWindow } from '../api/sessions';
 import ToolCallBlock from './ToolCallBlock';
-import { uploadFile } from '../api/workspace';
+import {
+  downloadCurrentFile,
+  downloadFileVersion,
+  tree as fetchWorkspaceTree,
+  uploadFile,
+  type FileNode,
+  type UploadedFile,
+} from '../api/workspace';
+import { getArtifacts } from '../api/runs';
 import RunInspector from './RunInspector';
 
 type Role = 'user' | 'assistant' | 'system';
@@ -34,6 +44,15 @@ interface Message {
   tools: ToolEntry[];
   confirmTools?: ConfirmToolCall[];
   pending?: boolean;
+  files?: MessageFile[];
+}
+
+interface MessageFile {
+  path: string;
+  name: string;
+  sizeBytes?: number;
+  versionId?: string;
+  kind: 'upload' | 'generated';
 }
 
 let counter = 0;
@@ -97,6 +116,7 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const skipSessionRestoreRef = useRef<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<MessageFile[]>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
 
@@ -117,6 +137,7 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
     let cancelled = false;
     setMessages([]);
     setInput('');
+    setPendingFiles([]);
     setRestoring(true);
     setHasEarlier(false);
     setNextBeforeSeq(null);
@@ -200,7 +221,10 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
     }
   }, [messages]);
 
-  const canSend = useMemo(() => !busy && !restoring && input.trim().length > 0, [busy, restoring, input]);
+  const canSend = useMemo(
+    () => !busy && !restoring && (input.trim().length > 0 || pendingFiles.length > 0),
+    [busy, restoring, input, pendingFiles],
+  );
 
   function applyChatEvent(evt: ChatEvent, replyId: string) {
     if (evt.type === 'run_started') {
@@ -259,9 +283,51 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
     }
   }
 
-  async function runChatStream(req: ChatRequest, replyId: string) {
+  async function runChatStream(
+    req: ChatRequest,
+    replyId: string,
+    outputsBefore: Map<string, number> = new Map(),
+  ) {
+    let runId: string | null = null;
     for await (const evt of stream(agentId, req)) {
+      if (evt.type === 'run_started' && evt.runId) runId = evt.runId;
       applyChatEvent(evt, replyId);
+    }
+    const generated = new Map<string, MessageFile>();
+    if (runId) {
+      try {
+        const artifacts = await getArtifacts(agentId, runId);
+        artifacts.filter(artifact => isUserFacingArtifact(artifact.logicalPath)).forEach(artifact => {
+          generated.set(artifact.logicalPath, {
+            path: artifact.logicalPath,
+            name: fileName(artifact.logicalPath),
+            versionId: artifact.fileVersionId,
+            kind: 'generated',
+          });
+        });
+      } catch {
+        // Artifact APIs are unavailable when durable orchestration is disabled.
+      }
+    }
+    try {
+      const outputsAfter = outputFiles(await fetchWorkspaceTree(agentId, true));
+      outputsAfter.forEach((size, path) => {
+        if (!outputsBefore.has(path) || outputsBefore.get(path) !== size) {
+          const current = generated.get(path);
+          generated.set(path, current ?? {
+            path,
+            name: fileName(path),
+            sizeBytes: size,
+            kind: 'generated',
+          });
+        }
+      });
+    } catch {
+      // The response remains usable when the workspace catalog is temporarily unavailable.
+    }
+    if (generated.size) {
+      const files = [...generated.values()];
+      setMessages(prev => prev.map(message => message.id === replyId ? { ...message, files } : message));
     }
   }
 
@@ -275,11 +341,11 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
     if (busy || !file) return;
     setUploading(true);
     try {
-      const uploaded = await uploadFile(agentId, file);
-      const marker = uploaded.path
-        ? `[上传文件: ${uploaded.path}，请读取] `
-        : `[上传文件: ${file.name}，请读取] `;
-      setInput(prev => marker + (prev ?? ''));
+      const uploaded = await uploadFile(agentId, file, undefined, sessionKey ?? undefined);
+      setPendingFiles(prev => [
+        ...prev.filter(item => item.path !== uploaded.path),
+        toMessageFile(uploaded, file.name),
+      ]);
     } catch (e: unknown) {
       alert(e instanceof Error ? e.message : '文件上传失败');
     } finally {
@@ -291,15 +357,37 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
   async function handleSend() {
     if (!canSend) return;
     const text = input.trim();
+    const attachedFiles = pendingFiles;
     setInput('');
+    setPendingFiles([]);
     if (inputRef.current) inputRef.current.style.height = 'auto';
     setBusy(true);
-    const userMsg: Message = { id: nextId(), role: 'user', text, tools: [] };
+    const userMsg: Message = {
+      id: nextId(),
+      role: 'user',
+      text: text || '请处理上传的文件',
+      tools: [],
+      files: attachedFiles,
+    };
     const replyMsg: Message = { id: nextId(), role: 'assistant', text: '', tools: [], pending: true };
     setMessages(prev => [...prev, userMsg, replyMsg]);
 
     try {
-      await runChatStream({ message: text, sessionId: sessionKey ?? undefined }, replyMsg.id);
+      let outputsBefore = new Map<string, number>();
+      try {
+        outputsBefore = outputFiles(await fetchWorkspaceTree(agentId, true));
+      } catch {
+        // Sending a message must not depend on the workspace listing endpoint.
+      }
+      await runChatStream({
+        message: text || '请处理上传的文件',
+        sessionId: sessionKey ?? undefined,
+        attachments: attachedFiles.map(file => ({
+          path: file.path,
+          name: file.name,
+          sizeBytes: file.sizeBytes ?? 0,
+        })),
+      }, replyMsg.id, outputsBefore);
     } catch (e: unknown) {
       appendError(replyMsg.id, e instanceof Error ? e.message : 'stream failed');
     } finally {
@@ -351,6 +439,22 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
   function chooseSuggestion(text: string) {
     setInput(text);
     requestAnimationFrame(() => inputRef.current?.focus());
+  }
+
+  async function downloadMessageFile(file: MessageFile) {
+    try {
+      const blob = file.versionId
+        ? await downloadFileVersion(agentId, file.versionId)
+        : await downloadCurrentFile(agentId, file.path);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = file.name;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (error: unknown) {
+      alert(error instanceof Error ? error.message : '文件下载失败');
+    }
   }
 
   return (
@@ -454,6 +558,26 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
                       </div>
                     )}
                     {message.text}
+                    {message.files && message.files.length > 0 && (
+                      <div className="message-files">
+                        {message.files.map(file => (
+                          <button
+                            key={`${file.kind}:${file.path}`}
+                            className="message-file"
+                            type="button"
+                            title={`Download ${file.path}`}
+                            onClick={() => void downloadMessageFile(file)}
+                          >
+                            <FileText size={16} />
+                            <span className="message-file__text">
+                              <strong>{file.name}</strong>
+                              <small>{file.kind === 'upload' ? 'Uploaded file' : 'Generated file'}{file.sizeBytes ? ` · ${formatBytes(file.sizeBytes)}` : ''}</small>
+                            </span>
+                            <Download size={14} className="message-file__action" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     {!message.text && message.pending && (
                       <span className="message-pending" aria-label="Assistant is working">
                         <span /><span /><span />
@@ -501,6 +625,24 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
 
           <div className="chat-composer">
             <div className="chat-composer__box">
+              {pendingFiles.length > 0 && (
+                <div className="composer-files">
+                  {pendingFiles.map(file => (
+                    <div className="composer-file" key={file.path} title={file.path}>
+                      <FileText size={15} />
+                      <span><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes ?? 0)}</small></span>
+                      <button
+                        type="button"
+                        title={`Remove ${file.name}`}
+                        aria-label={`Remove ${file.name}`}
+                        onClick={() => setPendingFiles(prev => prev.filter(item => item.path !== file.path))}
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <input
                 ref={fileInputRef}
                 type="file"
@@ -559,4 +701,44 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
       </div>
     </div>
   );
+}
+
+function toMessageFile(uploaded: UploadedFile, fallbackName: string): MessageFile {
+  return {
+    path: uploaded.path,
+    name: fileName(uploaded.path) || fallbackName,
+    sizeBytes: uploaded.sizeBytes,
+    versionId: uploaded.versionId,
+    kind: 'upload',
+  };
+}
+
+function fileName(path: string): string {
+  const normalized = path.replace(/\\/g, '/');
+  return normalized.split('/').filter(Boolean).pop() || 'file';
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  const amount = value / 1024 ** index;
+  return `${amount >= 10 || index === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[index]}`;
+}
+
+function isUserFacingArtifact(path: string): boolean {
+  const normalized = path.replace(/^\/+/, '');
+  return normalized.startsWith('outputs/') || normalized.startsWith('generated/');
+}
+
+function outputFiles(nodes: FileNode[]): Map<string, number> {
+  const files = new Map<string, number>();
+  const visit = (node: FileNode) => {
+    if (node.type === 'file' && isUserFacingArtifact(node.path)) {
+      files.set(node.path, node.size ?? 0);
+    }
+    node.children?.forEach(visit);
+  };
+  nodes.forEach(visit);
+  return files;
 }

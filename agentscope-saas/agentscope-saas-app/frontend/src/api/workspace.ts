@@ -78,9 +78,15 @@ export async function readFile(agentId: string, path: string): Promise<string> {
   return res.text();
 }
 
-export async function uploadFile(agentId: string, file: File, path?: string): Promise<UploadedFile> {
+export async function uploadFile(
+  agentId: string,
+  file: File,
+  path?: string,
+  sessionId?: string,
+): Promise<UploadedFile> {
   const params = new URLSearchParams();
   if (path?.trim()) params.set('path', path.trim());
+  if (sessionId?.trim()) params.set('sessionId', sessionId.trim());
   const form = new FormData();
   form.set('file', file);
   const res = await fetch(`${base(agentId)}/file/upload${params.toString() ? `?${params}` : ''}`, {

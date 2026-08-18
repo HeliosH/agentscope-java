@@ -79,6 +79,15 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class AgentConfig {
 
+    private static final String WORKSPACE_FILE_POLICY =
+            """
+
+            Workspace file policy:
+            - User-uploaded files are stored under inputs/. Read attached files from the exact paths supplied with the request.
+            - Save user-facing deliverables created by a task under outputs/ and mention their paths in the final response.
+            - MEMORY.md, memory/, AGENTS.md, skills/, subagents/, tools.json, and .agentscope/ are system-managed. Do not treat them as user attachments or task output, and do not modify them unless the task explicitly requires configuration or memory maintenance.
+            """;
+
     private static final Logger log = LoggerFactory.getLogger(AgentConfig.class);
 
     @Bean
@@ -123,7 +132,7 @@ public class AgentConfig {
         HarnessAgent.Builder builder =
                 HarnessAgent.builder()
                         .name(agentCfg.getName())
-                        .sysPrompt(agentCfg.getSysPrompt())
+                        .sysPrompt(agentCfg.getSysPrompt() + WORKSPACE_FILE_POLICY)
                         .model(chatModel)
                         .maxIters(agentCfg.getMaxIters())
                         .stateStore(agentStateStore)

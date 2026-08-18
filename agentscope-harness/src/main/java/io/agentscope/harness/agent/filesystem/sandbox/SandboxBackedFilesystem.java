@@ -19,7 +19,9 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.filesystem.model.EditResult;
 import io.agentscope.harness.agent.filesystem.model.ExecuteResponse;
 import io.agentscope.harness.agent.filesystem.model.FileDownloadResponse;
+import io.agentscope.harness.agent.filesystem.model.FileInfo;
 import io.agentscope.harness.agent.filesystem.model.FileUploadResponse;
+import io.agentscope.harness.agent.filesystem.model.GlobResult;
 import io.agentscope.harness.agent.filesystem.model.LsResult;
 import io.agentscope.harness.agent.filesystem.model.ReadResult;
 import io.agentscope.harness.agent.filesystem.model.WriteResult;
@@ -40,8 +42,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import org.apache.commons.compress.archivers.ArchiveOutputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -58,8 +62,8 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
     private static final Logger log = LoggerFactory.getLogger(SandboxBackedFilesystem.class);
     private static final int REMOTE_PROJECTION_BATCH_SIZE = 100;
     private static final int REMOTE_PROJECTION_MAX_FILES = 5_000;
-    private static final long REMOTE_PROJECTION_MAX_FILE_BYTES = 4L * 1024L * 1024L;
-    private static final long REMOTE_PROJECTION_MAX_TOTAL_BYTES = 64L * 1024L * 1024L;
+    private static final long REMOTE_PROJECTION_MAX_FILE_BYTES = 32L * 1024L * 1024L;
+    private static final long REMOTE_PROJECTION_MAX_TOTAL_BYTES = 256L * 1024L * 1024L;
     private static final String REMOTE_PROJECTION_MANIFEST =
             "/.agentscope/sandbox_projection_manifest";
 
@@ -105,6 +109,103 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
     /** Returns whether a remote projection backend is configured. */
     public boolean hasRemoteFallback() {
         return remoteFallback != null;
+    }
+
+    /**
+     * Restores the durable remote workspace into a newly acquired sandbox.
+     *
+     * <p>Browser uploads happen between agent calls, when no sandbox is active, and therefore land
+     * in the remote fallback. Hydrating that projection here makes those files available to shell
+     * and filesystem tools in the next call. Session mirrors are runtime bookkeeping and are never
+     * exposed inside the execution workspace.
+     */
+    public int hydrateRemoteWorkspace(RuntimeContext runtimeContext, Sandbox target)
+            throws Exception {
+        RemoteFilesystem fallback = remoteFallback;
+        if (fallback == null || target == null) {
+            return 0;
+        }
+        GlobResult glob = fallback.glob(runtimeContext, "**/*", "/");
+        if (!glob.isSuccess() || glob.matches() == null || glob.matches().isEmpty()) {
+            return 0;
+        }
+
+        List<String> paths =
+                glob.matches().stream()
+                        .filter(file -> !file.isDirectory())
+                        .map(FileInfo::path)
+                        .filter(path -> normalizeHydrationPath(path) != null)
+                        .limit(REMOTE_PROJECTION_MAX_FILES + 1L)
+                        .toList();
+        if (paths.size() > REMOTE_PROJECTION_MAX_FILES) {
+            throw new IllegalStateException(
+                    "Remote workspace exceeds hydration file limit " + REMOTE_PROJECTION_MAX_FILES);
+        }
+
+        ByteArrayOutputStream archiveBytes = new ByteArrayOutputStream();
+        long totalBytes = 0L;
+        int hydrated = 0;
+        try (TarArchiveOutputStream archive = new TarArchiveOutputStream(archiveBytes)) {
+            ArchiveOutputStream<TarArchiveEntry> compatibleArchive = archive;
+            archive.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
+            for (int offset = 0; offset < paths.size(); offset += REMOTE_PROJECTION_BATCH_SIZE) {
+                List<String> batch =
+                        paths.subList(
+                                offset,
+                                Math.min(paths.size(), offset + REMOTE_PROJECTION_BATCH_SIZE));
+                for (FileDownloadResponse file : fallback.downloadFiles(runtimeContext, batch)) {
+                    if (!file.isSuccess() || file.content() == null) {
+                        log.warn(
+                                "[sandbox-fs] Skipping remote workspace file {} during hydration:"
+                                        + " {}",
+                                file.path(),
+                                file.error());
+                        continue;
+                    }
+                    byte[] content = file.content();
+                    if (content.length > REMOTE_PROJECTION_MAX_FILE_BYTES) {
+                        throw new IllegalStateException(
+                                "Remote workspace file exceeds hydration limit: " + file.path());
+                    }
+                    totalBytes = Math.addExact(totalBytes, content.length);
+                    if (totalBytes > REMOTE_PROJECTION_MAX_TOTAL_BYTES) {
+                        throw new IllegalStateException(
+                                "Remote workspace exceeds hydration byte limit "
+                                        + REMOTE_PROJECTION_MAX_TOTAL_BYTES);
+                    }
+                    String path = normalizeHydrationPath(file.path());
+                    if (path == null) {
+                        continue;
+                    }
+                    TarArchiveEntry entry = new TarArchiveEntry(path.substring(1));
+                    entry.setSize(content.length);
+                    entry.setMode(0644);
+                    compatibleArchive.putArchiveEntry(entry);
+                    archive.write(content);
+                    archive.closeArchiveEntry();
+                    hydrated++;
+                }
+            }
+            archive.finish();
+        }
+        if (hydrated > 0) {
+            try (InputStream input = new java.io.ByteArrayInputStream(archiveBytes.toByteArray())) {
+                target.hydrateWorkspace(input);
+            }
+            log.debug(
+                    "[sandbox-fs] Hydrated {} remote workspace files ({} bytes)",
+                    hydrated,
+                    totalBytes);
+        }
+        return hydrated;
+    }
+
+    private String normalizeHydrationPath(String path) {
+        String normalized = normalizeManifestPath(path);
+        if (normalized == null || normalized.startsWith("/sessions/")) {
+            return null;
+        }
+        return normalized;
     }
 
     @Override
