@@ -123,7 +123,7 @@ export default function AdminAuditPage() {
 
       <DataPanel title={`Audit events · ${rows.length}`}>
         <div className="data-table-wrap">
-          <table className="data-table" style={{ minWidth: 1050 }}>
+          <table className="data-table data-table--xwide">
             <thead>
               <tr>
                 <th>ID</th>

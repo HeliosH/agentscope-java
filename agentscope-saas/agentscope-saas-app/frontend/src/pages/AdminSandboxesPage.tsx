@@ -162,7 +162,7 @@ export default function AdminSandboxesPage() {
 
       <DataPanel title={`Runtime records · ${rows.length}`}>
         <div className="data-table-wrap">
-          <table className="data-table" style={{ minWidth: 1100 }}>
+          <table className="data-table data-table--xwide">
             <thead>
               <tr>
                 <th>Status</th>

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useId, type FormEventHandler, type ReactNode } from 'react';
 import {
   Database,
   Cpu,
@@ -7,6 +7,7 @@ import {
   RefreshCw,
   ShieldCheck,
   Users,
+  X,
   type LucideIcon,
 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -114,12 +115,81 @@ export function FilterBar({ children, actions }: { children: ReactNode; actions?
   );
 }
 
-export function Field({ label, children }: { label: string; children: ReactNode }) {
+export function Field({
+  label,
+  hint,
+  wide = false,
+  children,
+}: {
+  label: string;
+  hint?: ReactNode;
+  wide?: boolean;
+  children: ReactNode;
+}) {
   return (
-    <label className="management-field">
+    <label className={`management-field${wide ? ' management-field--wide' : ''}`}>
       <span>{label}</span>
       {children}
+      {hint && <small>{hint}</small>}
     </label>
+  );
+}
+
+export function ManagementDialog({
+  title,
+  description,
+  className = '',
+  bodyClassName = '',
+  onClose,
+  onSubmit,
+  children,
+  footer,
+}: {
+  title: string;
+  description?: string;
+  className?: string;
+  bodyClassName?: string;
+  onClose: () => void;
+  onSubmit: FormEventHandler<HTMLFormElement>;
+  children: ReactNode;
+  footer: ReactNode;
+}) {
+  const titleId = useId();
+
+  useEffect(() => {
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') onClose();
+    }
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [onClose]);
+
+  return (
+    <div className="management-modal-overlay" onMouseDown={event => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <form
+        className={`management-modal${className ? ` ${className}` : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onSubmit={onSubmit}
+      >
+        <header className="management-modal-header">
+          <div>
+            <h2 id={titleId}>{title}</h2>
+            {description && <p>{description}</p>}
+          </div>
+          <button className="icon-button" type="button" title="Close" aria-label="Close" onClick={onClose}>
+            <X size={16} />
+          </button>
+        </header>
+        <div className={`management-modal-body${bodyClassName ? ` ${bodyClassName}` : ''}`}>
+          {children}
+        </div>
+        <footer className="management-modal-footer">{footer}</footer>
+      </form>
+    </div>
   );
 }
 

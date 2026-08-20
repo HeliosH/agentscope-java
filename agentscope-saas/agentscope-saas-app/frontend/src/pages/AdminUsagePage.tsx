@@ -102,7 +102,7 @@ export default function AdminUsagePage() {
 
       <DataPanel title={`Usage summary · ${rows.length}`}>
         <div className="data-table-wrap">
-          <table className="data-table" style={{ minWidth: 820 }}>
+          <table className="data-table data-table--medium">
             <thead>
               <tr>
                 <th>Metric</th>

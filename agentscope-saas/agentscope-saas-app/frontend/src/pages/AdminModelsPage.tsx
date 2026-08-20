@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
   CheckCircle2,
   Cpu,
@@ -6,7 +6,6 @@ import {
   Plus,
   TestTube2,
   Trash2,
-  X,
 } from 'lucide-react';
 import { Navigate, useOutletContext } from 'react-router-dom';
 import {
@@ -23,6 +22,8 @@ import type { MeResponse } from '../auth';
 import {
   DataPanel,
   EmptyState,
+  Field,
+  ManagementDialog,
   ManagementHeader,
   ManagementPage,
   MetricStrip,
@@ -149,7 +150,7 @@ export default function AdminModelsPage() {
 
       <DataPanel title="Organization model catalog">
         <div className="data-table-wrap">
-          <table className="data-table model-admin-table">
+          <table className="data-table data-table--xwide">
             <thead>
               <tr>
                 <th>Model</th>
@@ -276,6 +277,22 @@ function ModelEditor({
     setForm(current => ({ ...current, [key]: value }));
   }
 
+  function setEnabled(enabled: boolean) {
+    setForm(current => ({
+      ...current,
+      enabled,
+      defaultModel: enabled ? current.defaultModel : false,
+    }));
+  }
+
+  function setApiKey(apiKey: string) {
+    setForm(current => ({
+      ...current,
+      apiKey,
+      clearApiKey: apiKey.trim() ? false : current.clearApiKey,
+    }));
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSaving(true);
@@ -290,76 +307,62 @@ function ModelEditor({
   }
 
   return (
-    <div className="management-modal-overlay" role="presentation" onMouseDown={onClose}>
-      <form className="management-modal model-editor" onSubmit={submit} onMouseDown={event => event.stopPropagation()}>
-        <header className="management-modal-header">
-          <div>
-            <h2>{initial ? 'Edit model' : 'Add model'}</h2>
-            <p>Changes become available to organization users immediately after save.</p>
-          </div>
-          <button className="icon-button" type="button" title="Close" onClick={onClose}>
-            <X size={16} />
-          </button>
-        </header>
-        <div className="management-modal-body model-editor__body">
-          {error && <Notice tone="error">{error}</Notice>}
-          <div className="model-editor__grid">
-            <ModelField label="Model ID">
-              <input required disabled={!!initial} value={form.id} onChange={event => set('id', event.target.value)} />
-            </ModelField>
-            <ModelField label="Display name">
-              <input required value={form.displayName} onChange={event => set('displayName', event.target.value)} />
-            </ModelField>
-            <ModelField label="Provider">
-              <select value={form.providerType} onChange={event => set('providerType', event.target.value as 'gateway' | 'dashscope')}>
+    <ManagementDialog
+      title={initial ? 'Edit model' : 'Add model'}
+      description="Changes become available to organization users immediately after save."
+      className="model-editor"
+      bodyClassName="model-editor__body"
+      onClose={onClose}
+      onSubmit={submit}
+      footer={(
+        <>
+          <button className="quiet-button" type="button" onClick={onClose}>Cancel</button>
+          <button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving' : 'Save model'}</button>
+        </>
+      )}
+    >
+      {error && <Notice tone="error">{error}</Notice>}
+      <div className="model-editor__grid">
+            <Field label="Model ID">
+              <input className="management-input" required disabled={!!initial} value={form.id} onChange={event => set('id', event.target.value)} />
+            </Field>
+            <Field label="Display name">
+              <input className="management-input" required value={form.displayName} onChange={event => set('displayName', event.target.value)} />
+            </Field>
+            <Field label="Provider">
+              <select className="management-select" value={form.providerType} onChange={event => set('providerType', event.target.value as 'gateway' | 'dashscope')}>
                 <option value="gateway">OpenAI-compatible gateway</option>
                 <option value="dashscope">DashScope</option>
               </select>
-            </ModelField>
-            <ModelField label="Provider model name">
-              <input required value={form.modelName} onChange={event => set('modelName', event.target.value)} />
-            </ModelField>
+            </Field>
+            <Field label="Provider model name">
+              <input className="management-input" required value={form.modelName} onChange={event => set('modelName', event.target.value)} />
+            </Field>
             {form.providerType === 'gateway' && (
-              <ModelField label="Gateway URL" wide>
-                <input required type="url" value={form.baseUrl ?? ''} onChange={event => set('baseUrl', event.target.value)} placeholder="https://gateway.internal/v1" />
-              </ModelField>
+              <Field label="Gateway URL" wide>
+                <input className="management-input" required type="url" value={form.baseUrl ?? ''} onChange={event => set('baseUrl', event.target.value)} placeholder="https://gateway.internal/v1" />
+              </Field>
             )}
-            <ModelField label="API key" wide hint={initial?.apiKeyConfigured ? 'A key is configured. Leave blank to keep it.' : 'Optional for gateways that do not require authentication.'}>
-              <input type="password" autoComplete="new-password" value={form.apiKey ?? ''} onChange={event => set('apiKey', event.target.value)} />
-            </ModelField>
-            <ModelField label="Context window">
-              <input type="number" min={1} required value={form.contextWindowTokens} onChange={event => set('contextWindowTokens', Number(event.target.value))} />
-            </ModelField>
-            <ModelField label="Maximum output">
-              <input type="number" min={1} required value={form.maxOutputTokens} onChange={event => set('maxOutputTokens', Number(event.target.value))} />
-            </ModelField>
-            <ModelField label="Safety margin">
-              <input type="number" min={0} required value={form.safetyMarginTokens} onChange={event => set('safetyMarginTokens', Number(event.target.value))} />
-            </ModelField>
+            <Field label="API key" wide hint={initial?.apiKeyConfigured ? 'A key is configured. Leave blank to keep it.' : 'Optional for gateways that do not require authentication.'}>
+              <input className="management-input" type="password" autoComplete="new-password" value={form.apiKey ?? ''} onChange={event => setApiKey(event.target.value)} />
+            </Field>
+            <Field label="Context window">
+              <input className="management-input" type="number" min={1} required value={form.contextWindowTokens} onChange={event => set('contextWindowTokens', Number(event.target.value))} />
+            </Field>
+            <Field label="Maximum output">
+              <input className="management-input" type="number" min={1} required value={form.maxOutputTokens} onChange={event => set('maxOutputTokens', Number(event.target.value))} />
+            </Field>
+            <Field label="Safety margin">
+              <input className="management-input" type="number" min={0} required value={form.safetyMarginTokens} onChange={event => set('safetyMarginTokens', Number(event.target.value))} />
+            </Field>
             <div className="model-editor__toggles">
-              <label><input type="checkbox" checked={form.enabled} onChange={event => set('enabled', event.target.checked)} /> Enabled</label>
-              <label><input type="checkbox" checked={form.defaultModel} disabled={!form.enabled} onChange={event => set('defaultModel', event.target.checked)} /> Default model</label>
+              <label className="management-check"><input type="checkbox" checked={form.enabled} onChange={event => setEnabled(event.target.checked)} /> Enabled</label>
+              <label className="management-check"><input type="checkbox" checked={form.defaultModel} disabled={!form.enabled} onChange={event => set('defaultModel', event.target.checked)} /> Default model</label>
               {initial?.apiKeyConfigured && (
-                <label><input type="checkbox" checked={!!form.clearApiKey} onChange={event => set('clearApiKey', event.target.checked)} /> Remove API key</label>
+                <label className="management-check"><input type="checkbox" checked={!!form.clearApiKey} disabled={!!form.apiKey?.trim()} onChange={event => set('clearApiKey', event.target.checked)} /> Remove API key</label>
               )}
             </div>
-          </div>
-        </div>
-        <footer className="model-editor__footer">
-          <button className="quiet-button" type="button" onClick={onClose}>Cancel</button>
-          <button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving' : 'Save model'}</button>
-        </footer>
-      </form>
-    </div>
-  );
-}
-
-function ModelField({ label, hint, wide = false, children }: { label: string; hint?: string; wide?: boolean; children: ReactNode }) {
-  return (
-    <label className={`model-editor__field${wide ? ' is-wide' : ''}`}>
-      <span>{label}</span>
-      {children}
-      {hint && <small>{hint}</small>}
-    </label>
+      </div>
+    </ManagementDialog>
   );
 }

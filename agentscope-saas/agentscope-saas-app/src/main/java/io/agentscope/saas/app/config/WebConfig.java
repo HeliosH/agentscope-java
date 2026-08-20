@@ -46,12 +46,22 @@ public class WebConfig {
                 GET("/**")
                         .and(path("/api/**").negate())
                         .and(path("/assets/**").negate())
-                        .and(path("/actuator/**").negate()),
+                        .and(path("/actuator/**").negate())
+                        .and(request -> isClientRoute(request.path())),
                 request -> {
                     if (!index.exists()) {
                         return ServerResponse.notFound().build();
                     }
                     return ServerResponse.ok().header("Content-Type", "text/html").bodyValue(index);
                 });
+    }
+
+    static boolean isClientRoute(String requestPath) {
+        if (requestPath == null || requestPath.isBlank()) {
+            return false;
+        }
+        int slash = requestPath.lastIndexOf('/');
+        String leaf = requestPath.substring(slash + 1);
+        return !leaf.contains(".");
     }
 }

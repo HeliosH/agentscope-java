@@ -151,7 +151,7 @@ export default function AdminUsersPage() {
         )}
       >
         <div className="data-table-wrap">
-          <table className="data-table" style={{ minWidth: 980 }}>
+          <table className="data-table data-table--wide">
             <thead>
               <tr>
                 <th>User</th>

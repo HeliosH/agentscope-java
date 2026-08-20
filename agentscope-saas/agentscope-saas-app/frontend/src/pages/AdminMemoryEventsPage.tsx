@@ -127,7 +127,7 @@ export default function AdminMemoryEventsPage() {
 
       <DataPanel title={`Memory events · ${rows.length}`}>
         <div className="data-table-wrap">
-          <table className="data-table" style={{ minWidth: 980 }}>
+          <table className="data-table data-table--wide">
             <thead>
               <tr>
                 <th>Status</th>

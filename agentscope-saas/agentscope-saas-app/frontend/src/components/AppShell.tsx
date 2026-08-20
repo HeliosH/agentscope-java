@@ -1,13 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   ChevronDown,
-  Database,
-  FileClock,
-  Gauge,
-  Cpu,
   LogOut,
   ShieldCheck,
-  Users,
 } from 'lucide-react';
 import { useLocation, useNavigate, useOutletContext, Outlet } from 'react-router-dom';
 import { logout, type MeResponse } from '../auth';
@@ -16,15 +11,6 @@ import BrandLogo from './BrandLogo';
 interface ShellContext {
   me: MeResponse | null;
 }
-
-const ADMIN_LINKS = [
-  { path: '/admin/users', label: 'Users', icon: Users },
-  { path: '/admin/models', label: 'Models', icon: Cpu },
-  { path: '/admin/usage', label: 'Usage', icon: Gauge },
-  { path: '/admin/sandboxes', label: 'Sandboxes', icon: Database },
-  { path: '/admin/memory-events', label: 'Memory', icon: FileClock },
-  { path: '/admin/audit', label: 'Audit', icon: ShieldCheck },
-];
 
 export default function AppShell() {
   const navigate = useNavigate();
@@ -66,20 +52,16 @@ export default function AppShell() {
             >
               Assistants
             </button>
-            {admin && ADMIN_LINKS.map(link => {
-              const Icon = link.icon;
-              return (
-                <button
-                  key={link.path}
-                  className={`top-nav-button${location.pathname.startsWith(link.path) ? ' is-active' : ''}`}
-                  type="button"
-                  onClick={() => navigate(link.path)}
-                >
-                  <Icon size={14} />
-                  {link.label}
-                </button>
-              );
-            })}
+            {admin && (
+              <button
+                className={`top-nav-button${location.pathname.startsWith('/admin') ? ' is-active' : ''}`}
+                type="button"
+                onClick={() => navigate('/admin/users')}
+              >
+                <ShieldCheck size={14} />
+                Administration
+              </button>
+            )}
           </nav>
 
           <div className="app-shell__spacer" />
