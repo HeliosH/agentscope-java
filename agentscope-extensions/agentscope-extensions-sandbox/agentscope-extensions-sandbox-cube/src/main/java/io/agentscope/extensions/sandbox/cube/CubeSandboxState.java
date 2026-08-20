@@ -17,6 +17,7 @@ package io.agentscope.extensions.sandbox.cube;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.agentscope.harness.agent.sandbox.SandboxState;
+import java.util.List;
 
 /**
  * State for a Cube sandbox instance. Mirrors the E2B state shape since Cube exposes an
@@ -45,6 +46,18 @@ public class CubeSandboxState extends SandboxState {
     /** Whether this client owns the sandbox lifecycle (and should kill it on shutdown). */
     @JsonProperty("sandboxOwned")
     private boolean sandboxOwned = true;
+
+    @JsonProperty("hostMounts")
+    private List<CubeHostMount> hostMounts = List.of();
+
+    @JsonProperty("verifyHostMounts")
+    private boolean verifyHostMounts = true;
+
+    @JsonProperty("commonSkillsMountPath")
+    private String commonSkillsMountPath;
+
+    @JsonProperty("commonSkillsTargetPath")
+    private String commonSkillsTargetPath;
 
     public String getSandboxId() {
         return sandboxId;
@@ -100,5 +113,37 @@ public class CubeSandboxState extends SandboxState {
 
     public void setSandboxOwned(boolean sandboxOwned) {
         this.sandboxOwned = sandboxOwned;
+    }
+
+    public List<CubeHostMount> getHostMounts() {
+        return hostMounts;
+    }
+
+    public void setHostMounts(List<CubeHostMount> hostMounts) {
+        this.hostMounts = hostMounts == null ? List.of() : List.copyOf(hostMounts);
+    }
+
+    public boolean isVerifyHostMounts() {
+        return verifyHostMounts;
+    }
+
+    public void setVerifyHostMounts(boolean verifyHostMounts) {
+        this.verifyHostMounts = verifyHostMounts;
+    }
+
+    public String getCommonSkillsMountPath() {
+        return commonSkillsMountPath;
+    }
+
+    public void setCommonSkillsMountPath(String commonSkillsMountPath) {
+        this.commonSkillsMountPath = commonSkillsMountPath;
+    }
+
+    public String getCommonSkillsTargetPath() {
+        return commonSkillsTargetPath;
+    }
+
+    public void setCommonSkillsTargetPath(String commonSkillsTargetPath) {
+        this.commonSkillsTargetPath = commonSkillsTargetPath;
     }
 }

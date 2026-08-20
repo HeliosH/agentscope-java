@@ -16,8 +16,10 @@
 package io.agentscope.saas.app.config;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.extensions.sandbox.cube.CubeFilesystemSpec;
+import io.agentscope.extensions.sandbox.cube.CubeHostMount;
 import io.agentscope.extensions.sandbox.e2b.E2bFilesystemSpec;
 import io.agentscope.extensions.sandbox.opensandbox.OpenSandboxFilesystemSpec;
 import io.agentscope.harness.agent.IsolationScope;
@@ -30,7 +32,10 @@ import io.agentscope.saas.dal.mybatis.tenant.RelationalBlobStorageMapper;
 import io.agentscope.saas.sandbox.ActiveSandboxDeployment;
 import io.agentscope.saas.sandbox.SandboxCapability;
 import io.agentscope.saas.storage.PgRemoteSnapshotClient;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -118,7 +123,8 @@ public class SandboxConfig {
     public SandboxFilesystemSpec sandboxFilesystemSpec(
             SaasProperties properties,
             ObjectProvider<SandboxExecutionGuard> guardProvider,
-            ObjectProvider<RelationalBlobStorageMapper> blobMapperProvider) {
+            ObjectProvider<RelationalBlobStorageMapper> blobMapperProvider,
+            ObjectMapper objectMapper) {
 
         SaasProperties.Sandbox sb = properties.getSandbox();
         IsolationScope scope = IsolationScope.valueOf(sb.getIsolationScope());
@@ -132,16 +138,21 @@ public class SandboxConfig {
                             throw new IllegalStateException(
                                     "Cube sandbox requires saas.sandbox.cube-api-url to be set");
                         }
+                        String workspaceRoot =
+                                sb.getWorkspaceRoot() != null && !sb.getWorkspaceRoot().isBlank()
+                                        ? sb.getWorkspaceRoot()
+                                        : "/home/user";
+                        List<CubeHostMount> hostMounts = cubeHostMounts(sb, objectMapper);
                         CubeFilesystemSpec cubeSpec =
                                 new CubeFilesystemSpec()
                                         .apiUrl(sb.getCubeApiUrl())
-                                        .workspaceRoot(
-                                                sb.getWorkspaceRoot() != null
-                                                                && !sb.getWorkspaceRoot().isBlank()
-                                                        ? sb.getWorkspaceRoot()
-                                                        : "/home/user")
+                                        .workspaceRoot(workspaceRoot)
                                         .sandboxTimeoutSeconds(sb.getCubeSandboxTimeoutSeconds())
-                                        .insecureSkipTlsVerify(sb.isCubeInsecureSkipTlsVerify());
+                                        .insecureSkipTlsVerify(sb.isCubeInsecureSkipTlsVerify())
+                                        .allowedHostMountPrefixes(
+                                                sb.getCubeAllowedHostMountPrefixes())
+                                        .verifyHostMounts(sb.isCubeVerifyHostMounts())
+                                        .hostMounts(hostMounts);
                         if (sb.getCubeApiKey() != null) {
                             cubeSpec.apiKey(sb.getCubeApiKey());
                         }
@@ -154,6 +165,18 @@ public class SandboxConfig {
                         if (sb.getCubeEnvdHostPattern() != null) {
                             cubeSpec.envdHostPattern(sb.getCubeEnvdHostPattern());
                         }
+                        if (sb.getCubeCommonSkillsHostPath() != null
+                                && !sb.getCubeCommonSkillsHostPath().isBlank()) {
+                            validateCommonSkillsTarget(sb, workspaceRoot);
+                            cubeSpec.commonSkillsOverlay(
+                                    sb.getCubeCommonSkillsMountPath(),
+                                    sb.getCubeCommonSkillsTargetPath());
+                        }
+                        log.info(
+                                "Cube host mounts configured: count={}, commonSkills={}",
+                                hostMounts.size(),
+                                sb.getCubeCommonSkillsHostPath() != null
+                                        && !sb.getCubeCommonSkillsHostPath().isBlank());
                         cubeSpec.isolationScope(scope);
                         if (snapshotSpec != null) {
                             cubeSpec.snapshotSpec(snapshotSpec);
@@ -269,6 +292,54 @@ public class SandboxConfig {
                 snapshotSpec != null ? snapshotBackend(sb) : "none");
 
         return spec;
+    }
+
+    static List<CubeHostMount> cubeHostMounts(
+            SaasProperties.Sandbox sandbox, ObjectMapper objectMapper) {
+        List<CubeHostMount> mounts = new ArrayList<>();
+        String json = sandbox.getCubeHostMountsJson();
+        if (json != null && !json.isBlank() && !"[]".equals(json.trim())) {
+            try {
+                mounts.addAll(
+                        objectMapper.readValue(json, new TypeReference<List<CubeHostMount>>() {}));
+            } catch (JsonProcessingException e) {
+                throw new IllegalStateException(
+                        "saas.sandbox.cube-host-mounts-json must be a valid mount array", e);
+            }
+        }
+        String commonSkillsHostPath = sandbox.getCubeCommonSkillsHostPath();
+        if (commonSkillsHostPath != null && !commonSkillsHostPath.isBlank()) {
+            String mountPath = sandbox.getCubeCommonSkillsMountPath();
+            if (mountPath == null || mountPath.isBlank()) {
+                throw new IllegalStateException("Cube common Skills mount path must not be blank");
+            }
+            mounts.add(new CubeHostMount(commonSkillsHostPath, mountPath, true));
+        }
+        mounts.forEach(
+                mount ->
+                        mount.validateAllowedHostPrefixes(
+                                sandbox.getCubeAllowedHostMountPrefixes()));
+        long distinctTargets = mounts.stream().map(CubeHostMount::mountPath).distinct().count();
+        if (distinctTargets != mounts.size()) {
+            throw new IllegalStateException("Cube host mounts must use unique mountPath values");
+        }
+        return List.copyOf(mounts);
+    }
+
+    static void validateCommonSkillsTarget(SaasProperties.Sandbox sandbox, String workspaceRoot) {
+        String configuredTarget = sandbox.getCubeCommonSkillsTargetPath();
+        Path workspace = Path.of(workspaceRoot).normalize();
+        Path target =
+                configuredTarget == null || configuredTarget.isBlank()
+                        ? workspace.resolve("skills")
+                        : Path.of(configuredTarget).normalize();
+        if (!workspace.isAbsolute()
+                || !target.isAbsolute()
+                || !target.startsWith(workspace)
+                || target.equals(workspace)) {
+            throw new IllegalStateException(
+                    "Cube common Skills target must be a child of the workspace root");
+        }
     }
 
     private static String snapshotBackend(SaasProperties.Sandbox sb) {

@@ -17,6 +17,8 @@ package io.agentscope.extensions.sandbox.cube;
 
 import io.agentscope.harness.agent.sandbox.SandboxClient;
 import io.agentscope.harness.agent.sandbox.SandboxClientOptions;
+import java.util.ArrayList;
+import java.util.List;
 import okhttp3.OkHttpClient;
 
 /**
@@ -69,6 +71,21 @@ public class CubeSandboxClientOptions extends SandboxClientOptions {
      * production.
      */
     private boolean insecureSkipTlsVerify = false;
+
+    /** Host paths mounted by Cube before the microVM boots. */
+    private List<CubeHostMount> hostMounts = List.of();
+
+    /** Defense-in-depth allowlist; CubeMaster enforces its own allowlist as the final boundary. */
+    private List<String> allowedHostMountPrefixes = List.of("/data/shared/");
+
+    /** Fail startup when a requested host mount is absent inside the sandbox. */
+    private boolean verifyHostMounts = true;
+
+    /** Read-only shared Skills directory inside the sandbox. Blank disables the overlay. */
+    private String commonSkillsMountPath;
+
+    /** Private-first Skills directory. Blank resolves to {@code <workspaceRoot>/skills}. */
+    private String commonSkillsTargetPath;
 
     @Override
     public String getType() {
@@ -183,5 +200,66 @@ public class CubeSandboxClientOptions extends SandboxClientOptions {
 
     public void setInsecureSkipTlsVerify(boolean insecureSkipTlsVerify) {
         this.insecureSkipTlsVerify = insecureSkipTlsVerify;
+    }
+
+    public List<CubeHostMount> getHostMounts() {
+        return hostMounts;
+    }
+
+    public void setHostMounts(List<CubeHostMount> hostMounts) {
+        this.hostMounts = hostMounts == null ? List.of() : List.copyOf(hostMounts);
+    }
+
+    public void addHostMount(CubeHostMount hostMount) {
+        ArrayList<CubeHostMount> mounts = new ArrayList<>(hostMounts);
+        mounts.add(hostMount);
+        hostMounts = List.copyOf(mounts);
+    }
+
+    public List<String> getAllowedHostMountPrefixes() {
+        return allowedHostMountPrefixes;
+    }
+
+    public void setAllowedHostMountPrefixes(List<String> allowedHostMountPrefixes) {
+        this.allowedHostMountPrefixes =
+                allowedHostMountPrefixes == null
+                        ? List.of()
+                        : List.copyOf(allowedHostMountPrefixes);
+    }
+
+    public boolean isVerifyHostMounts() {
+        return verifyHostMounts;
+    }
+
+    public void setVerifyHostMounts(boolean verifyHostMounts) {
+        this.verifyHostMounts = verifyHostMounts;
+    }
+
+    public String getCommonSkillsMountPath() {
+        return commonSkillsMountPath;
+    }
+
+    public void setCommonSkillsMountPath(String commonSkillsMountPath) {
+        this.commonSkillsMountPath = commonSkillsMountPath;
+    }
+
+    public String getCommonSkillsTargetPath() {
+        return commonSkillsTargetPath;
+    }
+
+    public void setCommonSkillsTargetPath(String commonSkillsTargetPath) {
+        this.commonSkillsTargetPath = commonSkillsTargetPath;
+    }
+
+    List<CubeHostMount> resolveHostMounts(String sessionId) {
+        List<CubeHostMount> resolved =
+                hostMounts.stream()
+                        .map(mount -> mount.resolve(sessionId, allowedHostMountPrefixes))
+                        .toList();
+        long distinctTargets = resolved.stream().map(CubeHostMount::mountPath).distinct().count();
+        if (distinctTargets != resolved.size()) {
+            throw new IllegalArgumentException("Cube host mounts must use unique mountPath values");
+        }
+        return resolved;
     }
 }

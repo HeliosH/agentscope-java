@@ -51,6 +51,8 @@ QwenPaw 是 **Python 产品**。框架有"等价物" ≠ QwenPaw 代码能直接
 | 18 | [企业岗位档案与个人记忆实施方案](./18-enterprise-memory-profile-implementation.md) | 企业维护岗位主数据、个人记忆卡片、Mem0 投影、任务前检索与分阶段实施 |
 | 19 | [企业智能助手运行框架优化落地方案](./19-runtime-orchestration-optimization-plan.md) | 持久化任务编排、可靠子 Agent、部署时可切换沙箱 Provider、恢复、验证与实施计划 |
 | 20 | [DDD 分层与 MyBatis 数据访问重构方案](./20-ddd-mybatis-migration-plan.md) | 领域、应用、DAL、服务接口模块边界，MyBatis 统一规范、迁移批次与完成定义 |
+| 21 | [QwenPaw 后端能力差距收敛](./21-qwenpaw-backend-gap-closure.md) | QwenPaw 对比、后端能力补齐与验证边界 |
+| 22 | [CubeSandbox 持久化、Skills 与恢复方案](./22-cubesandbox-persistence-skills-practice.md) | host-mount 安全边界、公共 Skills 覆盖、MinIO 冷备、网络与重建验收 |
 
 ## 一页速读
 

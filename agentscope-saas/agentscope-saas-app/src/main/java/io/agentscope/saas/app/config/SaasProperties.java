@@ -807,6 +807,27 @@ public class SaasProperties {
          */
         private boolean cubeInsecureSkipTlsVerify = false;
 
+        /**
+         * Deployment-controlled JSON array of Cube host mounts. Values follow Cube's
+         * hostPath/mountPath/readOnly schema and may use {@code {sessionId}} in hostPath.
+         */
+        private String cubeHostMountsJson = "[]";
+
+        /** Host path prefixes accepted by this application before CubeMaster validation. */
+        private List<String> cubeAllowedHostMountPrefixes = List.of("/data/shared/");
+
+        /** Verify that every requested host mount is visible after sandbox creation. */
+        private boolean cubeVerifyHostMounts = true;
+
+        /** Optional Cubelet path containing centrally managed enterprise Skills. */
+        private String cubeCommonSkillsHostPath;
+
+        /** Read-only path where enterprise Skills are mounted inside Cube. */
+        private String cubeCommonSkillsMountPath = "/opt/agentscope-common-skills";
+
+        /** Optional private-first Skills target; blank means {@code <workspaceRoot>/skills}. */
+        private String cubeCommonSkillsTargetPath;
+
         // --- E2B-specific fields ---
 
         /** E2B API key (official hosted service). Required when type=e2b. */
@@ -1186,6 +1207,54 @@ public class SaasProperties {
 
         public void setCubeInsecureSkipTlsVerify(boolean cubeInsecureSkipTlsVerify) {
             this.cubeInsecureSkipTlsVerify = cubeInsecureSkipTlsVerify;
+        }
+
+        public String getCubeHostMountsJson() {
+            return cubeHostMountsJson;
+        }
+
+        public void setCubeHostMountsJson(String cubeHostMountsJson) {
+            this.cubeHostMountsJson = cubeHostMountsJson;
+        }
+
+        public List<String> getCubeAllowedHostMountPrefixes() {
+            return cubeAllowedHostMountPrefixes;
+        }
+
+        public void setCubeAllowedHostMountPrefixes(List<String> cubeAllowedHostMountPrefixes) {
+            this.cubeAllowedHostMountPrefixes = cubeAllowedHostMountPrefixes;
+        }
+
+        public boolean isCubeVerifyHostMounts() {
+            return cubeVerifyHostMounts;
+        }
+
+        public void setCubeVerifyHostMounts(boolean cubeVerifyHostMounts) {
+            this.cubeVerifyHostMounts = cubeVerifyHostMounts;
+        }
+
+        public String getCubeCommonSkillsHostPath() {
+            return cubeCommonSkillsHostPath;
+        }
+
+        public void setCubeCommonSkillsHostPath(String cubeCommonSkillsHostPath) {
+            this.cubeCommonSkillsHostPath = cubeCommonSkillsHostPath;
+        }
+
+        public String getCubeCommonSkillsMountPath() {
+            return cubeCommonSkillsMountPath;
+        }
+
+        public void setCubeCommonSkillsMountPath(String cubeCommonSkillsMountPath) {
+            this.cubeCommonSkillsMountPath = cubeCommonSkillsMountPath;
+        }
+
+        public String getCubeCommonSkillsTargetPath() {
+            return cubeCommonSkillsTargetPath;
+        }
+
+        public void setCubeCommonSkillsTargetPath(String cubeCommonSkillsTargetPath) {
+            this.cubeCommonSkillsTargetPath = cubeCommonSkillsTargetPath;
         }
 
         public String getE2bApiKey() {

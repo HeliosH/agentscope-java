@@ -21,6 +21,7 @@ import io.agentscope.harness.agent.sandbox.SandboxClientOptions;
 import io.agentscope.harness.agent.sandbox.WorkspaceSpec;
 import io.agentscope.harness.agent.sandbox.snapshot.NoopSnapshotSpec;
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
+import java.util.List;
 
 /** {@link SandboxFilesystemSpec} for Cube sandboxes (E2B-compatible private deployment). */
 public class CubeFilesystemSpec extends SandboxFilesystemSpec {
@@ -92,6 +93,32 @@ public class CubeFilesystemSpec extends SandboxFilesystemSpec {
 
     public CubeFilesystemSpec insecureSkipTlsVerify(boolean insecureSkipTlsVerify) {
         options.setInsecureSkipTlsVerify(insecureSkipTlsVerify);
+        return this;
+    }
+
+    public CubeFilesystemSpec hostMounts(List<CubeHostMount> hostMounts) {
+        options.setHostMounts(hostMounts);
+        return this;
+    }
+
+    public CubeFilesystemSpec hostMount(CubeHostMount hostMount) {
+        options.addHostMount(hostMount);
+        return this;
+    }
+
+    public CubeFilesystemSpec allowedHostMountPrefixes(List<String> prefixes) {
+        options.setAllowedHostMountPrefixes(prefixes);
+        return this;
+    }
+
+    public CubeFilesystemSpec verifyHostMounts(boolean verify) {
+        options.setVerifyHostMounts(verify);
+        return this;
+    }
+
+    public CubeFilesystemSpec commonSkillsOverlay(String mountPath, String targetPath) {
+        options.setCommonSkillsMountPath(mountPath);
+        options.setCommonSkillsTargetPath(targetPath);
         return this;
     }
 

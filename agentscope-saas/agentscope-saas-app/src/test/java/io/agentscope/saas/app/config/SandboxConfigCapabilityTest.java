@@ -77,6 +77,76 @@ class SandboxConfigCapabilityTest {
                 .hasMessageContaining("SNAPSHOT");
     }
 
+    @Test
+    void parsesDeploymentHostMountsAndAddsReadOnlyCommonSkills() {
+        SaasProperties properties = properties("cube");
+        properties
+                .getSandbox()
+                .setCubeHostMountsJson(
+                        "[{\"hostPath\":\"/data/shared/models\","
+                                + "\"mountPath\":\"/models\",\"readOnly\":true}]");
+        properties
+                .getSandbox()
+                .setCubeCommonSkillsHostPath("/data/shared/agentscope-common-skills");
+
+        var mounts = SandboxConfig.cubeHostMounts(properties.getSandbox(), new ObjectMapper());
+
+        assertThat(mounts).hasSize(2);
+        assertThat(mounts.get(1).mountPath()).isEqualTo("/opt/agentscope-common-skills");
+        assertThat(mounts.get(1).readOnly()).isTrue();
+    }
+
+    @Test
+    void rejectsDuplicateDeploymentMountTargets() {
+        SaasProperties properties = properties("cube");
+        properties
+                .getSandbox()
+                .setCubeHostMountsJson(
+                        "[{\"hostPath\":\"/data/shared/custom\","
+                                + "\"mountPath\":\"/opt/agentscope-common-skills\","
+                                + "\"readOnly\":true}]");
+        properties
+                .getSandbox()
+                .setCubeCommonSkillsHostPath("/data/shared/agentscope-common-skills");
+
+        assertThatThrownBy(
+                        () ->
+                                SandboxConfig.cubeHostMounts(
+                                        properties.getSandbox(), new ObjectMapper()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("unique mountPath");
+    }
+
+    @Test
+    void rejectsDeploymentMountOutsideApplicationAllowlist() {
+        SaasProperties properties = properties("cube");
+        properties
+                .getSandbox()
+                .setCubeHostMountsJson(
+                        "[{\"hostPath\":\"/etc\",\"mountPath\":\"/host-etc\","
+                                + "\"readOnly\":true}]");
+
+        assertThatThrownBy(
+                        () ->
+                                SandboxConfig.cubeHostMounts(
+                                        properties.getSandbox(), new ObjectMapper()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("allowed prefix");
+    }
+
+    @Test
+    void rejectsCommonSkillsTargetOutsideWorkspace() {
+        SaasProperties properties = properties("cube");
+        properties.getSandbox().setCubeCommonSkillsTargetPath("/root/skills");
+
+        assertThatThrownBy(
+                        () ->
+                                SandboxConfig.validateCommonSkillsTarget(
+                                        properties.getSandbox(), "/workspace"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("child of the workspace");
+    }
+
     private static SaasProperties properties(String provider) {
         SaasProperties properties = new SaasProperties();
         properties.getSandbox().setType(provider);

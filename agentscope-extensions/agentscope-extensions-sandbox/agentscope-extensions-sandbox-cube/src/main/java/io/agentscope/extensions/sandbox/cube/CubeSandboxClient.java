@@ -23,6 +23,8 @@ import io.agentscope.harness.agent.sandbox.SandboxException;
 import io.agentscope.harness.agent.sandbox.SandboxState;
 import io.agentscope.harness.agent.sandbox.WorkspaceSpec;
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
+import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -68,6 +70,12 @@ public class CubeSandboxClient implements SandboxClient<CubeSandboxClientOptions
         state.setTemplateId(merged.getTemplateId());
         state.setWorkspaceRoot(merged.getWorkspaceRoot());
         state.setSandboxOwned(true);
+        List<CubeHostMount> hostMounts = merged.resolveHostMounts(sessionId);
+        validateCommonSkillsOverlay(merged, hostMounts);
+        state.setHostMounts(hostMounts);
+        state.setVerifyHostMounts(merged.isVerifyHostMounts());
+        state.setCommonSkillsMountPath(merged.getCommonSkillsMountPath());
+        state.setCommonSkillsTargetPath(merged.getCommonSkillsTargetPath());
 
         if (snapshotSpec != null) {
             state.setSnapshot(snapshotSpec.build(sessionId));
@@ -169,6 +177,24 @@ public class CubeSandboxClient implements SandboxClient<CubeSandboxClientOptions
                         : defaultOptions.getMaxRetries());
         merged.setInsecureSkipTlsVerify(
                 override.isInsecureSkipTlsVerify() || defaultOptions.isInsecureSkipTlsVerify());
+        merged.setHostMounts(
+                !override.getHostMounts().isEmpty()
+                        ? override.getHostMounts()
+                        : defaultOptions.getHostMounts());
+        merged.setAllowedHostMountPrefixes(
+                !override.getAllowedHostMountPrefixes().equals(List.of("/data/shared/"))
+                        ? override.getAllowedHostMountPrefixes()
+                        : defaultOptions.getAllowedHostMountPrefixes());
+        merged.setVerifyHostMounts(
+                override.isVerifyHostMounts() && defaultOptions.isVerifyHostMounts());
+        merged.setCommonSkillsMountPath(
+                override.getCommonSkillsMountPath() != null
+                        ? override.getCommonSkillsMountPath()
+                        : defaultOptions.getCommonSkillsMountPath());
+        merged.setCommonSkillsTargetPath(
+                override.getCommonSkillsTargetPath() != null
+                        ? override.getCommonSkillsTargetPath()
+                        : defaultOptions.getCommonSkillsTargetPath());
         merged.setHttpClient(
                 override.getHttpClient() != null
                         ? override.getHttpClient()
@@ -190,7 +216,43 @@ public class CubeSandboxClient implements SandboxClient<CubeSandboxClientOptions
         c.setReadTimeoutSeconds(src.getReadTimeoutSeconds());
         c.setMaxRetries(src.getMaxRetries());
         c.setInsecureSkipTlsVerify(src.isInsecureSkipTlsVerify());
+        c.setHostMounts(src.getHostMounts());
+        c.setAllowedHostMountPrefixes(src.getAllowedHostMountPrefixes());
+        c.setVerifyHostMounts(src.isVerifyHostMounts());
+        c.setCommonSkillsMountPath(src.getCommonSkillsMountPath());
+        c.setCommonSkillsTargetPath(src.getCommonSkillsTargetPath());
         c.setHttpClient(src.getHttpClient());
         return c;
+    }
+
+    private static void validateCommonSkillsOverlay(
+            CubeSandboxClientOptions options, List<CubeHostMount> hostMounts) {
+        String source = options.getCommonSkillsMountPath();
+        if (source == null || source.isBlank()) {
+            return;
+        }
+        Path sourcePath = Path.of(source).normalize();
+        boolean readOnlyMount =
+                hostMounts.stream()
+                        .anyMatch(
+                                mount ->
+                                        mount.readOnly()
+                                                && Path.of(mount.mountPath())
+                                                        .normalize()
+                                                        .equals(sourcePath));
+        if (!readOnlyMount) {
+            throw new IllegalArgumentException(
+                    "Cube common Skills source must be backed by a read-only host mount");
+        }
+        String configuredTarget = options.getCommonSkillsTargetPath();
+        Path workspace = Path.of(options.getWorkspaceRoot()).normalize();
+        Path target =
+                configuredTarget == null || configuredTarget.isBlank()
+                        ? workspace.resolve("skills")
+                        : Path.of(configuredTarget).normalize();
+        if (!target.isAbsolute() || !target.startsWith(workspace) || target.equals(workspace)) {
+            throw new IllegalArgumentException(
+                    "Cube common Skills target must be a child of the workspace root");
+        }
     }
 }

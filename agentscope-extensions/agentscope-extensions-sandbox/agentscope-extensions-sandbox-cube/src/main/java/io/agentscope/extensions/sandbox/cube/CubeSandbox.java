@@ -23,7 +23,10 @@ import io.agentscope.harness.agent.sandbox.WorkspaceSpec;
 import io.agentscope.harness.agent.sandbox.layout.WorkspaceEntry;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.nio.file.Path;
 import java.util.Base64;
+import java.util.List;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -70,7 +73,18 @@ final class CubeSandbox extends AbstractBaseSandbox {
             }
         }
         ensureSandbox();
+        verifyHostMounts();
         super.start();
+        try {
+            applyCommonSkillsOverlay();
+        } catch (Exception error) {
+            try {
+                super.stop();
+            } catch (Exception stopError) {
+                error.addSuppressed(stopError);
+            }
+            throw error;
+        }
     }
 
     @Override
@@ -89,11 +103,13 @@ final class CubeSandbox extends AbstractBaseSandbox {
     @Override
     protected InputStream doPersistWorkspace() throws Exception {
         // TAR mode only: run tar inside the sandbox and stream binary stdout
-        StringBuilder cmd = new StringBuilder("tar -cf - -C ");
-        cmd.append(shellSingleQuote(state.getWorkspaceRoot()));
-        cmd.append(" .");
-        byte[] tarBytes =
-                envd().runShellBinaryStdout(state, state.getWorkspaceRoot(), cmd.toString(), 120);
+        String cmd =
+                "tar -cf -"
+                        + nestedMountExcludes()
+                        + " -C "
+                        + shellSingleQuote(state.getWorkspaceRoot())
+                        + " .";
+        byte[] tarBytes = envd().runShellBinaryStdout(state, state.getWorkspaceRoot(), cmd, 120);
         return new ByteArrayInputStream(tarBytes);
     }
 
@@ -113,17 +129,21 @@ final class CubeSandbox extends AbstractBaseSandbox {
             String chunk = b64.substring(i, Math.min(i + chunkSize, b64.length()));
             // base64 chars are all safe for single-quoted printf; escape single quotes only
             String escaped = chunk.replace("'", "'\\''");
-            String writeCmd = "printf '%s' '" + escaped + "' >> " + tmpFile;
+            String operator = i == 0 ? ">" : ">>";
+            String writeCmd = "printf '%s' '" + escaped + "' " + operator + " " + tmpFile;
             envd().runShell(state, state.getWorkspaceRoot(), writeCmd, 60);
         }
 
         String extractCmd =
                 "base64 -d "
                         + tmpFile
-                        + " | tar xf - -C "
-                        + state.getWorkspaceRoot()
-                        + " && rm -f "
-                        + tmpFile;
+                        + " | tar -xf -"
+                        + nestedMountExcludes()
+                        + " -C "
+                        + shellSingleQuote(state.getWorkspaceRoot())
+                        + "; status=$?; rm -f "
+                        + tmpFile
+                        + "; exit $status";
         envd().runShell(state, state.getWorkspaceRoot(), extractCmd, 120);
     }
 
@@ -138,6 +158,10 @@ final class CubeSandbox extends AbstractBaseSandbox {
 
     @Override
     protected void doDestroyWorkspace() throws Exception {
+        if (hasWritableWorkspaceMount()) {
+            log.debug("Skipping deletion of Cube host-mounted workspace");
+            return;
+        }
         try {
             envd().runShell(
                             state,
@@ -165,7 +189,7 @@ final class CubeSandbox extends AbstractBaseSandbox {
         if (state.getSandboxId() == null || state.getSandboxId().isBlank()) {
             // Create new sandbox
             int timeout = opt.getSandboxTimeoutSeconds();
-            var json = platform.createSandbox(opt.getTemplateId(), timeout);
+            var json = platform.createSandbox(opt.getTemplateId(), timeout, state.getHostMounts());
             CubePlatformHttp.applySandboxFields(state, json);
             applyDefaultDomain();
             log.info("Created Cube sandbox id={}", state.getSandboxId());
@@ -204,6 +228,85 @@ final class CubeSandbox extends AbstractBaseSandbox {
             }
         }
         return envd;
+    }
+
+    private void verifyHostMounts() throws Exception {
+        if (!state.isVerifyHostMounts() || state.getHostMounts().isEmpty()) {
+            return;
+        }
+        String checks =
+                state.getHostMounts().stream()
+                        .map(
+                                mount ->
+                                        "test -e "
+                                                + shellSingleQuote(mount.mountPath())
+                                                + " || { echo "
+                                                + shellSingleQuote(
+                                                        "missing Cube host mount: "
+                                                                + mount.mountPath())
+                                                + " >&2; exit 42; }")
+                        .collect(Collectors.joining(" && "));
+        ExecResult result = envd().runShell(state, "/", checks, 30);
+        if (!result.ok()) {
+            throw new IllegalStateException(
+                    "Cube host-mount verification failed: " + result.stderr());
+        }
+    }
+
+    private void applyCommonSkillsOverlay() throws Exception {
+        String source = state.getCommonSkillsMountPath();
+        if (source == null || source.isBlank()) {
+            return;
+        }
+        String target = state.getCommonSkillsTargetPath();
+        if (target == null || target.isBlank()) {
+            target = state.getWorkspaceRoot() + "/skills";
+        }
+        String command =
+                "set -eu; source="
+                        + shellSingleQuote(source)
+                        + "; target="
+                        + shellSingleQuote(target)
+                        + "; mkdir -p \"$target\"; if [ -d \"$source\" ]; then "
+                        + "for destination in \"$target\"/*; do [ -L \"$destination\" ] || "
+                        + "continue; link=$(readlink \"$destination\") || continue; "
+                        + "case \"$link\" in \"$source\"/*) [ -e \"$destination\" ] || "
+                        + "rm -f \"$destination\" ;; esac; done; "
+                        + "for skill in \"$source\"/*; do [ -d \"$skill\" ] || continue; "
+                        + "name=${skill##*/}; destination=\"$target/$name\"; "
+                        + "if [ ! -e \"$destination\" ] && [ ! -L \"$destination\" ]; then "
+                        + "ln -s \"$skill\" \"$destination\"; fi; done; fi";
+        ExecResult result = envd().runShell(state, state.getWorkspaceRoot(), command, 30);
+        if (!result.ok()) {
+            throw new IllegalStateException(
+                    "Failed to apply Cube common Skills overlay: " + result.stderr());
+        }
+    }
+
+    private boolean hasWritableWorkspaceMount() {
+        Path workspace = Path.of(state.getWorkspaceRoot()).normalize();
+        return state.getHostMounts().stream()
+                .anyMatch(
+                        mount ->
+                                !mount.readOnly()
+                                        && Path.of(mount.mountPath())
+                                                .normalize()
+                                                .equals(workspace));
+    }
+
+    private String nestedMountExcludes() {
+        Path workspace = Path.of(state.getWorkspaceRoot()).normalize();
+        List<String> excludes =
+                state.getHostMounts().stream()
+                        .map(CubeHostMount::mountPath)
+                        .map(Path::of)
+                        .map(Path::normalize)
+                        .filter(path -> path.startsWith(workspace) && !path.equals(workspace))
+                        .map(workspace::relativize)
+                        .map(Path::toString)
+                        .map(relative -> " --exclude=" + shellSingleQuote("./" + relative))
+                        .toList();
+        return String.join("", excludes);
     }
 
     private static String shellSingleQuote(String s) {

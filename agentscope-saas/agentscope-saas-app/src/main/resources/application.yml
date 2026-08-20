@@ -139,6 +139,14 @@ saas:
     cube-envd-host-pattern: ${SAAS_SANDBOX_CUBE_ENVD_HOST_PATTERN:${CUBE_ENVD_HOST_PATTERN:}}
     cube-insecure-skip-tls-verify: ${SAAS_SANDBOX_CUBE_INSECURE_SKIP_TLS_VERIFY:${CUBE_INSECURE_SKIP_TLS_VERIFY:false}}
     cube-sandbox-timeout-seconds: ${SAAS_SANDBOX_CUBE_TIMEOUT:${CUBE_SANDBOX_TIMEOUT:300}}
+    # Deployment-only Cube host mounts. Never accept these paths from an end-user request.
+    cube-host-mounts-json: '${SAAS_SANDBOX_CUBE_HOST_MOUNTS_JSON:[]}'
+    cube-allowed-host-mount-prefixes: ${SAAS_SANDBOX_CUBE_ALLOWED_HOST_MOUNT_PREFIXES:/data/shared/}
+    cube-verify-host-mounts: ${SAAS_SANDBOX_CUBE_VERIFY_HOST_MOUNTS:true}
+    # Optional read-only enterprise Skills mount; private workspace Skills keep precedence.
+    cube-common-skills-host-path: ${SAAS_SANDBOX_CUBE_COMMON_SKILLS_HOST_PATH:}
+    cube-common-skills-mount-path: ${SAAS_SANDBOX_CUBE_COMMON_SKILLS_MOUNT_PATH:/opt/agentscope-common-skills}
+    cube-common-skills-target-path: ${SAAS_SANDBOX_CUBE_COMMON_SKILLS_TARGET_PATH:}
     # --- E2B (official hosted sandbox, https://e2b.app). Used when type=e2b. ---
     # API key is required for type=e2b. Get one at https://e2b.app.
     e2b-api-key: ${SAAS_SANDBOX_E2B_API_KEY:}

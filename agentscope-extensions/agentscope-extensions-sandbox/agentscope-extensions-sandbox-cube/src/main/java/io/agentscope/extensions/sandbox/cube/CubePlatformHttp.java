@@ -21,6 +21,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.agentscope.harness.agent.sandbox.SandboxErrorCode;
 import io.agentscope.harness.agent.sandbox.SandboxException;
 import java.io.IOException;
+import java.util.List;
 import java.util.Objects;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -57,10 +58,15 @@ final class CubePlatformHttp {
      * @param timeout    sandbox idle timeout in seconds
      * @return JSON response containing sandboxId, domain, envdAccessToken, envdVersion
      */
-    JsonNode createSandbox(String templateId, int timeout) throws Exception {
+    JsonNode createSandbox(String templateId, int timeout, List<CubeHostMount> hostMounts)
+            throws Exception {
         ObjectNode body = objectMapper.createObjectNode();
         body.put("templateID", templateId != null ? templateId : "base");
         body.put("timeout", timeout);
+        if (hostMounts != null && !hostMounts.isEmpty()) {
+            ObjectNode metadata = body.putObject("metadata");
+            metadata.put("host-mount", objectMapper.writeValueAsString(hostMounts));
+        }
         return CubeRetry.withRetries(maxRetries, () -> post("/sandboxes", body));
     }
 
@@ -107,12 +113,14 @@ final class CubePlatformHttp {
 
     private JsonNode post(String path, ObjectNode body) throws IOException, SandboxException {
         byte[] bodyBytes = objectMapper.writeValueAsBytes(body);
-        Request req =
+        Request.Builder request =
                 new Request.Builder()
                         .url(baseUrl + path)
-                        .post(RequestBody.create(bodyBytes, JSON_MT))
-                        .header("X-API-Key", apiKey)
-                        .build();
+                        .post(RequestBody.create(bodyBytes, JSON_MT));
+        if (apiKey != null && !apiKey.isBlank()) {
+            request.header("X-API-Key", apiKey);
+        }
+        Request req = request.build();
 
         try (Response res = http.newCall(req).execute()) {
             if (!res.isSuccessful()) {
