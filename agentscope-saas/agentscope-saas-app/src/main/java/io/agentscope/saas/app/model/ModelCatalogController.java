@@ -15,24 +15,40 @@
  */
 package io.agentscope.saas.app.model;
 
+import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.core.tenant.TenantResolver;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
-/** Returns the safe, user-selectable subset of the deploy-time model catalog. */
+/** Returns the safe, user-selectable subset of the effective organization model catalog. */
 @RestController
 public class ModelCatalogController {
 
     public record CatalogResponse(String defaultModelId, List<ModelCatalog.ModelOption> models) {}
 
     private final ModelCatalog catalog;
+    private final TenantResolver tenantResolver;
 
-    public ModelCatalogController(ModelCatalog catalog) {
+    public ModelCatalogController(ModelCatalog catalog, TenantResolver tenantResolver) {
         this.catalog = catalog;
+        this.tenantResolver = tenantResolver;
     }
 
     @GetMapping("/api/models")
-    public CatalogResponse models() {
-        return new CatalogResponse(catalog.getDefaultId(), catalog.getOptions());
+    public Mono<CatalogResponse> models(@AuthenticationPrincipal Jwt jwt) {
+        TenantContext tenant = tenantResolver.resolve(jwt != null ? jwt.getClaims() : Map.of());
+        UUID orgId = UUID.fromString(tenant.orgId());
+        return Mono.fromCallable(
+                        () ->
+                                new CatalogResponse(
+                                        catalog.getDefaultId(orgId), catalog.getOptions(orgId)))
+                .subscribeOn(Schedulers.boundedElastic());
     }
 }

@@ -238,3 +238,88 @@ export async function listAuditLogs(filters: AuditFilters = {}): Promise<AuditLo
   }
   return res.json();
 }
+
+export interface AdminModelView {
+  id: string;
+  displayName: string;
+  providerType: string;
+  baseUrl?: string | null;
+  modelName: string;
+  contextWindowTokens: number;
+  maxOutputTokens: number;
+  safetyMarginTokens: number;
+  enabled: boolean;
+  defaultModel: boolean;
+  apiKeyConfigured: boolean;
+  source: 'managed' | 'deployment';
+  version: number;
+  updatedAt?: string | null;
+}
+
+export interface AdminModelWriteRequest {
+  id: string;
+  displayName: string;
+  providerType: 'gateway' | 'dashscope';
+  baseUrl?: string | null;
+  apiKey?: string | null;
+  clearApiKey?: boolean;
+  modelName: string;
+  contextWindowTokens: number;
+  maxOutputTokens: number;
+  safetyMarginTokens: number;
+  enabled: boolean;
+  defaultModel: boolean;
+  version?: number;
+}
+
+export interface AdminModelTestResult {
+  ok: boolean;
+  message: string;
+  latencyMs: number;
+}
+
+async function adminModelResponse<T>(res: Response, fallback: string): Promise<T> {
+  if (!res.ok) {
+    const message = await res.text().catch(() => `${res.status}`);
+    throw new Error(message || `${fallback}: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function listAdminModels(): Promise<AdminModelView[]> {
+  return adminModelResponse(await fetch('/api/admin/models'), 'Failed to list models');
+}
+
+export async function createAdminModel(body: AdminModelWriteRequest): Promise<AdminModelView> {
+  return adminModelResponse(await fetch('/api/admin/models', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }), 'Failed to create model');
+}
+
+export async function updateAdminModel(
+  modelId: string,
+  body: AdminModelWriteRequest,
+): Promise<AdminModelView> {
+  return adminModelResponse(await fetch(`/api/admin/models/${encodeURIComponent(modelId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }), 'Failed to update model');
+}
+
+export async function deleteAdminModel(modelId: string): Promise<void> {
+  const res = await fetch(`/api/admin/models/${encodeURIComponent(modelId)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const message = await res.text().catch(() => `${res.status}`);
+    throw new Error(message || `Failed to delete model: ${res.status}`);
+  }
+}
+
+export async function testAdminModel(modelId: string): Promise<AdminModelTestResult> {
+  return adminModelResponse(await fetch(
+    `/api/admin/models/${encodeURIComponent(modelId)}/test`,
+    { method: 'POST' },
+  ), 'Failed to test model');
+}

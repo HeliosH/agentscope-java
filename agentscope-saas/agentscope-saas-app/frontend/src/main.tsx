@@ -18,6 +18,7 @@ import AdminMemoryEventsPage from './pages/AdminMemoryEventsPage';
 import AdminUsersPage from './pages/AdminUsersPage';
 import AdminUsagePage from './pages/AdminUsagePage';
 import AdminAuditPage from './pages/AdminAuditPage';
+import AdminModelsPage from './pages/AdminModelsPage';
 import AppShell from './components/AppShell';
 import AgentLayout from './components/AgentLayout';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -36,6 +37,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <Route path="/agents" element={<AgentsHubPage />} />
             <Route path="/agents/new" element={<AgentCreatePage />} />
             <Route path="/admin/users" element={<AdminUsersPage />} />
+            <Route path="/admin/models" element={<AdminModelsPage />} />
             <Route path="/admin/usage" element={<AdminUsagePage />} />
             <Route path="/admin/sandboxes" element={<AdminSandboxesPage />} />
             <Route path="/admin/memory-events" element={<AdminMemoryEventsPage />} />

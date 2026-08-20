@@ -55,6 +55,10 @@ saas:
     context-window-tokens: ${SAAS_MODEL_CONTEXT_WINDOW_TOKENS:32000}
     max-output-tokens: ${SAAS_MODEL_MAX_OUTPUT_TOKENS:4096}
     safety-margin-tokens: ${SAAS_MODEL_SAFETY_MARGIN_TOKENS:1024}
+    management:
+      # Base64-encoded 32-byte AES key. Required before an admin can persist API credentials.
+      encryption-key: ${SAAS_MODEL_MANAGEMENT_ENCRYPTION_KEY:}
+      test-timeout-seconds: ${SAAS_MODEL_MANAGEMENT_TEST_TIMEOUT_SECONDS:30}
     # User-selectable routes are deployment configuration, never user-managed data. Example:
     # catalog:
     #   - id: qwen-long

@@ -21,9 +21,12 @@ import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.saas.app.chat.SaasChatController;
 import io.agentscope.saas.app.marketplace.MarketplaceRegistry;
 import io.agentscope.saas.app.marketplace.MarketplacesController;
+import io.agentscope.saas.app.model.AdminModelsController;
+import io.agentscope.saas.app.model.ModelManagementService;
 import io.agentscope.saas.app.observability.AgentRunMetrics;
 import io.agentscope.saas.app.tools.AgentToolsController;
 import io.agentscope.saas.domain.repository.MarketplaceRepository;
+import io.agentscope.saas.domain.repository.ModelDefinitionRepository;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -51,6 +54,9 @@ class SaasAppContextLoadsTest {
     @Autowired HarnessAgent harnessAgent;
     @Autowired RunOrchestrationService runOrchestrationService;
     @Autowired SaasChatController saasChatController;
+    @Autowired ModelDefinitionRepository modelDefinitionRepository;
+    @Autowired ModelManagementService modelManagementService;
+    @Autowired AdminModelsController adminModelsController;
 
     @Test
     void contextLoads() {
@@ -64,5 +70,8 @@ class SaasAppContextLoadsTest {
         assertThat(harnessAgent.getCompactionHook()).isNotNull();
         assertThat(runOrchestrationService).isNotNull();
         assertThat(saasChatController).isNotNull();
+        assertThat(modelDefinitionRepository).isNotNull();
+        assertThat(modelManagementService).isNotNull();
+        assertThat(adminModelsController).isNotNull();
     }
 }

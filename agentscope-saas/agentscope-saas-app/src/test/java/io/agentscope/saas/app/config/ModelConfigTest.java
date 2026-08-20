@@ -15,6 +15,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.model.ContextWindowAwareModel;
 import io.agentscope.saas.app.model.ModelCatalog;
+import io.agentscope.saas.app.model.ModelCredentialCipher;
+import io.agentscope.saas.app.model.ModelRouteFactory;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -36,7 +38,7 @@ class ModelConfigTest {
         fallback.setName("fallback-model");
         properties.getModel().setFallbacks(List.of(fallback));
 
-        ModelCatalog model = config.chatModel(properties);
+        ModelCatalog model = createModel(properties);
 
         assertEquals("default", model.getDefaultId());
         assertEquals("primary-model", model.getOptions().get(0).modelName());
@@ -49,7 +51,7 @@ class ModelConfigTest {
         SaasProperties properties = new SaasProperties();
         properties.getModel().setType("scripted");
 
-        ModelCatalog model = config.chatModel(properties);
+        ModelCatalog model = createModel(properties);
 
         assertEquals("default", model.getDefaultId());
         assertEquals(1, model.getOptions().size());
@@ -63,7 +65,7 @@ class ModelConfigTest {
         SaasProperties.ModelDefinition large = definition("large", 131_072, 8_192);
         properties.getModel().setCatalog(List.of(small, large));
 
-        ModelCatalog model = config.chatModel(properties);
+        ModelCatalog model = createModel(properties);
 
         assertEquals(
                 List.of("small", "large"),
@@ -85,5 +87,10 @@ class ModelConfigTest {
         definition.setMaxOutputTokens(maxOutputTokens);
         definition.setSafetyMarginTokens(1_024);
         return definition;
+    }
+
+    private ModelCatalog createModel(SaasProperties properties) {
+        return config.chatModel(
+                properties, null, new ModelCredentialCipher(properties), new ModelRouteFactory());
     }
 }

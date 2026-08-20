@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import {
   Database,
+  Cpu,
   FileClock,
   Gauge,
   RefreshCw,
@@ -12,6 +13,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 
 const ADMIN_LINKS = [
   { path: '/admin/users', label: 'Users', icon: Users },
+  { path: '/admin/models', label: 'Models', icon: Cpu },
   { path: '/admin/usage', label: 'Usage', icon: Gauge },
   { path: '/admin/sandboxes', label: 'Sandboxes', icon: Database },
   { path: '/admin/memory-events', label: 'Memory', icon: FileClock },

@@ -26,6 +26,9 @@ saas:
       driver-class-name: org.h2.Driver
   model:
     type: stub
+    management:
+      # Local-only deterministic key; production must inject a separately managed secret.
+      encryption-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
   redis:
     enabled: false
   sandbox:

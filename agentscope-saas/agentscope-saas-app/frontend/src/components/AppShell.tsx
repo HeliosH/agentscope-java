@@ -4,6 +4,7 @@ import {
   Database,
   FileClock,
   Gauge,
+  Cpu,
   LogOut,
   ShieldCheck,
   Users,
@@ -18,6 +19,7 @@ interface ShellContext {
 
 const ADMIN_LINKS = [
   { path: '/admin/users', label: 'Users', icon: Users },
+  { path: '/admin/models', label: 'Models', icon: Cpu },
   { path: '/admin/usage', label: 'Usage', icon: Gauge },
   { path: '/admin/sandboxes', label: 'Sandboxes', icon: Database },
   { path: '/admin/memory-events', label: 'Memory', icon: FileClock },

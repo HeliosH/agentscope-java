@@ -221,16 +221,15 @@ public class SaasChatController {
                 || ((request.message() == null || request.message().isBlank()) && !hasConfirm)) {
             return Flux.error(new IllegalArgumentException("message is required"));
         }
-        try {
-            modelCatalog.requireOption(request.modelId());
-        } catch (IllegalArgumentException e) {
-            return Flux.error(e);
-        }
-
         // In dev (auth bypass) the principal is null; the TenantResolver (a DevTenantResolver)
         // returns a fixed tenant for empty claims. In production jwt is always present.
         Map<String, Object> claims = jwt != null ? jwt.getClaims() : Map.of();
         TenantContext tenant = tenantResolver.resolve(claims);
+        try {
+            modelCatalog.requireOption(UUID.fromString(tenant.orgId()), request.modelId());
+        } catch (IllegalArgumentException e) {
+            return Flux.error(e);
+        }
         boolean persistable = isPersistable(tenant);
         DegradationManager.Decision decision = degradationManager.evaluateChat();
         if (!decision.allowed()) {
@@ -350,7 +349,11 @@ public class SaasChatController {
                         .put(TaskComplexityRouter.ATTR_ROUTE, route.name())
                         .put(
                                 ContextWindowAwareModel.MODEL_ID_KEY,
-                                modelCatalog.requireOption(request.modelId()).id())
+                                modelCatalog
+                                        .requireOption(
+                                                UUID.fromString(tenant.orgId()), request.modelId())
+                                        .id())
+                        .put(ModelCatalog.ORG_ID_KEY, tenant.orgId())
                         .put(PlanModeTools.STRUCTURED_PLANNING_REQUIRED, structuredPlanning)
                         .put(
                                 RunOrchestrationService.ATTR_AGENT_RUN_ID,
@@ -387,7 +390,7 @@ public class SaasChatController {
                         .role(MsgRole.USER)
                         .name(tenant.userId() != null ? tenant.userId() : "user")
                         .textContent(agentMessage(request))
-                        .metadata(buildMetadata(request))
+                        .metadata(buildMetadata(tenant, request))
                         .build();
 
         log.debug(
@@ -756,11 +759,14 @@ public class SaasChatController {
      * resume), they are attached under {@link Msg#METADATA_CONFIRM_RESULTS} so the agent applies
      * the user's approve/deny decisions to the paused tool calls. Returns an empty map otherwise.
      */
-    private Map<String, Object> buildMetadata(ChatRequest request) {
+    private Map<String, Object> buildMetadata(TenantContext tenant, ChatRequest request) {
         Map<String, Object> metadata = new HashMap<>();
         metadata.put(
                 ContextWindowAwareModel.MODEL_ID_KEY,
-                modelCatalog.requireOption(request.modelId()).id());
+                modelCatalog
+                        .requireOption(UUID.fromString(tenant.orgId()), request.modelId())
+                        .id());
+        metadata.put(ModelCatalog.ORG_ID_KEY, tenant.orgId());
         if (request.confirmResults() == null || request.confirmResults().isEmpty()) {
             return Map.copyOf(metadata);
         }

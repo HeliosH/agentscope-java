@@ -74,6 +74,8 @@ export SAAS_MODEL_TYPE=gateway          # OpenAI-compatible internal gateway
 export SAAS_MODEL_BASE_URL=https://<gateway-host>/v1
 export SAAS_MODEL_API_KEY=...
 export SAAS_MODEL_NAME=qwen-max
+# Stable base64-encoded 32-byte key for encrypting admin-managed model credentials.
+export SAAS_MODEL_MANAGEMENT_ENCRYPTION_KEY=...
 export SAAS_JWT_SECRET=<32+ char secret>
 # Optional enterprise SSO (validate IdP-issued tokens):
 # export SAAS_OIDC_ISSUER_URI=https://<idp>/realms/<realm>
@@ -100,6 +102,10 @@ Then open `http://localhost:8080/` after starting the app.
 | GET  | `/api/auth/me` | bearer | Current tenant claims |
 | GET  | `/api/agents` | bearer | List org-scoped agents |
 | POST | `/api/agents` | bearer | Create an agent |
+| GET  | `/api/models` | bearer | List models available to the current organization |
+| GET/POST | `/api/admin/models` | org admin | List or add organization model endpoints |
+| PUT/DELETE | `/api/admin/models/{modelId}` | org admin | Modify or delete a managed model endpoint |
+| POST | `/api/admin/models/{modelId}/test` | org admin | Test a managed model connection |
 | POST | `/api/agents/{agentId}/chat/stream` | bearer | Agent-scoped AG-UI SSE chat |
 | GET  | `/api/agents/{agentId}/sessions/inbox` | bearer | User session inbox |
 | GET  | `/api/agents/{agentId}/sessions/{sessionKey}/turns/window` | bearer | Latest history window / backward pagination |

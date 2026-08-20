@@ -113,6 +113,9 @@ public class SaasProperties {
 
         @NestedConfigurationProperty private final ModelTraffic traffic = new ModelTraffic();
 
+        @NestedConfigurationProperty
+        private final ModelManagement management = new ModelManagement();
+
         public String getType() {
             return type;
         }
@@ -203,6 +206,32 @@ public class SaasProperties {
 
         public ModelTraffic getTraffic() {
             return traffic;
+        }
+
+        public ModelManagement getManagement() {
+            return management;
+        }
+    }
+
+    /** Security and timeout settings for administrator-managed model endpoints. */
+    public static class ModelManagement {
+        private String encryptionKey;
+        private int testTimeoutSeconds = 30;
+
+        public String getEncryptionKey() {
+            return encryptionKey;
+        }
+
+        public void setEncryptionKey(String encryptionKey) {
+            this.encryptionKey = encryptionKey;
+        }
+
+        public int getTestTimeoutSeconds() {
+            return testTimeoutSeconds;
+        }
+
+        public void setTestTimeoutSeconds(int testTimeoutSeconds) {
+            this.testTimeoutSeconds = testTimeoutSeconds;
         }
     }
 
