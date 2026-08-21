@@ -23,6 +23,15 @@ public interface OrchestrationGovernanceRepository {
 
     Optional<PermissionSnapshot> findPermissionSnapshot(UUID orgId, UUID runId, UUID agentRunId);
 
+    /** Stores the first capability snapshot and accepts only byte-identical later captures. */
+    boolean saveRuntimeCapabilitySnapshot(
+            UUID orgId,
+            UUID runId,
+            UUID agentRunId,
+            String snapshotJson,
+            String snapshotHash,
+            OffsetDateTime capturedAt);
+
     OrchestrationBudget lockBudget(UUID orgId, UUID runId, UUID agentRunId);
 
     void recordUsage(

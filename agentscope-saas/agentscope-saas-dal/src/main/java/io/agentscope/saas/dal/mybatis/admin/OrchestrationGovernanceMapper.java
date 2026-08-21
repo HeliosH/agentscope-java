@@ -74,6 +74,26 @@ public interface OrchestrationGovernanceMapper {
             @Param("runId") UUID runId,
             @Param("agentRunId") UUID agentRunId);
 
+    @Update(
+            """
+            UPDATE agent_runs
+               SET runtime_capability_snapshot_json = CAST(#{snapshotJson} AS JSON),
+                   runtime_capability_snapshot_hash = #{snapshotHash},
+                   runtime_capability_captured_at =
+                       COALESCE(runtime_capability_captured_at, #{capturedAt}),
+                   updated_at = #{capturedAt}
+             WHERE id = #{agentRunId} AND run_id = #{runId} AND org_id = #{orgId}
+               AND (runtime_capability_snapshot_hash IS NULL
+                    OR runtime_capability_snapshot_hash = #{snapshotHash})
+            """)
+    int saveRuntimeCapabilitySnapshot(
+            @Param("orgId") UUID orgId,
+            @Param("runId") UUID runId,
+            @Param("agentRunId") UUID agentRunId,
+            @Param("snapshotJson") String snapshotJson,
+            @Param("snapshotHash") String snapshotHash,
+            @Param("capturedAt") OffsetDateTime capturedAt);
+
     @Select(
             """
             SELECT r.id AS run_id, r.org_id, r.status AS run_status,

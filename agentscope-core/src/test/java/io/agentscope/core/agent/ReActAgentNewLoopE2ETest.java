@@ -16,6 +16,7 @@
 package io.agentscope.core.agent;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -43,6 +44,7 @@ import io.agentscope.core.model.ToolSchema;
 import io.agentscope.core.permission.PermissionContextState;
 import io.agentscope.core.permission.PermissionDecision;
 import io.agentscope.core.state.AgentState;
+import io.agentscope.core.tool.RuntimeToolScope;
 import io.agentscope.core.tool.ToolBase;
 import io.agentscope.core.tool.ToolCallParam;
 import io.agentscope.core.tool.Toolkit;
@@ -50,6 +52,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -67,6 +70,7 @@ class ReActAgentNewLoopE2ETest {
         private final List<Supplier<Flux<ChatResponse>>> scripts;
         private final AtomicInteger idx = new AtomicInteger(0);
         final AtomicInteger calls = new AtomicInteger(0);
+        final List<List<String>> visibleTools = new ArrayList<>();
 
         ScriptedModel(List<Supplier<Flux<ChatResponse>>> scripts) {
             this.scripts = scripts;
@@ -81,12 +85,71 @@ class ReActAgentNewLoopE2ETest {
         protected Flux<ChatResponse> doStream(
                 List<Msg> messages, List<ToolSchema> tools, GenerateOptions options) {
             calls.incrementAndGet();
+            visibleTools.add(tools.stream().map(ToolSchema::getName).sorted().toList());
             int i = idx.getAndIncrement();
             if (i >= scripts.size()) {
                 return Flux.just(textResponse(""));
             }
             return scripts.get(i).get();
         }
+    }
+
+    @Test
+    void runtimeToolScopeUsesSamePrivateToolkitForPresentationAndExecution() {
+        ScriptedModel model =
+                new ScriptedModel(
+                        List.of(
+                                () ->
+                                        Flux.just(
+                                                toolUseResponse(
+                                                        "scoped-1", "tenant_tool", "alpha")),
+                                () -> Flux.just(textResponse("scoped-done"))));
+        Toolkit platform = new Toolkit();
+        AtomicBoolean invoked = new AtomicBoolean();
+        MiddlewareBase scopedTools =
+                new MiddlewareBase() {
+                    @Override
+                    public Flux<AgentEvent> onAgent(
+                            Agent agent,
+                            RuntimeContext ctx,
+                            AgentInput input,
+                            Function<AgentInput, Flux<AgentEvent>> next) {
+                        Toolkit privateToolkit = agent.getToolkit().copy();
+                        privateToolkit.registerAgentTool(
+                                new AlwaysAllowTool("tenant_tool") {
+                                    @Override
+                                    public Mono<ToolResultBlock> callAsync(ToolCallParam param) {
+                                        invoked.set(true);
+                                        return super.callAsync(param);
+                                    }
+                                });
+                        RuntimeToolScope.install(
+                                ctx,
+                                privateToolkit,
+                                RuntimeToolScope.hash("tenant-a"),
+                                Map.of("test:tenant-tool", "v1"));
+                        return next.apply(input);
+                    }
+                };
+
+        ReActAgent agent =
+                ReActAgent.builder()
+                        .name("scoped")
+                        .sysPrompt("test")
+                        .model(model)
+                        .toolkit(platform)
+                        .middleware(scopedTools)
+                        .build();
+
+        agent.streamEvents(
+                        Msg.builder().role(MsgRole.USER).textContent("use the tenant tool").build(),
+                        RuntimeContext.empty())
+                .collectList()
+                .block();
+
+        assertTrue(invoked.get());
+        assertTrue(model.visibleTools.get(0).contains("tenant_tool"));
+        assertFalse(agent.getToolkit().getToolNames().contains("tenant_tool"));
     }
 
     private static ChatResponse textResponse(String text) {
@@ -105,7 +168,7 @@ class ReActAgentNewLoopE2ETest {
                 .build();
     }
 
-    private static final class AlwaysAllowTool extends ToolBase {
+    private static class AlwaysAllowTool extends ToolBase {
         AlwaysAllowTool(String name) {
             super(name, "always allow", schema(), true, true, false, null, false, false);
         }

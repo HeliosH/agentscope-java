@@ -133,6 +133,32 @@ public class OrchestrationGovernanceService {
         return new PermissionSnapshot(canonical.json(), canonical.hash());
     }
 
+    /** Persists an immutable model/tool capability snapshot for audit and deterministic replay. */
+    public void saveRuntimeCapabilitySnapshot(
+            UUID orgId, UUID runId, UUID agentRunId, String snapshotJson, String snapshotHash) {
+        if (snapshotJson == null
+                || snapshotJson.isBlank()
+                || snapshotHash == null
+                || snapshotHash.length() != 64) {
+            throw new IllegalArgumentException(
+                    "A canonical runtime capability snapshot is required");
+        }
+        Boolean saved =
+                transactions.execute(
+                        status ->
+                                repository.saveRuntimeCapabilitySnapshot(
+                                        orgId,
+                                        runId,
+                                        agentRunId,
+                                        snapshotJson,
+                                        snapshotHash,
+                                        OffsetDateTime.now()));
+        if (!Boolean.TRUE.equals(saved)) {
+            throw new IllegalStateException(
+                    "Runtime capability snapshot is missing or changed within one Agent Run");
+        }
+    }
+
     private BudgetDecision evaluate(
             UUID orgId,
             UUID runId,

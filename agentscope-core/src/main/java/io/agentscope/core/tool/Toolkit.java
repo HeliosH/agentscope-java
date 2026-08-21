@@ -16,6 +16,7 @@
 package io.agentscope.core.tool;
 
 import io.agentscope.core.agent.Agent;
+import io.agentscope.core.extension.RegistrationHandle;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.model.ExecutionConfig;
@@ -202,6 +203,21 @@ public class Toolkit {
      */
     public void registerAgentTool(AgentTool tool) {
         registerAgentTool(tool, null, null, null, null);
+    }
+
+    /**
+     * Registers one tool and returns an idempotent ownership handle for exact-instance removal.
+     * A newer registration with the same name is never removed by an older handle.
+     */
+    public RegistrationHandle registerAgentToolScoped(AgentTool tool) {
+        registerAgentTool(tool);
+        java.util.concurrent.atomic.AtomicBoolean closed =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        return () -> {
+            if (closed.compareAndSet(false, true)) {
+                removeToolIfSame(tool.getName(), tool);
+            }
+        };
     }
 
     /**

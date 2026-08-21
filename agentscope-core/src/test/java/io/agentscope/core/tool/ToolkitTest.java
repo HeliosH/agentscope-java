@@ -314,6 +314,20 @@ class ToolkitTest {
     }
 
     @Test
+    @DisplayName("Scoped registration handle is idempotent and never removes a replacement")
+    void scopedRegistrationHandle_preservesReplacement() {
+        AgentTool first = namedAgentTool("owned_tool");
+        AgentTool replacement = namedAgentTool("owned_tool");
+        var handle = toolkit.registerAgentToolScoped(first);
+        toolkit.registerAgentTool(replacement);
+
+        handle.close();
+        handle.close();
+
+        assertSame(replacement, toolkit.getTool("owned_tool"));
+    }
+
+    @Test
     @DisplayName("removeToolIfSame returns false when deletion is disabled")
     void removeToolIfSame_falseWhenDeletionDisabled() {
         ToolkitConfig config = ToolkitConfig.builder().allowToolDeletion(false).build();

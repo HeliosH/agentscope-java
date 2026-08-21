@@ -550,6 +550,15 @@ public interface TestDatabaseMapper {
 
     @Select(
             """
+            SELECT runtime_capability_snapshot_json AS runtimeCapabilitySnapshotJson,
+                   runtime_capability_snapshot_hash AS runtimeCapabilitySnapshotHash
+              FROM agent_runs
+             WHERE id = #{id}
+            """)
+    RuntimeCapabilityState runtimeCapabilityState(UUID id);
+
+    @Select(
+            """
             SELECT owner_agent_run_id
               FROM task_nodes
              WHERE run_id = #{runId}
@@ -675,4 +684,7 @@ public interface TestDatabaseMapper {
     record RunArtifactIds(UUID orgId, UUID taskId, UUID attemptId) {}
 
     record AgentRunState(String status, Integer depth, UUID parentAgentRunId) {}
+
+    record RuntimeCapabilityState(
+            String runtimeCapabilitySnapshotJson, String runtimeCapabilitySnapshotHash) {}
 }

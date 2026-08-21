@@ -18,20 +18,21 @@ package io.agentscope.harness.agent.middleware;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.MiddlewareBase;
-import io.agentscope.core.middleware.ReasoningInput;
+import io.agentscope.core.tool.RuntimeToolScope;
+import io.agentscope.core.tool.Toolkit;
 import io.agentscope.core.tool.mcp.McpClientWrapper;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.model.ReadResult;
 import io.agentscope.harness.agent.tools.McpClientRegistry;
 import io.agentscope.harness.agent.tools.McpServerConfig;
+import io.agentscope.harness.agent.tools.ToolFilter;
 import io.agentscope.harness.agent.tools.ToolsConfig;
 import io.agentscope.harness.agent.tools.ToolsConfigLoader;
 import io.agentscope.harness.agent.tools.ToolsConfigMerger;
-import java.util.HashSet;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import org.slf4j.Logger;
@@ -39,32 +40,20 @@ import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 
 /**
- * Re-resolves the caller's effective MCP-server config every reasoning step and keeps the agent's
- * live {@link io.agentscope.core.tool.Toolkit} in sync, so that a multi-tenant SaaS deployment
- * (where one singleton agent serves many users) presents each user's own MCP tools — org base
- * overlaid with that user's workspace {@code tools.json} — without an app restart.
+ * Resolves the caller's effective tool config once per Agent call and installs an immutable
+ * call-scoped {@link RuntimeToolScope}. The singleton Agent's toolkit is never mutated.
  *
  * <p>This is the MCP analogue of {@link DynamicSubagentsMiddleware}: it reads the user's {@code
  * tools.json} through the per-user {@link AbstractFilesystem} namespace (resolved via the {@link
- * RuntimeContext} the framework passes to {@code onReasoning}), merges it with an org-level base
- * (loaded through the injected {@code orgBaseLoader}), and reconciles the agent's toolkit:
- *
- * <ul>
- *   <li>new servers → {@link McpClientRegistry#getOrCreate} (cached, no reconnect on later turns)
- *       then {@code toolkit.registerMcpClient(wrapper).block()}
- *   <li>removed servers → {@code toolkit.removeMcpClient(name).block()} then {@link
- *       McpClientRegistry#remove}
- * </ul>
+ * RuntimeContext} passed to {@code onAgent}), merges it with the organization base, copies the
+ * platform toolkit, and registers only this caller's MCP clients on that copy. Model schemas,
+ * permission checks, and execution subsequently resolve the same snapshot from RuntimeContext.
  *
  * <p>The org/user id extractors and the org-base loader are injected so this harness middleware
  * stays decoupled from the SaaS persistence layer ({@code TenantContext}/{@code OrgRepository}
- * live in saas-core, which depends on harness, not the reverse). Failures at any step are logged
- * and swallowed — one bad MCP entry or a transient filesystem error never aborts the reasoning
- * loop (same convention as {@link io.agentscope.harness.agent.tools.McpServerRegistrar#register}).
- *
- * <p>The {@code allow}/{@code deny} builtin filter is <em>not</em> reconciled here per turn (the
- * harness applies it at build time via {@code ToolFilter}); this middleware only owns the MCP
- * server set. Builtin filter hot-reload is out of scope for C2.
+ * live in saas-core, which depends on harness, not the reverse). Per-server failures are logged
+ * and omit that server without exposing another tenant's tools. The effective
+ * {@code allow}/{@code deny} filter is applied to the private copy as well.
  */
 public class DynamicMcpMiddleware implements MiddlewareBase {
 
@@ -100,27 +89,31 @@ public class DynamicMcpMiddleware implements MiddlewareBase {
     }
 
     @Override
-    public Flux<AgentEvent> onReasoning(
+    public Flux<AgentEvent> onAgent(
             Agent agent,
             RuntimeContext ctx,
-            ReasoningInput input,
-            Function<ReasoningInput, Flux<AgentEvent>> next) {
-        try {
-            reconcile(agent, ctx);
-        } catch (Exception e) {
-            log.warn("Dynamic MCP reconciliation failed: {}", e.getMessage());
-        }
-        return next.apply(input);
+            AgentInput input,
+            Function<AgentInput, Flux<AgentEvent>> next) {
+        return Flux.defer(
+                () -> {
+                    installScope(agent, ctx);
+                    return next.apply(input);
+                });
     }
 
-    private void reconcile(Agent agent, RuntimeContext ctx) {
+    private void installScope(Agent agent, RuntimeContext ctx) {
         if (filesystem == null || registry == null) {
             return;
         }
         UUID userId = safe(userIdExtractor, ctx);
         UUID orgId = safe(orgIdExtractor, ctx);
         if (userId == null) {
-            // No tenant context on this turn (e.g. dev/bypass); leave the toolkit as-is.
+            // No tenant context on this call (e.g. dev/bypass); use the platform toolkit.
+            return;
+        }
+
+        RuntimeToolScope installed = RuntimeToolScope.current(ctx);
+        if (installed != null) {
             return;
         }
 
@@ -128,30 +121,31 @@ public class DynamicMcpMiddleware implements MiddlewareBase {
         ToolsConfig orgCfg = orgId == null ? null : safeLoadOrgBase(orgId);
         ToolsConfig effective = ToolsConfigMerger.merge(orgCfg, userCfg);
         Map<String, McpServerConfig> wanted = effective.getMcpServers();
-        Set<String> wantedNames = wanted == null ? Set.of() : new LinkedHashSet<>(wanted.keySet());
-
-        Set<String> cached = registry.cachedServerNames(userId);
-        // Remove servers that are no longer wanted.
-        for (String name : new HashSet<>(cached)) {
-            if (!wantedNames.contains(name)) {
-                unregister(agent, name);
-                registry.remove(userId, name);
-            }
+        Toolkit scopedToolkit = agent.getToolkit().copy();
+        Map<String, String> contributions = new LinkedHashMap<>();
+        if (wanted != null) {
+            wanted.entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey())
+                    .forEach(
+                            entry -> {
+                                McpClientWrapper wrapper =
+                                        registry.getOrCreate(
+                                                userId, entry.getKey(), entry.getValue());
+                                if (wrapper != null
+                                        && register(
+                                                scopedToolkit,
+                                                entry.getKey(),
+                                                wrapper,
+                                                entry.getValue())) {
+                                    contributions.put(
+                                            "mcp:" + entry.getKey(),
+                                            registry.configurationFingerprint(entry.getValue()));
+                                }
+                            });
         }
-        // Register servers not yet live. Re-registration of an already-cached server is a no-op
-        // (the toolkit keeps it); we still touch the toolkit only when the cache missed so we
-        // don't re-run the MCP handshake each turn.
-        for (String name : wantedNames) {
-            if (cached.contains(name)) {
-                continue;
-            }
-            McpServerConfig cfg = wanted.get(name);
-            McpClientWrapper wrapper = registry.getOrCreate(userId, name, cfg);
-            if (wrapper == null) {
-                continue;
-            }
-            register(agent, name, wrapper, cfg);
-        }
+        ToolFilter.apply(scopedToolkit, effective);
+        RuntimeToolScope.install(
+                ctx, scopedToolkit, registry.configurationFingerprint(effective), contributions);
     }
 
     private ToolsConfig readUserToolsJson(RuntimeContext ctx) {
@@ -179,25 +173,20 @@ public class DynamicMcpMiddleware implements MiddlewareBase {
         }
     }
 
-    private void register(Agent agent, String name, McpClientWrapper wrapper, McpServerConfig cfg) {
+    private boolean register(
+            Toolkit toolkit, String name, McpClientWrapper wrapper, McpServerConfig cfg) {
         try {
-            agent.getToolkit().registerMcpClient(wrapper).block();
-            log.info("Dynamic MCP: registered '{}' (transport={})", name, cfg.getTransport());
+            toolkit.registration().mcpClient(wrapper).enableTools(cfg.getEnableTools()).apply();
+            log.debug(
+                    "Dynamic MCP scope: registered '{}' (transport={})", name, cfg.getTransport());
+            return true;
         } catch (Exception e) {
             log.warn(
-                    "Dynamic MCP: failed to register '{}' ({}): {}",
+                    "Dynamic MCP scope: failed to register '{}' ({}): {}",
                     name,
                     cfg.getTransport(),
                     e.getMessage());
-        }
-    }
-
-    private void unregister(Agent agent, String name) {
-        try {
-            agent.getToolkit().removeMcpClient(name).block();
-            log.info("Dynamic MCP: unregistered '{}'", name);
-        } catch (Exception e) {
-            log.warn("Dynamic MCP: failed to unregister '{}': {}", name, e.getMessage());
+            return false;
         }
     }
 

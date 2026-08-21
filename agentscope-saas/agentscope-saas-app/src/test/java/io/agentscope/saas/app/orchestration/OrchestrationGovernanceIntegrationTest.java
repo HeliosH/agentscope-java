@@ -10,6 +10,7 @@
 package io.agentscope.saas.app.orchestration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.permission.PermissionBehavior;
@@ -155,6 +156,32 @@ class OrchestrationGovernanceIntegrationTest {
         assertThat(runStatus(fixture.runId())).isEqualTo("FAILED");
         assertThat(database.runState(fixture.runId()).failureCode())
                 .isEqualTo("RUN_DEADLINE_EXCEEDED");
+    }
+
+    @Test
+    void runtimeCapabilitySnapshotIsImmutableWithinOneAgentRun() throws Exception {
+        Fixture fixture = createGovernedRun(10);
+        String snapshot = "{\"schemaVersion\":1,\"modelName\":\"internal-model\"}";
+        String hash = "a".repeat(64);
+
+        governance.saveRuntimeCapabilitySnapshot(
+                ORG_ID, fixture.runId(), fixture.rootAgentRunId(), snapshot, hash);
+        governance.saveRuntimeCapabilitySnapshot(
+                ORG_ID, fixture.runId(), fixture.rootAgentRunId(), snapshot, hash);
+
+        var stored = database.runtimeCapabilityState(fixture.rootAgentRunId());
+        assertThat(stored.runtimeCapabilitySnapshotJson()).contains("internal-model");
+        assertThat(stored.runtimeCapabilitySnapshotHash()).isEqualTo(hash);
+        assertThatThrownBy(
+                        () ->
+                                governance.saveRuntimeCapabilitySnapshot(
+                                        ORG_ID,
+                                        fixture.runId(),
+                                        fixture.rootAgentRunId(),
+                                        "{\"schemaVersion\":1,\"modelName\":\"changed\"}",
+                                        "b".repeat(64)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("changed within one Agent Run");
     }
 
     private OrchestrationGovernanceService.BudgetDecision consumeAfterBarrier(

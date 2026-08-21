@@ -18,11 +18,19 @@ import io.agentscope.core.event.ModelCallEndEvent;
 import io.agentscope.core.event.ModelCallStartEvent;
 import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.MiddlewareBase;
+import io.agentscope.core.middleware.ModelCallInput;
 import io.agentscope.core.model.ChatUsage;
+import io.agentscope.core.model.ContextWindowAwareModel;
+import io.agentscope.core.model.ModelContextProfile;
 import io.agentscope.core.permission.PermissionContextState;
+import io.agentscope.core.tool.RuntimeToolScope;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
@@ -96,6 +104,75 @@ public final class OrchestrationGovernanceMiddleware implements MiddlewareBase {
                                         error));
     }
 
+    @Override
+    public Flux<AgentEvent> onModelCall(
+            Agent agent,
+            RuntimeContext ctx,
+            ModelCallInput input,
+            Function<ModelCallInput, Flux<AgentEvent>> next) {
+        Scope scope = scope(ctx);
+        if (scope != null && ctx.get(RuntimeCapabilityCaptured.class) == null) {
+            RuntimeCapabilitySnapshot snapshot = snapshot(ctx, input);
+            governance.saveRuntimeCapabilitySnapshot(
+                    scope.orgId(),
+                    scope.runId(),
+                    scope.agentRunId(),
+                    snapshot.json(),
+                    snapshot.hash());
+            ctx.put(
+                    RuntimeCapabilityCaptured.class,
+                    new RuntimeCapabilityCaptured(snapshot.hash()));
+        }
+        return next.apply(input);
+    }
+
+    private RuntimeCapabilitySnapshot snapshot(RuntimeContext ctx, ModelCallInput input) {
+        try {
+            RuntimeToolScope toolScope = RuntimeToolScope.current(ctx);
+            List<String> toolNames =
+                    input.tools() == null
+                            ? List.of()
+                            : input.tools().stream().map(tool -> tool.getName()).sorted().toList();
+            List<Object> orderedSchemas = new ArrayList<>();
+            if (input.tools() != null) {
+                input.tools().stream()
+                        .sorted(java.util.Comparator.comparing(tool -> tool.getName()))
+                        .forEach(orderedSchemas::add);
+            }
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("schemaVersion", 1);
+            payload.put("modelName", input.model().getModelName());
+            if (input.model() instanceof ContextWindowAwareModel aware) {
+                ModelContextProfile profile = aware.resolveContextProfile(ctx);
+                if (profile != null) {
+                    payload.put("modelId", profile.modelId());
+                    payload.put("contextWindowTokens", profile.contextWindowTokens());
+                    payload.put("maxOutputTokens", profile.maxOutputTokens());
+                    payload.put("safetyMarginTokens", profile.safetyMarginTokens());
+                }
+            }
+            payload.put("toolNames", toolNames);
+            payload.put(
+                    "toolSchemaHash",
+                    RuntimeToolScope.hash(objectMapper.writeValueAsString(orderedSchemas)));
+            payload.put(
+                    "modelVisibleContextHash",
+                    RuntimeToolScope.hash(objectMapper.writeValueAsString(input.messages())));
+            payload.put(
+                    "extensionSetHash",
+                    toolScope != null
+                            ? toolScope.configurationHash()
+                            : RuntimeToolScope.hash(String.join("\n", toolNames)));
+            payload.put(
+                    "contributions",
+                    toolScope != null ? toolScope.contributions() : Map.of("platform", "static"));
+            String json = objectMapper.writeValueAsString(payload);
+            return new RuntimeCapabilitySnapshot(json, RuntimeToolScope.hash(json));
+        } catch (Exception e) {
+            throw new IllegalStateException("Unable to capture runtime capability snapshot", e);
+        }
+    }
+
     private void restorePermissions(Agent agent, RuntimeContext ctx, Scope scope) {
         if (!(agent instanceof ReActAgent react)) {
             return;
@@ -142,6 +219,10 @@ public final class OrchestrationGovernanceMiddleware implements MiddlewareBase {
     }
 
     private record Scope(UUID orgId, UUID runId, UUID agentRunId) {}
+
+    private record RuntimeCapabilitySnapshot(String json, String hash) {}
+
+    private record RuntimeCapabilityCaptured(String hash) {}
 
     public static final class BudgetExceededException extends RuntimeException {
         private final String reason;

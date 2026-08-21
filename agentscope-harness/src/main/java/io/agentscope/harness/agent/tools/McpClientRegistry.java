@@ -15,8 +15,14 @@
  */
 package io.agentscope.harness.agent.tools;
 
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.agentscope.core.tool.mcp.McpClientWrapper;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -24,14 +30,14 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Owns the lifecycle of live {@link McpClientWrapper} instances so that a dynamic per-user MCP
- * middleware can re-resolve a tenant's {@code tools.json} every reasoning step without reconnecting
- * MCP servers on every turn.
+ * middleware can re-resolve a tenant's {@code tools.json} every Agent call without reconnecting MCP
+ * servers on every reasoning step.
  *
  * <p>Clients are cached keyed by {@code (userId, serverName)}; {@link #getOrCreate} builds (via
- * {@link McpServerRegistrar#buildWrapper}) and caches a wrapper on first sight, {@link #remove}
- * closes and drops a single server, and {@link #closeAll} tears down every client for a user
- * (intended for session/logout cleanup). All map access is synchronized on {@code this} — the
- * registry is shared across the singleton agent's concurrent per-user turns.
+ * {@link McpServerRegistrar#buildWrapper}) and caches a wrapper on first sight. Changed or removed
+ * versions are retired without immediate close so in-flight immutable tool scopes remain valid;
+ * {@link #closeAll} tears down current and retired clients for a user. All map access is synchronized
+ * on {@code this}.
  *
  * <p>Build failures are logged and return {@code null} rather than throwing, so one bad MCP entry
  * never aborts the agent's reasoning loop (same convention as {@link McpServerRegistrar#register}).
@@ -40,8 +46,17 @@ public class McpClientRegistry {
 
     private static final Logger log = LoggerFactory.getLogger(McpClientRegistry.class);
 
-    /** userId -> (serverName -> live wrapper). */
-    private final Map<UUID, Map<String, McpClientWrapper>> clients = new LinkedHashMap<>();
+    private static final ObjectMapper FINGERPRINT_MAPPER =
+            new ObjectMapper()
+                    .registerModule(new JavaTimeModule())
+                    .configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, true)
+                    .configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
+
+    /** userId -> (serverName -> current versioned client). */
+    private final Map<UUID, Map<String, ClientEntry>> clients = new LinkedHashMap<>();
+
+    /** Replaced clients remain alive for in-flight call snapshots and close with the user scope. */
+    private final Map<UUID, List<McpClientWrapper>> retiredClients = new LinkedHashMap<>();
 
     /**
      * Returns the cached wrapper for {@code (userId, serverName)}, or builds and caches one from
@@ -51,18 +66,24 @@ public class McpClientRegistry {
      */
     public synchronized McpClientWrapper getOrCreate(
             UUID userId, String serverName, McpServerConfig cfg) {
-        Map<String, McpClientWrapper> userMap =
+        Map<String, ClientEntry> userMap =
                 clients.computeIfAbsent(userId, k -> new LinkedHashMap<>());
-        McpClientWrapper existing = userMap.get(serverName);
-        if (existing != null) {
-            return existing;
+        String fingerprint = configurationFingerprint(cfg);
+        ClientEntry existing = userMap.get(serverName);
+        if (existing != null && existing.fingerprint().equals(fingerprint)) {
+            return existing.wrapper();
         }
         try {
             McpClientWrapper wrapper = McpServerRegistrar.buildWrapper(serverName, cfg);
             if (wrapper == null) {
                 return null;
             }
-            userMap.put(serverName, wrapper);
+            userMap.put(serverName, new ClientEntry(fingerprint, wrapper));
+            if (existing != null) {
+                retiredClients
+                        .computeIfAbsent(userId, ignored -> new ArrayList<>())
+                        .add(existing.wrapper());
+            }
             return wrapper;
         } catch (Exception e) {
             log.warn(
@@ -76,42 +97,53 @@ public class McpClientRegistry {
 
     /** Returns the cached wrapper for {@code (userId, serverName)} or {@code null} if absent. */
     public synchronized McpClientWrapper getIfPresent(UUID userId, String serverName) {
-        Map<String, McpClientWrapper> userMap = clients.get(userId);
-        return userMap == null ? null : userMap.get(serverName);
+        Map<String, ClientEntry> userMap = clients.get(userId);
+        ClientEntry entry = userMap == null ? null : userMap.get(serverName);
+        return entry == null ? null : entry.wrapper();
     }
 
-    /**
-     * Closes and drops the wrapper for {@code (userId, serverName)}, if present. Returns {@code
-     * true} if a client was removed.
-     */
+    /** Retires the current wrapper without invalidating in-flight call snapshots. */
     public synchronized boolean remove(UUID userId, String serverName) {
-        Map<String, McpClientWrapper> userMap = clients.get(userId);
+        Map<String, ClientEntry> userMap = clients.get(userId);
         if (userMap == null) {
             return false;
         }
-        McpClientWrapper wrapper = userMap.remove(serverName);
-        if (wrapper == null) {
+        ClientEntry entry = userMap.remove(serverName);
+        if (entry == null) {
             return false;
         }
-        closeQuietly(wrapper, serverName);
+        retiredClients.computeIfAbsent(userId, ignored -> new ArrayList<>()).add(entry.wrapper());
         return true;
     }
 
     /** Closes and drops every client owned by {@code userId}. */
     public synchronized void closeAll(UUID userId) {
-        Map<String, McpClientWrapper> userMap = clients.remove(userId);
-        if (userMap == null) {
-            return;
+        Map<String, ClientEntry> userMap = clients.remove(userId);
+        if (userMap != null) {
+            for (Map.Entry<String, ClientEntry> e : userMap.entrySet()) {
+                closeQuietly(e.getValue().wrapper(), e.getKey());
+            }
         }
-        for (Map.Entry<String, McpClientWrapper> e : userMap.entrySet()) {
-            closeQuietly(e.getValue(), e.getKey());
+        List<McpClientWrapper> retired = retiredClients.remove(userId);
+        if (retired != null) {
+            retired.forEach(wrapper -> closeQuietly(wrapper, "retired"));
         }
     }
 
     /** Returns the set of server names currently cached for {@code userId} (defensive copy). */
     public synchronized java.util.Set<String> cachedServerNames(UUID userId) {
-        Map<String, McpClientWrapper> userMap = clients.get(userId);
+        Map<String, ClientEntry> userMap = clients.get(userId);
         return userMap == null ? java.util.Set.of() : java.util.Set.copyOf(userMap.keySet());
+    }
+
+    /** Returns a deterministic hash without exposing credentials from the configuration. */
+    public String configurationFingerprint(Object configuration) {
+        try {
+            return io.agentscope.core.tool.RuntimeToolScope.hash(
+                    FINGERPRINT_MAPPER.writeValueAsString(configuration));
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Unable to fingerprint MCP configuration", e);
+        }
     }
 
     private static void closeQuietly(McpClientWrapper wrapper, String name) {
@@ -121,4 +153,6 @@ public class McpClientRegistry {
             log.warn("Error closing MCP client '{}': {}", name, e.getMessage());
         }
     }
+
+    private record ClientEntry(String fingerprint, McpClientWrapper wrapper) {}
 }

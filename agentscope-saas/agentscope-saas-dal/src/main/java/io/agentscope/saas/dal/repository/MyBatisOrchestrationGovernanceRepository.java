@@ -51,6 +51,19 @@ public class MyBatisOrchestrationGovernanceRepository implements OrchestrationGo
     }
 
     @Override
+    public boolean saveRuntimeCapabilitySnapshot(
+            UUID orgId,
+            UUID runId,
+            UUID agentRunId,
+            String snapshotJson,
+            String snapshotHash,
+            OffsetDateTime capturedAt) {
+        return mapper.saveRuntimeCapabilitySnapshot(
+                        orgId, runId, agentRunId, snapshotJson, snapshotHash, capturedAt)
+                == 1;
+    }
+
+    @Override
     public OrchestrationBudget lockBudget(UUID orgId, UUID runId, UUID agentRunId) {
         return mapper.lockBudget(orgId, runId, agentRunId).stream()
                 .findFirst()

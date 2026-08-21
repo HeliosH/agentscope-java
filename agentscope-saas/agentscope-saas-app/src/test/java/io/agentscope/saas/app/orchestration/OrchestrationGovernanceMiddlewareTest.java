@@ -27,10 +27,14 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.middleware.AgentInput;
+import io.agentscope.core.middleware.ModelCallInput;
+import io.agentscope.core.model.Model;
+import io.agentscope.core.model.ToolSchema;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -76,6 +80,47 @@ class OrchestrationGovernanceMiddlewareTest {
                 .verify(Duration.ofSeconds(2));
 
         verify(governance, times(2)).preflight(ORG_ID, RUN_ID, AGENT_RUN_ID);
+    }
+
+    @Test
+    void capturesOneImmutableRuntimeCapabilitySnapshotBeforeModelExecution() {
+        OrchestrationGovernanceService governance = mock(OrchestrationGovernanceService.class);
+        var middleware = new OrchestrationGovernanceMiddleware(governance, new ObjectMapper());
+        RuntimeContext context = context();
+        Model model = mock(Model.class);
+        when(model.getModelName()).thenReturn("enterprise-model");
+        ModelCallInput modelInput =
+                new ModelCallInput(
+                        input().msgs(),
+                        List.of(
+                                ToolSchema.builder()
+                                        .name("lookup")
+                                        .description("lookup")
+                                        .parameters(Map.of("type", "object"))
+                                        .build()),
+                        null,
+                        model);
+
+        middleware
+                .onModelCall(mock(Agent.class), context, modelInput, ignored -> Flux.empty())
+                .then()
+                .block();
+        middleware
+                .onModelCall(mock(Agent.class), context, modelInput, ignored -> Flux.empty())
+                .then()
+                .block();
+
+        var json = org.mockito.ArgumentCaptor.forClass(String.class);
+        var hash = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(governance)
+                .saveRuntimeCapabilitySnapshot(
+                        org.mockito.ArgumentMatchers.eq(ORG_ID),
+                        org.mockito.ArgumentMatchers.eq(RUN_ID),
+                        org.mockito.ArgumentMatchers.eq(AGENT_RUN_ID),
+                        json.capture(),
+                        hash.capture());
+        assertThat(json.getValue()).contains("enterprise-model", "lookup", "toolSchemaHash");
+        assertThat(hash.getValue()).hasSize(64);
     }
 
     private static RuntimeContext context() {

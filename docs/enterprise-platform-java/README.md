@@ -53,6 +53,7 @@ QwenPaw 是 **Python 产品**。框架有"等价物" ≠ QwenPaw 代码能直接
 | 20 | [DDD 分层与 MyBatis 数据访问重构方案](./20-ddd-mybatis-migration-plan.md) | 领域、应用、DAL、服务接口模块边界，MyBatis 统一规范、迁移批次与完成定义 |
 | 21 | [QwenPaw 后端能力差距收敛](./21-qwenpaw-backend-gap-closure.md) | QwenPaw 对比、后端能力补齐与验证边界 |
 | 22 | [CubeSandbox 持久化、Skills 与恢复方案](./22-cubesandbox-persistence-skills-practice.md) | host-mount 安全边界、公共 Skills 覆盖、MinIO 冷备、网络与重建验收 |
+| 23 | [企业扩展运行时优化落地方案](./23-enterprise-extension-runtime-plan.md) | 请求级工具隔离、可撤销扩展、依赖治理、运行能力快照与企业插件路线图 |
 
 ## 一页速读
 
