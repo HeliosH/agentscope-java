@@ -83,6 +83,11 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
         this.observer = observer != null ? observer : SandboxLifecycleObserver.noop();
     }
 
+    /** Returns a lifecycle bound to another filesystem proxy but the same sandbox state slot. */
+    public SandboxLifecycleMiddleware fork(SandboxBackedFilesystem childFilesystemProxy) {
+        return new SandboxLifecycleMiddleware(sandboxManager, childFilesystemProxy, observer);
+    }
+
     /**
      * Acquires the sandbox for the current call. Called from
      * {@code ReActAgent.beforeAgentExecution()} to ensure the sandbox is available
@@ -93,6 +98,20 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
     public void acquireForCall(RuntimeContext ctx) {
         if (ctx == null) {
             return;
+        }
+        Sandbox inherited = ctx.get(Sandbox.class);
+        if (inherited != null && inherited.isRunning()) {
+            ctx.put(SandboxCallState.class, SandboxCallState.borrowed(inherited));
+            filesystemProxy.setSandbox(inherited);
+            log.debug(
+                    "[sandbox-mw] Borrowed active parent sandbox {}",
+                    inherited.getState() != null ? inherited.getState().getSessionId() : "?");
+            return;
+        }
+        if (inherited != null) {
+            // A detached/background child may start after the parent has released its sandbox.
+            // Drop the stale binding and acquire from the shared persisted sandbox runtime below.
+            ctx.put(Sandbox.class, (Sandbox) null);
         }
         SandboxContext sandboxContext = ctx.get(SandboxContext.class);
         if (sandboxContext == null) {
@@ -108,7 +127,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
                 restoreWorkspace(ctx, sandbox);
                 long durationNanos = System.nanoTime() - acquireStartNanos;
                 ctx.put(Sandbox.class, sandbox);
-                ctx.put(SandboxCallState.class, new SandboxCallState(result));
+                ctx.put(SandboxCallState.class, SandboxCallState.owned(result));
                 filesystemProxy.setSandbox(sandbox);
                 legacyAcquireResult.set(result);
                 notifyObserver(
@@ -192,6 +211,16 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
      */
     public void releaseForCall(RuntimeContext ctx) {
         SandboxCallState callState = ctx != null ? ctx.get(SandboxCallState.class) : null;
+        if (callState != null && callState.borrowed()) {
+            if (ctx != null) {
+                ctx.put(Sandbox.class, (Sandbox) null);
+                ctx.put(SandboxCallState.class, (SandboxCallState) null);
+            }
+            if (filesystemProxy.getSandbox() == callState.sandbox()) {
+                filesystemProxy.setSandbox(null);
+            }
+            return;
+        }
         SandboxAcquireResult result =
                 callState != null ? callState.result() : legacyAcquireResult.getAndSet(null);
         if (result == null) {
@@ -248,5 +277,15 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
         }
     }
 
-    private record SandboxCallState(SandboxAcquireResult result) {}
+    private record SandboxCallState(
+            SandboxAcquireResult result, Sandbox sandbox, boolean borrowed) {
+
+        private static SandboxCallState owned(SandboxAcquireResult result) {
+            return new SandboxCallState(result, result.getSandbox(), false);
+        }
+
+        private static SandboxCallState borrowed(Sandbox sandbox) {
+            return new SandboxCallState(null, sandbox, true);
+        }
+    }
 }

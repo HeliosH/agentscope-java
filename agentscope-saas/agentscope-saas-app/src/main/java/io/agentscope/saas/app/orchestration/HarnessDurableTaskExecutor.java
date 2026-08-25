@@ -142,6 +142,12 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
                                     contextBuilder.put(WorkspaceRestorePlan.class, restorePlan));
         }
         applyWorkspaceIsolation(contextBuilder, request);
+        sharedSandboxIsolationKey(request)
+                .ifPresent(
+                        key ->
+                                contextBuilder.put(
+                                        SandboxIsolationOverride.class,
+                                        new SandboxIsolationOverride(key)));
         RuntimeContext context = contextBuilder.build();
         Msg input =
                 Msg.builder()
@@ -315,6 +321,19 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
             case USER_SHARED_READ_ONLY ->
                     throw new IllegalStateException(
                             "USER_SHARED_READ_ONLY requires a read-only workspace adapter");
+        }
+    }
+
+    private Optional<String> sharedSandboxIsolationKey(ExecutionRequest request) {
+        try {
+            JsonNode root = objectMapper.readTree(request.inputJson());
+            if (root.isTextual()) {
+                root = objectMapper.readTree(root.textValue());
+            }
+            String key = root.path("_runtime").path("sandboxIsolationKey").asText("").trim();
+            return key.isEmpty() ? Optional.empty() : Optional.of(key);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Unable to read durable task sandbox binding", e);
         }
     }
 

@@ -41,7 +41,8 @@ class TaskContextAssemblerTest {
                         2,
                         10_000,
                         "Write report",
-                        "{\"topic\":\"runtime\"}",
+                        "{\"topic\":\"runtime\",\"_runtime\":{"
+                                + "\"sandboxIsolationKey\":\"run/secret\"}}",
                         WorkspaceIsolationMode.ATTEMPT_ISOLATED,
                         "[\"report.pdf\"]",
                         "[\"sources are traceable\"]",
@@ -56,6 +57,7 @@ class TaskContextAssemblerTest {
 
         assertThat(context)
                 .contains("report.pdf", "sources are traceable", "file-version://1")
+                .doesNotContain("sandboxIsolationKey", "run/secret", "_runtime")
                 .doesNotContain("x".repeat(5000));
         assertThat(context.length()).isLessThan(6000);
     }

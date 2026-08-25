@@ -21,8 +21,8 @@ import io.agentscope.harness.agent.IsolationScope;
  * Pluggable concurrency guard for sandbox execution slots.
  *
  * <p>A guard controls how many concurrent executions are allowed for a given
- * {@link SandboxIsolationKey}. The default {@link #noop()} imposes no restriction, preserving
- * existing behaviour.
+ * {@link SandboxIsolationKey}. Harness agents use {@link LocalSandboxExecutionGuard} when no
+ * distributed implementation is configured.
  *
  * <p>This extension point is primarily useful for {@link IsolationScope#USER},
  * {@link IsolationScope#AGENT} and {@link IsolationScope#GLOBAL} scopes, where multiple
@@ -72,8 +72,8 @@ public interface SandboxExecutionGuard {
     SandboxLease tryEnter(SandboxIsolationKey key) throws InterruptedException;
 
     /**
-     * Returns the default no-op guard: execution is always allowed immediately and the returned
-     * {@link SandboxLease} is a no-op. This is the built-in default — no configuration required.
+     * Returns a no-op guard: execution is always allowed immediately and the returned
+     * {@link SandboxLease} is a no-op.
      */
     static SandboxExecutionGuard noop() {
         return NoopSandboxExecutionGuard.INSTANCE;

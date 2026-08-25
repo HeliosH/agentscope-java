@@ -100,7 +100,7 @@ public class RedisConfig {
      * Redis-backed distributed lock that serialises concurrent sandbox access for the same isolation
      * slot. Required for multi-replica deployments so that two instances never resume the same
      * sandbox state simultaneously. When Redis is disabled (local profile), no guard bean exists and
-     * the framework falls back to {@code SandboxExecutionGuard.noop()}.
+     * the harness uses its single-JVM execution guard.
      */
     @Bean
     @ConditionalOnProperty(prefix = "saas.redis", name = "enabled", havingValue = "true")

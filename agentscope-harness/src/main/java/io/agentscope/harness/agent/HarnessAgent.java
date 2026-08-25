@@ -71,6 +71,7 @@ import io.agentscope.harness.agent.middleware.SubagentEntry;
 import io.agentscope.harness.agent.middleware.SubagentsMiddleware;
 import io.agentscope.harness.agent.middleware.ToolResultEvictionMiddleware;
 import io.agentscope.harness.agent.middleware.WorkspaceContextMiddleware;
+import io.agentscope.harness.agent.sandbox.LocalSandboxExecutionGuard;
 import io.agentscope.harness.agent.sandbox.SandboxContext;
 import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
 import io.agentscope.harness.agent.sandbox.SandboxLifecycleObserver;
@@ -843,7 +844,7 @@ public class HarnessAgent implements Agent, AutoCloseable {
                 RuntimeContext.builder()
                         .sessionId(ctxSessionId)
                         .userId(ctx.getUserId())
-                        .putAll(ctx.getExtra())
+                        .copyAttributesFrom(ctx)
                         .put(SandboxContext.class, sandboxCtx);
         if (fs != null) {
             b.put(AbstractFilesystem.class, fs);
@@ -999,6 +1000,7 @@ public class HarnessAgent implements Agent, AutoCloseable {
         Path workspace;
         String environmentMemory;
         AbstractFilesystem abstractFilesystem;
+        HarnessAgentBuilderSupport.SandboxRuntimeBinding inheritedSandboxRuntime;
         boolean leafSubagent = false;
         boolean agentTracingLogEnabled = true;
         CompactionConfig compactionConfig = null;
@@ -1829,6 +1831,14 @@ public class HarnessAgent implements Agent, AutoCloseable {
             return this;
         }
 
+        /** Installs the deployment sandbox runtime on a materialized leaf subagent. */
+        Builder inheritSandboxRuntime(
+                HarnessAgentBuilderSupport.SandboxRuntimeBinding sandboxRuntime) {
+            this.inheritedSandboxRuntime = sandboxRuntime;
+            this.abstractFilesystem = sandboxRuntime.filesystem();
+            return this;
+        }
+
         /**
          * Builds the subagent entries (general-purpose + declared + custom factories) without
          * constructing the full agent. Useful for callers that need to extract subagent factories
@@ -1961,7 +1971,7 @@ public class HarnessAgent implements Agent, AutoCloseable {
                 SandboxExecutionGuard executionGuard =
                         sandboxFilesystemSpec.getExecutionGuard() != null
                                 ? sandboxFilesystemSpec.getExecutionGuard()
-                                : SandboxExecutionGuard.noop();
+                                : new LocalSandboxExecutionGuard();
                 SandboxManager sandboxManager =
                         new SandboxManager(
                                 defaultSandboxContext.getClient(),
@@ -1972,7 +1982,18 @@ public class HarnessAgent implements Agent, AutoCloseable {
                 sandboxLifecycleMw =
                         new SandboxLifecycleMiddleware(
                                 sandboxManager, capturedSandboxFs, sandboxLifecycleObserver);
+            } else if (inheritedSandboxRuntime != null) {
+                capturedSandboxFs = inheritedSandboxRuntime.filesystem();
+                sandboxLifecycleMw = inheritedSandboxRuntime.lifecycle();
+                defaultSandboxContext = inheritedSandboxRuntime.context();
             }
+            HarnessAgentBuilderSupport.SandboxRuntimeBinding capturedSandboxRuntime =
+                    capturedSandboxFs != null
+                                    && sandboxLifecycleMw != null
+                                    && defaultSandboxContext != null
+                            ? new HarnessAgentBuilderSupport.SandboxRuntimeBinding(
+                                    capturedSandboxFs, sandboxLifecycleMw, defaultSandboxContext)
+                            : null;
             WorkspaceManager wsManager =
                     new WorkspaceManager(resolvedWorkspace, filesystem, workspaceIndex, nsFactory);
             wsManager.validate();
@@ -2074,7 +2095,7 @@ public class HarnessAgent implements Agent, AutoCloseable {
                 if (filesystem != null && !disableDynamicSubagents) {
                     DynamicSubagentsMiddleware dynMw =
                             HarnessAgentBuilderSupport.buildDynamicSubagentsMiddleware(
-                                    this, wsManager, resolvedWorkspace, capturedSandboxFs);
+                                    this, wsManager, resolvedWorkspace, capturedSandboxRuntime);
                     if (dynMw != null) {
                         inner.middleware(dynMw);
                         for (Object t : dynMw.getTools()) {
@@ -2085,7 +2106,7 @@ public class HarnessAgent implements Agent, AutoCloseable {
                 } else {
                     SubagentsMiddleware subagentsMw =
                             HarnessAgentBuilderSupport.buildSubagentsMiddleware(
-                                    this, wsManager, resolvedWorkspace, capturedSandboxFs);
+                                    this, wsManager, resolvedWorkspace, capturedSandboxRuntime);
                     if (subagentsMw != null) {
                         inner.middleware(subagentsMw);
                         for (Object t : subagentsMw.getTools()) {

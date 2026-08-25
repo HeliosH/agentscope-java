@@ -112,6 +112,32 @@ class SandboxLifecycleMiddlewareTest {
     }
 
     @Test
+    void nestedSubagentBorrowsActiveSandboxWithoutAcquiringOrReleasingIt() {
+        RecordingSandbox sandbox = new RecordingSandbox("parent");
+        sandbox.running = true;
+        RecordingSandboxManager manager = new RecordingSandboxManager(new SandboxAcquireResult[0]);
+        SandboxBackedFilesystem filesystem = new SandboxBackedFilesystem();
+        SandboxLifecycleMiddleware middleware = new SandboxLifecycleMiddleware(manager, filesystem);
+        RuntimeContext childCtx =
+                RuntimeContext.builder()
+                        .put(Sandbox.class, sandbox)
+                        .put(SandboxContext.class, SandboxContext.builder().build())
+                        .build();
+
+        middleware.acquireForCall(childCtx);
+
+        assertSame(sandbox, filesystem.getSandbox());
+        assertTrue(manager.acquisitions.isEmpty());
+
+        middleware.releaseForCall(childCtx);
+
+        assertTrue(manager.released.isEmpty());
+        assertNull(childCtx.get(Sandbox.class));
+        assertNull(filesystem.getSandbox());
+        assertTrue(sandbox.isRunning(), "the parent remains the owner of the borrowed sandbox");
+    }
+
+    @Test
     void observerRecordsReleaseProjectionFailure() {
         RecordingSandbox sandbox = new RecordingSandbox("a");
         RecordingSandboxManager manager = new RecordingSandboxManager(sandbox);

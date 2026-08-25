@@ -23,8 +23,11 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 
 /**
  * Test-only {@link Sandbox} that uses a local temp directory as the workspace.
@@ -109,7 +112,22 @@ public class InMemorySandbox implements Sandbox {
 
     @Override
     public void hydrateWorkspace(InputStream archive) throws Exception {
-        // no-op
+        try (TarArchiveInputStream tar = new TarArchiveInputStream(archive)) {
+            TarArchiveEntry entry;
+            while ((entry = tar.getNextTarEntry()) != null) {
+                Path target = workspaceDir.resolve(entry.getName()).normalize();
+                if (!target.startsWith(workspaceDir)) {
+                    throw new SecurityException(
+                            "Archive entry escapes sandbox workspace: " + entry.getName());
+                }
+                if (entry.isDirectory()) {
+                    Files.createDirectories(target);
+                    continue;
+                }
+                Files.createDirectories(target.getParent());
+                Files.copy(tar, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
     }
 
     public Path getWorkspaceDir() {

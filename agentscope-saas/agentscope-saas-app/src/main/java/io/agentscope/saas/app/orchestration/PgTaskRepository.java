@@ -12,6 +12,9 @@ package io.agentscope.saas.app.orchestration;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.harness.agent.IsolationScope;
+import io.agentscope.harness.agent.sandbox.SandboxContext;
+import io.agentscope.harness.agent.sandbox.SandboxIsolationOverride;
 import io.agentscope.harness.agent.subagent.task.BackgroundTask;
 import io.agentscope.harness.agent.subagent.task.TaskDelivery;
 import io.agentscope.harness.agent.subagent.task.TaskRepository;
@@ -26,8 +29,10 @@ import io.agentscope.saas.orchestration.RunOrchestrationService;
 import io.agentscope.saas.sandbox.SandboxRuntimeAttributes;
 import java.time.OffsetDateTime;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import org.springframework.stereotype.Component;
@@ -82,12 +87,13 @@ public class PgTaskRepository implements TaskRepository {
         TenantContext tenant = scope.tenant();
         String inputJson;
         try {
-            inputJson =
-                    objectMapper.writeValueAsString(
-                            Map.of(
-                                    "prompt", local.input(),
-                                    "externalTaskId", taskId,
-                                    "subSessionId", local.subSessionId()));
+            Map<String, Object> input = new LinkedHashMap<>();
+            input.put("prompt", local.input());
+            input.put("externalTaskId", taskId);
+            input.put("subSessionId", local.subSessionId());
+            sharedSandboxIsolationKey(rc)
+                    .ifPresent(key -> input.put("_runtime", Map.of("sandboxIsolationKey", key)));
+            inputJson = objectMapper.writeValueAsString(input);
         } catch (Exception e) {
             throw new IllegalArgumentException("Unable to serialize durable subagent input", e);
         }
@@ -102,6 +108,21 @@ public class PgTaskRepository implements TaskRepository {
                 inputJson,
                 subagentPolicy());
         return getTask(rc, sessionId, taskId);
+    }
+
+    private static Optional<String> sharedSandboxIsolationKey(RuntimeContext context) {
+        SandboxIsolationOverride override = context.get(SandboxIsolationOverride.class);
+        if (override != null) {
+            return Optional.of(override.key());
+        }
+        SandboxContext sandbox = context.get(SandboxContext.class);
+        if (sandbox != null
+                && sandbox.getIsolationScope() == IsolationScope.SESSION
+                && context.getSessionId() != null
+                && !context.getSessionId().isBlank()) {
+            return Optional.of(context.getSessionId());
+        }
+        return Optional.empty();
     }
 
     @Override

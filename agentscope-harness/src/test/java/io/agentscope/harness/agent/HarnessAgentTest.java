@@ -30,17 +30,24 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
+import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ToolSchema;
 import io.agentscope.core.state.AgentStateStore;
+import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.core.tool.AgentTool;
 import io.agentscope.core.tool.Toolkit;
+import io.agentscope.harness.agent.example.support.InMemorySandboxClient;
+import io.agentscope.harness.agent.example.support.InMemorySandboxFilesystemSpec;
 import io.agentscope.harness.agent.filesystem.local.LocalFilesystem;
 import io.agentscope.harness.agent.filesystem.remote.store.InMemoryStore;
+import io.agentscope.harness.agent.filesystem.sandbox.SandboxBackedFilesystem;
 import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
 import io.agentscope.harness.agent.middleware.SubagentEntry;
+import io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan;
+import io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan.WorkspaceFile;
 import io.agentscope.harness.agent.subagent.AgentSpecLoader;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.WorkspaceMode;
@@ -62,6 +69,112 @@ import reactor.core.publisher.Flux;
 class HarnessAgentTest {
 
     @TempDir Path workspace;
+
+    @Test
+    void sandboxedParentAndSubagentUseTheSamePersistedSandbox() {
+        InMemorySandboxClient client = new InMemorySandboxClient();
+        Model childModel = mock(Model.class);
+        when(childModel.getModelName()).thenReturn("sandbox-child-model");
+        Map<String, Object> readInput =
+                Map.of("path", "inputs/report.txt", "offset", 0, "limit", 0);
+        ToolUseBlock readCall =
+                ToolUseBlock.builder()
+                        .id("read-upload")
+                        .name("read_file")
+                        .input(readInput)
+                        .content(io.agentscope.core.util.JsonUtils.getJsonCodec().toJson(readInput))
+                        .build();
+        when(childModel.stream(anyList(), any(), any()))
+                .thenReturn(
+                        Flux.just(
+                                new ChatResponse(
+                                        "parent-turn",
+                                        List.of(TextBlock.builder().text("parent done").build()),
+                                        null,
+                                        Map.of(),
+                                        "stop")),
+                        Flux.just(
+                                new ChatResponse(
+                                        "read-turn",
+                                        List.of(readCall),
+                                        null,
+                                        Map.of(),
+                                        "tool_use")),
+                        Flux.just(
+                                new ChatResponse(
+                                        "done-turn",
+                                        List.of(TextBlock.builder().text("done").build()),
+                                        null,
+                                        Map.of(),
+                                        "stop")));
+        HarnessAgent parent =
+                HarnessAgent.builder()
+                        .name("parent")
+                        .model(childModel)
+                        .workspace(workspace)
+                        .stateStore(new InMemoryAgentStateStore())
+                        .disableMemoryHooks()
+                        .filesystem(new InMemorySandboxFilesystemSpec(client))
+                        .subagent(
+                                SubagentDeclaration.builder()
+                                        .name("isolated-worker")
+                                        .description("sandboxed worker")
+                                        .workspaceMode(WorkspaceMode.ISOLATED)
+                                        .inlineAgentsBody("Handle delegated work.")
+                                        .build())
+                        .build();
+
+        RuntimeContext parentContext =
+                RuntimeContext.builder()
+                        .userId("user-1")
+                        .sessionId("parent-session")
+                        .put(
+                                WorkspaceRestorePlan.class,
+                                new WorkspaceRestorePlan(
+                                        "workspace-catalog://parent/attempt",
+                                        "version-1",
+                                        List.of(
+                                                new WorkspaceFile(
+                                                        "/inputs/report.txt",
+                                                        "uploaded-file-visible"
+                                                                .getBytes(
+                                                                        java.nio.charset
+                                                                                .StandardCharsets
+                                                                                .UTF_8)))))
+                        .build();
+        parent.call(userText("prepare"), parentContext).block();
+
+        HarnessAgent child =
+                (HarnessAgent)
+                        parent.createSubagentIfPresent("isolated-worker", parentContext)
+                                .orElseThrow();
+
+        assertTrue(child.getWorkspaceManager().getFilesystem() instanceof SandboxBackedFilesystem);
+        assertFalse(
+                child.getWorkspaceManager().getFilesystem()
+                        == parent.getWorkspaceManager().getFilesystem(),
+                "each agent needs its own filesystem proxy for concurrent calls");
+
+        child.call(
+                        userText("run"),
+                        RuntimeContext.builder()
+                                .userId("user-1")
+                                .sessionId("child-session")
+                                .build())
+                .block();
+
+        assertEquals(1, client.getCreateCount(), "the child must not create another sandbox");
+        assertEquals(1, client.getResumeCount(), "the child must resume the parent's sandbox");
+        ArgumentCaptor<List<Msg>> childMessages = ArgumentCaptor.forClass(List.class);
+        verify(childModel, atLeast(3)).stream(childMessages.capture(), any(), any());
+        String serializedMessages =
+                io.agentscope.core.util.JsonUtils.getJsonCodec()
+                        .toJson(childMessages.getAllValues());
+        assertTrue(
+                serializedMessages.contains("uploaded-file-visible"),
+                "the restored parent file must be readable inside the child sandbox: "
+                        + serializedMessages);
+    }
 
     @Test
     void workspaceAgentsMd_readableViaWorkspaceManager() throws Exception {

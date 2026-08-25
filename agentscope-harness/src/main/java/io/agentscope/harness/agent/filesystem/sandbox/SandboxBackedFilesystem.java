@@ -90,6 +90,20 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
     }
 
     /**
+     * Creates an unbound proxy with the same durable projection configuration.
+     *
+     * <p>Subagents need their own proxy because their calls can overlap, but they must still use
+     * the deployment-selected sandbox backend and the same tenant projection store. The live
+     * {@link Sandbox} remains call-scoped and is deliberately not copied.
+     */
+    public SandboxBackedFilesystem fork() {
+        SandboxBackedFilesystem child = new SandboxBackedFilesystem();
+        child.remoteFallback = this.remoteFallback;
+        child.projectionSink = this.projectionSink;
+        return child;
+    }
+
+    /**
      * Wires the remote projection backend. Must be called once at agent build time, before any
      * call. Passing {@code null} disables projection (the legacy behaviour: all out-of-call IO
      * throws).

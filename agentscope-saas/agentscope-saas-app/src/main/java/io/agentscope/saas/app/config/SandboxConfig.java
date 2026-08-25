@@ -288,7 +288,7 @@ public class SandboxConfig {
                 "Sandbox filesystem spec: type={}, scope={}, guard={}, snapshot={}",
                 sb.getType(),
                 scope,
-                guard != null ? "redis" : "none",
+                guard != null ? "redis" : "local",
                 snapshotSpec != null ? snapshotBackend(sb) : "none");
 
         return spec;

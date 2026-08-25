@@ -25,7 +25,7 @@ public final class TaskContextAssembler {
         Map<String, Object> context = new LinkedHashMap<>();
         context.put("taskId", request.taskId().toString());
         context.put("goal", request.title());
-        context.put("input", jsonValue(request.inputJson(), Map.of()));
+        context.put("input", publicTaskInput(request.inputJson()));
         context.put("expectedOutputs", jsonValue(request.expectedOutputJson(), List.of()));
         context.put("acceptanceCriteria", jsonValue(request.acceptanceJson(), List.of()));
         context.put(
@@ -61,6 +61,16 @@ public final class TaskContextAssembler {
                         truncate(dependency.outputJson(), MAX_DEPENDENCY_OUTPUT_CHARS), Map.of()));
         value.put("artifactRefs", dependency.artifactRefs());
         return value;
+    }
+
+    private static Object publicTaskInput(String inputJson) {
+        Object input = jsonValue(inputJson, Map.of());
+        if (!(input instanceof Map<?, ?> values)) {
+            return input;
+        }
+        Map<Object, Object> publicValues = new LinkedHashMap<>(values);
+        publicValues.remove("_runtime");
+        return publicValues;
     }
 
     private static Object jsonValue(String json, Object fallback) {

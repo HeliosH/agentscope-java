@@ -36,6 +36,7 @@ import io.agentscope.core.tool.ToolParam;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.gateway.SubagentGatewayBridge;
 import io.agentscope.harness.agent.gateway.channel.OutboundAddress;
+import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.subagent.DefaultAgentManager;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.task.BackgroundTask;
@@ -357,7 +358,8 @@ public class AgentSpawnTool {
                                                                 agent,
                                                                 sessionId,
                                                                 currentUserId,
-                                                                capturedTask)
+                                                                capturedTask,
+                                                                detachedContext(runtimeContext))
                                                         .block();
                                         return reply != null ? reply.getTextContent() : "";
                                     } catch (RuntimeException e) {
@@ -522,7 +524,8 @@ public class AgentSpawnTool {
                                                                 spawned.agent(),
                                                                 spawned.sessionId(),
                                                                 currentUserId,
-                                                                capturedMessage)
+                                                                capturedMessage,
+                                                                detachedContext(runtimeContext))
                                                         .block();
                                         return reply != null ? reply.getTextContent() : "";
                                     } catch (RuntimeException e) {
@@ -643,7 +646,7 @@ public class AgentSpawnTool {
                                         .withSource(sourcePath));
 
                         return agentManager
-                                .invokeAgent(agent, sessionId, userId, prompt)
+                                .invokeAgent(agent, sessionId, userId, prompt, parentCtx)
                                 .contextWrite(
                                         c ->
                                                 c.put(
@@ -668,7 +671,8 @@ public class AgentSpawnTool {
                                         userId,
                                         prompt,
                                         childSource,
-                                        StreamOptions.defaults())
+                                        StreamOptions.defaults(),
+                                        parentCtx)
                                 .doOnNext(
                                         e -> {
                                             log.debug(
@@ -686,11 +690,12 @@ public class AgentSpawnTool {
                                         Mono.defer(
                                                 () ->
                                                         agentManager.invokeAgent(
-                                                                agent, sessionId, userId, prompt)));
+                                                                agent, sessionId, userId, prompt,
+                                                                parentCtx)));
                     }
 
                     // ── Path 3: non-streaming ──
-                    return agentManager.invokeAgent(agent, sessionId, userId, prompt);
+                    return agentManager.invokeAgent(agent, sessionId, userId, prompt, parentCtx);
                 });
     }
 
@@ -862,6 +867,22 @@ public class AgentSpawnTool {
     }
 
     /**
+     * Preserves tenant and sandbox-slot metadata for a background child but removes the live parent
+     * binding. The child may start after the parent call and resumes the same sandbox through the
+     * inherited lifecycle.
+     */
+    private static RuntimeContext detachedContext(RuntimeContext parent) {
+        RuntimeContext detached =
+                RuntimeContext.builder()
+                        .sessionId(parent != null ? parent.getSessionId() : null)
+                        .userId(parent != null ? parent.getUserId() : null)
+                        .copyAttributesFrom(parent)
+                        .build();
+        detached.put(Sandbox.class, (Sandbox) null);
+        return detached;
+    }
+
+    /**
      * Executes a task against a previously spawned (or reused) subagent. Factored out of
      * {@code agentSpawn} to handle the deterministic-key reuse path without duplicating the
      * sync/async/remote dispatch logic.
@@ -900,7 +921,8 @@ public class AgentSpawnTool {
                                                                 spawned.agent(),
                                                                 spawned.sessionId(),
                                                                 currentUserId,
-                                                                capturedTask)
+                                                                capturedTask,
+                                                                detachedContext(runtimeContext))
                                                         .block();
                                         return reply != null ? reply.getTextContent() : "";
                                     } catch (RuntimeException e) {

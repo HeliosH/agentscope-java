@@ -349,7 +349,7 @@ public class RunOrchestrationService {
                         "{}",
                         "{}",
                         "[]",
-                        WorkspaceIsolationMode.ATTEMPT_ISOLATED.name(),
+                        WorkspaceIsolationMode.NONE.name(),
                         3,
                         "IDEMPOTENT",
                         2,

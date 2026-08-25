@@ -107,8 +107,9 @@ class HarnessDurableTaskExecutorTest {
                         2,
                         100_000,
                         "Research",
-                        "{\"prompt\":\"Investigate the issue\"}",
-                        WorkspaceIsolationMode.ATTEMPT_ISOLATED);
+                        "{\"prompt\":\"Investigate the issue\","
+                                + "\"_runtime\":{\"sandboxIsolationKey\":\"run/shared\"}}",
+                        WorkspaceIsolationMode.NONE);
 
         String previousOrgId = UUID.randomUUID().toString();
         TenantContextHolder.setOrgId(previousOrgId);
@@ -121,7 +122,7 @@ class HarnessDurableTaskExecutorTest {
         assertThat(context.getValue().getSessionId()).isEqualTo("sub-session-1");
         assertThat(context.getValue().getUserId()).isEqualTo(userId.toString());
         assertThat(context.getValue().get(SandboxIsolationOverride.class).key())
-                .isEqualTo("attempt/" + request.attemptId());
+                .isEqualTo("run/shared");
         String contextAgentRunId =
                 context.getValue().get(RunOrchestrationService.ATTR_AGENT_RUN_ID);
         assertThat(contextAgentRunId).isEqualTo(agentRunId.toString());

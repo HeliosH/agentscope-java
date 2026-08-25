@@ -177,7 +177,17 @@ public final class DefaultAgentManager {
      * @param prompt the user message to send
      */
     public Mono<Msg> invokeAgent(Agent agent, String sessionId, String userId, String prompt) {
-        RuntimeContext ctx = RuntimeContext.builder().sessionId(sessionId).userId(userId).build();
+        return invokeAgent(agent, sessionId, userId, prompt, null);
+    }
+
+    /** Invokes a child while preserving the parent's call-scoped infrastructure attributes. */
+    public Mono<Msg> invokeAgent(
+            Agent agent,
+            String sessionId,
+            String userId,
+            String prompt,
+            RuntimeContext parentContext) {
+        RuntimeContext ctx = childContext(sessionId, userId, parentContext);
         if (agent instanceof ReActAgent react) {
             return react.call(List.of(userMessage(prompt)), ctx);
         }
@@ -213,9 +223,21 @@ public final class DefaultAgentManager {
             String prompt,
             EventSource source,
             StreamOptions options) {
+        return invokeAgentStream(agent, sessionId, userId, prompt, source, options, null);
+    }
+
+    /** Streaming counterpart of the parent-context-aware {@link #invokeAgent} overload. */
+    public Flux<Event> invokeAgentStream(
+            Agent agent,
+            String sessionId,
+            String userId,
+            String prompt,
+            EventSource source,
+            StreamOptions options,
+            RuntimeContext parentContext) {
         Flux<Event> childFlux;
         StreamOptions effective = options != null ? options : StreamOptions.defaults();
-        RuntimeContext ctx = RuntimeContext.builder().sessionId(sessionId).userId(userId).build();
+        RuntimeContext ctx = childContext(sessionId, userId, parentContext);
         if (agent instanceof ReActAgent react) {
             childFlux = react.stream(List.of(userMessage(prompt)), effective, ctx);
         } else if (agent instanceof HarnessAgent harness) {
@@ -224,6 +246,15 @@ public final class DefaultAgentManager {
             childFlux = agent.stream(List.of(userMessage(prompt)), effective);
         }
         return childFlux.map(event -> event.withSource(source));
+    }
+
+    private static RuntimeContext childContext(
+            String sessionId, String userId, RuntimeContext parentContext) {
+        return RuntimeContext.builder()
+                .sessionId(sessionId)
+                .userId(userId)
+                .copyAttributesFrom(parentContext)
+                .build();
     }
 
     public WorkspaceManager getWorkspaceManager() {

@@ -66,6 +66,9 @@ public class RuntimeContext {
         if (builder.stringExtras != null) {
             this.stringAttributes.putAll(builder.stringExtras);
         }
+        for (Map.Entry<Class<?>, Map<String, Object>> e : builder.typedExtras.entrySet()) {
+            this.typedAttributes.put(e.getKey(), new ConcurrentHashMap<>(e.getValue()));
+        }
         for (Map.Entry<Class<?>, Object> e : builder.typedSingletons.entrySet()) {
             if (e.getValue() == null) {
                 continue;
@@ -272,6 +275,7 @@ public class RuntimeContext {
         private String userId;
         private Map<String, Object> stringExtras;
         private final Map<Class<?>, Object> typedSingletons = new HashMap<>();
+        private final Map<Class<?>, Map<String, Object>> typedExtras = new HashMap<>();
         private ToolExecutionContext toolExecutionContext;
         private AgentState agentState;
 
@@ -309,6 +313,31 @@ public class RuntimeContext {
                 this.stringExtras = new ConcurrentHashMap<>();
             }
             this.stringExtras.putAll(extras);
+            return this;
+        }
+
+        /**
+         * Copies call-scoped extension attributes from another context while leaving identity and
+         * {@link AgentState} ownership to this builder.
+         *
+         * <p>This is intended for derived calls such as subagent execution. Both string-keyed and
+         * typed attributes are copied, including keyed typed values, so infrastructure extensions
+         * such as sandbox bindings and workspace restore plans are not lost when the child uses a
+         * different session id.
+         */
+        public Builder copyAttributesFrom(RuntimeContext source) {
+            if (source == null) {
+                return this;
+            }
+            putAll(source.stringAttributes);
+            source.typedAttributes.forEach(
+                    (type, values) ->
+                            this.typedExtras
+                                    .computeIfAbsent(type, ignored -> new HashMap<>())
+                                    .putAll(values));
+            if (this.toolExecutionContext == null) {
+                this.toolExecutionContext = source.toolExecutionContext;
+            }
             return this;
         }
 

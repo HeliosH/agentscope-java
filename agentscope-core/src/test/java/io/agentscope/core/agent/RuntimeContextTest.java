@@ -81,6 +81,34 @@ class RuntimeContextTest {
     }
 
     @Test
+    @DisplayName("derived contexts preserve extension attributes but not parent identity")
+    void copyAttributesFromPreservesTypedAndStringExtensions() {
+        PojoA singleton = new PojoA("sandbox");
+        PojoB keyed = new PojoB(7);
+        RuntimeContext parent =
+                RuntimeContext.builder()
+                        .sessionId("parent-session")
+                        .userId("parent-user")
+                        .put("tenant", "org-1")
+                        .put(PojoA.class, singleton)
+                        .build();
+        parent.put("restore", PojoB.class, keyed);
+
+        RuntimeContext child =
+                RuntimeContext.builder()
+                        .sessionId("child-session")
+                        .userId("parent-user")
+                        .copyAttributesFrom(parent)
+                        .build();
+
+        assertEquals("child-session", child.getSessionId());
+        assertEquals("parent-user", child.getUserId());
+        assertEquals("org-1", child.get("tenant"));
+        assertSame(singleton, child.get(PojoA.class));
+        assertSame(keyed, child.get("restore", PojoB.class));
+    }
+
+    @Test
     @DisplayName("get(Class) for RuntimeContext returns the instance")
     void selfTypedAccess() {
         RuntimeContext ctx = RuntimeContext.empty();
