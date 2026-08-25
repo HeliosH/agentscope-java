@@ -12,6 +12,7 @@ package io.agentscope.saas.app.orchestration;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.model.ContextWindowAwareModel;
 import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.sandbox.SandboxContext;
 import io.agentscope.harness.agent.sandbox.SandboxIsolationOverride;
@@ -91,8 +92,16 @@ public class PgTaskRepository implements TaskRepository {
             input.put("prompt", local.input());
             input.put("externalTaskId", taskId);
             input.put("subSessionId", local.subSessionId());
-            sharedSandboxIsolationKey(rc)
-                    .ifPresent(key -> input.put("_runtime", Map.of("sandboxIsolationKey", key)));
+            Map<String, Object> runtime = new LinkedHashMap<>();
+            sharedSandboxIsolationKey(rc).ifPresent(key -> runtime.put("sandboxIsolationKey", key));
+            Optional.ofNullable(rc.get(ContextWindowAwareModel.MODEL_ID_KEY))
+                    .map(Object::toString)
+                    .map(String::trim)
+                    .filter(value -> !value.isEmpty())
+                    .ifPresent(value -> runtime.put("modelId", value));
+            if (!runtime.isEmpty()) {
+                input.put("_runtime", runtime);
+            }
             inputJson = objectMapper.writeValueAsString(input);
         } catch (Exception e) {
             throw new IllegalArgumentException("Unable to serialize durable subagent input", e);

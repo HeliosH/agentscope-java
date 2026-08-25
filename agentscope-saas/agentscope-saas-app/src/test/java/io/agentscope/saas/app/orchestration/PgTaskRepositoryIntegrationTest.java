@@ -15,6 +15,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.TextBlock;
+import io.agentscope.core.model.ContextWindowAwareModel;
 import io.agentscope.harness.agent.sandbox.SandboxIsolationOverride;
 import io.agentscope.harness.agent.subagent.task.TaskRunSpec;
 import io.agentscope.harness.agent.subagent.task.TaskStatus;
@@ -110,6 +111,7 @@ class PgTaskRepositoryIntegrationTest {
                 runs.createDirectRun(tenant, agentId, sessionId, null, "Delegate durable research");
         RuntimeContext context = context(tenant, agentId, sessionId, run.runId());
         context.put(SandboxIsolationOverride.class, new SandboxIsolationOverride("run/shared"));
+        context.put(ContextWindowAwareModel.MODEL_ID_KEY, "enterprise-large");
 
         var submitted =
                 tasks.putTask(
@@ -130,7 +132,8 @@ class PgTaskRepositoryIntegrationTest {
         assertThat(lease.agentRunId()).isNotNull();
         assertThat(lease.workspaceIsolationMode()).isEqualTo(WorkspaceIsolationMode.NONE);
         assertThat(lease.inputJson())
-                .contains("\"_runtime\":{\"sandboxIsolationKey\":\"run/shared\"}");
+                .contains("\"sandboxIsolationKey\":\"run/shared\"")
+                .contains("\"modelId\":\"enterprise-large\"");
         assertThat(leases.start(lease.attemptId(), "worker-pg-task")).isTrue();
         assertThat(
                         leases.succeed(

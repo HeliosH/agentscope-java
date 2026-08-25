@@ -46,7 +46,7 @@ class CompactionMiddlewareContextWindowTest {
     @TempDir Path workspace;
 
     @Test
-    void selectedSmallWindowOverridesStaticThresholdAndCompactsBeforeReasoning() {
+    void selectedSmallWindowDynamicallySetsThresholdAndCompactsBeforeReasoning() {
         ContextModel model = new ContextModel();
         List<Msg> conversation = new ArrayList<>();
         conversation.add(message(MsgRole.USER, "a".repeat(3_000), Map.of()));
@@ -63,14 +63,18 @@ class CompactionMiddlewareContextWindowTest {
         inputMessages.addAll(conversation);
         AgentState state = AgentState.builder().context(conversation).build();
         RuntimeContext context =
-                RuntimeContext.builder().sessionId("session").agentState(state).build();
+                RuntimeContext.builder()
+                        .sessionId("session")
+                        .agentState(state)
+                        .put(ContextWindowAwareModel.MODEL_ID_KEY, "small")
+                        .build();
         ReActAgent agent = mock(ReActAgent.class);
         when(agent.getName()).thenReturn("assistant");
         AtomicReference<ReasoningInput> forwarded = new AtomicReference<>();
         CompactionConfig config =
                 CompactionConfig.builder()
                         .triggerMessages(0)
-                        .triggerTokens(100_000)
+                        .triggerTokens(0)
                         .keepTokens(1_000)
                         .flushBeforeCompact(false)
                         .offloadBeforeCompact(false)

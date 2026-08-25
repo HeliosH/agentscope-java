@@ -24,6 +24,7 @@ import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
+import io.agentscope.core.model.ContextWindowAwareModel;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.sandbox.SandboxIsolationOverride;
 import io.agentscope.saas.app.chat.ChatPersistenceService;
@@ -108,7 +109,8 @@ class HarnessDurableTaskExecutorTest {
                         100_000,
                         "Research",
                         "{\"prompt\":\"Investigate the issue\","
-                                + "\"_runtime\":{\"sandboxIsolationKey\":\"run/shared\"}}",
+                                + "\"_runtime\":{\"sandboxIsolationKey\":\"run/shared\","
+                                + "\"modelId\":\"enterprise-large\"}}",
                         WorkspaceIsolationMode.NONE);
 
         String previousOrgId = UUID.randomUUID().toString();
@@ -123,6 +125,8 @@ class HarnessDurableTaskExecutorTest {
         assertThat(context.getValue().getUserId()).isEqualTo(userId.toString());
         assertThat(context.getValue().get(SandboxIsolationOverride.class).key())
                 .isEqualTo("run/shared");
+        String selectedModelId = context.getValue().get(ContextWindowAwareModel.MODEL_ID_KEY);
+        assertThat(selectedModelId).isEqualTo("enterprise-large");
         String contextAgentRunId =
                 context.getValue().get(RunOrchestrationService.ATTR_AGENT_RUN_ID);
         assertThat(contextAgentRunId).isEqualTo(agentRunId.toString());

@@ -184,7 +184,8 @@ public class AgentConfig {
             builder.compaction(buildCompactionConfig(conversation));
             log.info(
                     "Conversation compaction enabled: triggerMessages={} triggerTokens={}"
-                            + " keepMessages={} keepTokens={} maxContextTokens={}",
+                            + " keepMessages={} keepTokens={} maxContextTokens={}"
+                            + " (zero trigger uses selected model profile)",
                     conversation.getCompactionTriggerMessages(),
                     conversation.getCompactionTriggerTokens(),
                     conversation.getCompactionKeepMessages(),

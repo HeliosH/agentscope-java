@@ -103,8 +103,8 @@ class AgentConfigPermissionTest {
         SaasProperties.Conversation cfg = new SaasProperties.Conversation();
         CompactionConfig compaction = AgentConfig.buildCompactionConfig(cfg);
 
-        assertThat(compaction.getTriggerMessages()).isEqualTo(60);
-        assertThat(compaction.getTriggerTokens()).isEqualTo(24_000);
+        assertThat(compaction.getTriggerMessages()).isZero();
+        assertThat(compaction.getTriggerTokens()).isZero();
         assertThat(compaction.getKeepTokens()).isEqualTo(8_000);
         assertThat(compaction.getTruncateArgsConfig()).isNotNull();
         assertThat(compaction.getTruncateArgsConfig().getTriggerTokens()).isEqualTo(12_000);

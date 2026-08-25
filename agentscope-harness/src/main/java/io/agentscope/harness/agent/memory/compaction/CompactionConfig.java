@@ -132,7 +132,11 @@ public class CompactionConfig {
         return triggerMessages;
     }
 
-    /** Estimated token count above which compaction is triggered (0 = disabled). */
+    /**
+     * Estimated token count above which compaction is triggered. For a context-window-aware model,
+     * zero derives the threshold from the selected model profile; otherwise zero disables the
+     * token trigger.
+     */
     public int getTriggerTokens() {
         return triggerTokens;
     }
@@ -218,7 +222,10 @@ public class CompactionConfig {
             return this;
         }
 
-        /** Trigger compaction when estimated token count exceeds this value (0 = disabled). */
+        /**
+         * Trigger compaction when estimated token count exceeds this value. Zero uses the selected
+         * model profile when available, or disables the token trigger for other models.
+         */
         public Builder triggerTokens(int triggerTokens) {
             this.triggerTokens = triggerTokens;
             return this;

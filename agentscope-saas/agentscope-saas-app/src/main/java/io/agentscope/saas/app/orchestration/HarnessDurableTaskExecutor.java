@@ -16,6 +16,7 @@ import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
+import io.agentscope.core.model.ContextWindowAwareModel;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.filesystem.remote.store.BaseStore;
 import io.agentscope.harness.agent.sandbox.SandboxIsolationOverride;
@@ -23,6 +24,7 @@ import io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan;
 import io.agentscope.saas.app.chat.ChatPersistenceService;
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.config.TenantRlsWebFilter;
+import io.agentscope.saas.app.model.ModelCatalog;
 import io.agentscope.saas.app.workspace.WorkspaceCheckpointContext;
 import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
 import io.agentscope.saas.core.tenant.TenantContext;
@@ -36,6 +38,7 @@ import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -148,11 +151,18 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
                                 contextBuilder.put(
                                         SandboxIsolationOverride.class,
                                         new SandboxIsolationOverride(key)));
+        runtimeAttribute(request, "modelId")
+                .ifPresent(key -> contextBuilder.put(ContextWindowAwareModel.MODEL_ID_KEY, key));
         RuntimeContext context = contextBuilder.build();
+        Map<String, Object> inputMetadata = new LinkedHashMap<>();
+        inputMetadata.put(ModelCatalog.ORG_ID_KEY, request.orgId().toString());
+        runtimeAttribute(request, "modelId")
+                .ifPresent(key -> inputMetadata.put(ContextWindowAwareModel.MODEL_ID_KEY, key));
         Msg input =
                 Msg.builder()
                         .role(MsgRole.USER)
                         .name(request.userId().toString())
+                        .metadata(Map.copyOf(inputMetadata))
                         .textContent(taskContextAssembler.assemble(request))
                         .build();
         long timeout =
@@ -325,15 +335,19 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
     }
 
     private Optional<String> sharedSandboxIsolationKey(ExecutionRequest request) {
+        return runtimeAttribute(request, "sandboxIsolationKey");
+    }
+
+    private Optional<String> runtimeAttribute(ExecutionRequest request, String attribute) {
         try {
             JsonNode root = objectMapper.readTree(request.inputJson());
             if (root.isTextual()) {
                 root = objectMapper.readTree(root.textValue());
             }
-            String key = root.path("_runtime").path("sandboxIsolationKey").asText("").trim();
+            String key = root.path("_runtime").path(attribute).asText("").trim();
             return key.isEmpty() ? Optional.empty() : Optional.of(key);
         } catch (Exception e) {
-            throw new IllegalArgumentException("Unable to read durable task sandbox binding", e);
+            throw new IllegalArgumentException("Unable to read durable task runtime metadata", e);
         }
     }
 

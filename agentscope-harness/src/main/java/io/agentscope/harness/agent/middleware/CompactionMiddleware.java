@@ -105,7 +105,7 @@ public class CompactionMiddleware implements MiddlewareBase {
                     ConversationCompactor compactor =
                             new ConversationCompactor(model, flushManager);
                     final Msg sys = systemMsg;
-                    ModelContextProfile profile = resolveProfile(messages);
+                    ModelContextProfile profile = resolveProfile(rc, messages);
                     CompactionConfig effectiveConfig =
                             profile != null ? effectiveConfig(profile, sys, input.tools()) : config;
 
@@ -148,8 +148,11 @@ public class CompactionMiddleware implements MiddlewareBase {
                 });
     }
 
-    private ModelContextProfile resolveProfile(List<Msg> messages) {
+    private ModelContextProfile resolveProfile(RuntimeContext context, List<Msg> messages) {
         if (model instanceof ContextWindowAwareModel awareModel) {
+            if (context != null && context.get(ContextWindowAwareModel.MODEL_ID_KEY) != null) {
+                return awareModel.resolveContextProfile(context);
+            }
             return awareModel.resolveContextProfile(messages);
         }
         return null;
@@ -167,6 +170,8 @@ public class CompactionMiddleware implements MiddlewareBase {
             throw exceeded(profile, fixedTokens, profile.inputTokenBudget());
         }
         int configuredTrigger = config.getTriggerTokens();
+        // Zero means model-driven. The profile already reserves the configured output allowance
+        // and safety margin, while fixed system/tool tokens are removed above.
         int triggerTokens =
                 configuredTrigger > 0
                         ? Math.min(configuredTrigger, conversationBudget)

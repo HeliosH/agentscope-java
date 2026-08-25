@@ -1929,8 +1929,8 @@ public class SaasProperties {
     public static class Conversation {
         private boolean compactionEnabled = true;
         private int maxContextTokens = 32_000;
-        private int compactionTriggerMessages = 60;
-        private int compactionTriggerTokens = 24_000;
+        private int compactionTriggerMessages = 0;
+        private int compactionTriggerTokens = 0;
         private int compactionKeepMessages = 20;
         private int compactionKeepTokens = 8_000;
         private int truncateTriggerMessages = 30;

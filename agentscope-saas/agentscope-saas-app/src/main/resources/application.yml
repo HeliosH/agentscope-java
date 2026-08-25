@@ -198,8 +198,9 @@ saas:
     conversation:
       compaction-enabled: ${SAAS_AGENT_COMPACTION_ENABLED:true}
       max-context-tokens: ${SAAS_AGENT_MAX_CONTEXT_TOKENS:32000}
-      compaction-trigger-messages: ${SAAS_AGENT_COMPACTION_TRIGGER_MESSAGES:60}
-      compaction-trigger-tokens: ${SAAS_AGENT_COMPACTION_TRIGGER_TOKENS:24000}
+      # Zero delegates the threshold to the selected model's context/output/safety profile.
+      compaction-trigger-messages: ${SAAS_AGENT_COMPACTION_TRIGGER_MESSAGES:0}
+      compaction-trigger-tokens: ${SAAS_AGENT_COMPACTION_TRIGGER_TOKENS:0}
       compaction-keep-messages: ${SAAS_AGENT_COMPACTION_KEEP_MESSAGES:20}
       compaction-keep-tokens: ${SAAS_AGENT_COMPACTION_KEEP_TOKENS:8000}
       truncate-trigger-messages: ${SAAS_AGENT_TRUNCATE_TRIGGER_MESSAGES:30}
