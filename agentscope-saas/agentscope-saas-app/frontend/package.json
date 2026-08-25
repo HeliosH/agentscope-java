@@ -10,10 +10,15 @@
     "lint": "eslint src --ext ts,tsx"
   },
   "dependencies": {
+    "@office-kit/pptx": "0.12.0",
+    "@office-kit/pptx-preview": "0.9.1",
+    "docx-preview": "0.4.0",
     "lucide-react": "^0.468.0",
+    "pdfjs-dist": "5.4.296",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.28.0"
+    "react-router-dom": "^6.28.0",
+    "read-excel-file": "9.3.10"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",

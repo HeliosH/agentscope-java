@@ -3,7 +3,7 @@ import {
   Activity,
   Check,
   CircleStop,
-  Download,
+  Eye,
   FileOutput,
   ListChecks,
   X,
@@ -22,7 +22,7 @@ import {
   type RunView,
   type TaskView,
 } from '../api/runs';
-import { downloadFileVersion } from '../api/workspace';
+import { FilePreviewDialog, type PreviewFile } from './FilePreview';
 import './RunInspector.css';
 
 const TERMINAL = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED', 'REJECTED']);
@@ -34,15 +34,6 @@ function statusClass(status: string) {
 
 function statusLabel(status: string) {
   return status.toLowerCase().replace(/_/g, ' ');
-}
-
-function saveBlob(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = name.split('/').pop() || 'artifact';
-  link.click();
-  URL.revokeObjectURL(url);
 }
 
 interface RunInspectorProps {
@@ -60,6 +51,7 @@ export default function RunInspector({ agentId, runId, onClose }: RunInspectorPr
   const [tab, setTab] = useState<InspectorTab>('tasks');
   const [error, setError] = useState('');
   const [acting, setActing] = useState(false);
+  const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
   const lastSeq = useRef(0);
 
   const refresh = useCallback(async () => {
@@ -88,6 +80,7 @@ export default function RunInspector({ agentId, runId, onClose }: RunInspectorPr
   useEffect(() => {
     lastSeq.current = 0;
     setEvents([]);
+    setPreviewFile(null);
     void refresh();
     const timer = window.setInterval(() => void refresh(), 2000);
     return () => window.clearInterval(timer);
@@ -126,14 +119,6 @@ export default function RunInspector({ agentId, runId, onClose }: RunInspectorPr
       setError(cause instanceof Error ? cause.message : 'Run cancellation failed');
     } finally {
       setActing(false);
-    }
-  }
-
-  async function download(artifact: ArtifactView) {
-    try {
-      saveBlob(await downloadFileVersion(agentId, artifact.fileVersionId), artifact.logicalPath);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Artifact download failed');
     }
   }
 
@@ -240,10 +225,20 @@ export default function RunInspector({ agentId, runId, onClose }: RunInspectorPr
         {tab === 'artifacts' && (
           <div className="run-list">
             {artifacts.map(artifact => (
-              <button className="run-file" key={artifact.id} type="button" onClick={() => void download(artifact)}>
+              <button
+                className="run-file"
+                key={artifact.id}
+                type="button"
+                title={`Preview ${artifact.logicalPath}`}
+                onClick={() => setPreviewFile({
+                  path: artifact.logicalPath,
+                  name: artifact.logicalPath.split('/').pop(),
+                  versionId: artifact.fileVersionId,
+                })}
+              >
                 <FileOutput size={15} />
                 <span>{artifact.logicalPath}</span>
-                <Download size={14} />
+                <Eye size={14} />
               </button>
             ))}
             {!artifacts.length && <div className="run-empty">No files produced yet.</div>}
@@ -265,6 +260,7 @@ export default function RunInspector({ agentId, runId, onClose }: RunInspectorPr
           </div>
         )}
       </div>
+      <FilePreviewDialog agentId={agentId} file={previewFile} onClose={() => setPreviewFile(null)} />
     </aside>
   );
 }

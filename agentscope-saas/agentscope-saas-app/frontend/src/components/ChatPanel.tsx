@@ -4,7 +4,7 @@ import {
   Bot,
   Check,
   Cpu,
-  Download,
+  Eye,
   FileText,
   FilePlus2,
   ListTodo,
@@ -19,8 +19,6 @@ import { ConfirmToolCall, currentSession, getModelCatalog, stream, type ChatEven
 import { TurnEntry, turnsWindow } from '../api/sessions';
 import ToolCallBlock from './ToolCallBlock';
 import {
-  downloadCurrentFile,
-  downloadFileVersion,
   tree as fetchWorkspaceTree,
   uploadFile,
   type FileNode,
@@ -28,6 +26,7 @@ import {
 } from '../api/workspace';
 import { getArtifacts } from '../api/runs';
 import RunInspector from './RunInspector';
+import { FilePreviewDialog, type PreviewFile } from './FilePreview';
 
 type Role = 'user' | 'assistant' | 'system';
 
@@ -123,6 +122,7 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [selectedModelId, setSelectedModelId] = useState('');
+  const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
 
   const persistSession = useCallback((key: string | null) => {
     if (key) {
@@ -175,6 +175,7 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
     setNextBeforeSeq(null);
     setActiveRunId(null);
     setInspectorOpen(false);
+    setPreviewFile(null);
 
     const urlKey = requestedSession;
     const explicitlyNew = newTaskNonce !== null;
@@ -475,22 +476,6 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
     requestAnimationFrame(() => inputRef.current?.focus());
   }
 
-  async function downloadMessageFile(file: MessageFile) {
-    try {
-      const blob = file.versionId
-        ? await downloadFileVersion(agentId, file.versionId)
-        : await downloadCurrentFile(agentId, file.path);
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = file.name;
-      anchor.click();
-      URL.revokeObjectURL(url);
-    } catch (error: unknown) {
-      alert(error instanceof Error ? error.message : '文件下载失败');
-    }
-  }
-
   return (
     <div className="chat-root">
       <header className="chat-header">
@@ -616,15 +601,15 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
                             key={`${file.kind}:${file.path}`}
                             className="message-file"
                             type="button"
-                            title={`Download ${file.path}`}
-                            onClick={() => void downloadMessageFile(file)}
+                            title={`Preview ${file.path}`}
+                            onClick={() => setPreviewFile(file)}
                           >
                             <FileText size={16} />
                             <span className="message-file__text">
                               <strong>{file.name}</strong>
                               <small>{file.kind === 'upload' ? 'Uploaded file' : 'Generated file'}{file.sizeBytes ? ` · ${formatBytes(file.sizeBytes)}` : ''}</small>
                             </span>
-                            <Download size={14} className="message-file__action" />
+                            <Eye size={14} className="message-file__action" />
                           </button>
                         ))}
                       </div>
@@ -750,6 +735,7 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
           />
         )}
       </div>
+      <FilePreviewDialog agentId={agentId} file={previewFile} onClose={() => setPreviewFile(null)} />
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Download, History, RotateCcw, WrapText } from 'lucide-react';
+import { Download, Eye, History, RotateCcw, WrapText } from 'lucide-react';
 import {
   downloadCurrentFile,
   downloadFileVersion,
@@ -8,6 +8,7 @@ import {
   readFile,
   restoreFileVersion,
 } from '../api/workspace';
+import { FilePreviewDialog, FilePreviewPane, type PreviewFile } from './FilePreview';
 
 interface Props {
   agentId: string;
@@ -54,7 +55,7 @@ const S: Record<string, React.CSSProperties> = {
     maxHeight: 178, overflowY: 'auto',
   },
   versionRow: {
-    display: 'grid', gridTemplateColumns: '72px 88px minmax(120px,1fr) auto auto',
+    display: 'grid', gridTemplateColumns: '72px 88px minmax(120px,1fr) auto auto auto',
     alignItems: 'center', gap: 8, padding: '8px 18px',
     borderBottom: '1px solid #f1f5f9', fontSize: '0.78rem', color: '#64748b',
   },
@@ -70,7 +71,7 @@ const S: Record<string, React.CSSProperties> = {
 // Files matching this regex are treated as binary and not rendered in the textarea.
 // Everything else (including unknown extensions, jsonl, log, diff, dotfiles, files with no
 // extension like LICENSE / Dockerfile / Makefile) is displayed as text.
-const BINARY_EXT = /\.(png|jpe?g|gif|bmp|ico|webp|tiff?|heic|avif|pdf|docx?|xlsx?|pptx?|odt|ods|odp|zip|tar|t?gz|tbz2?|bz2|xz|7z|rar|jar|war|ear|class|exe|dll|so|dylib|a|o|bin|dat|sqlite3?|db|mdb|pyc|pyo|wasm|mp3|mp4|m4a|wav|flac|ogg|opus|aac|avi|mov|mkv|webm|wmv|ttf|otf|woff2?|eot)$/i;
+const BINARY_EXT = /\.(png|jpe?g|gif|bmp|ico|webp|svg|tiff?|heic|avif|pdf|docx?|xlsx?|pptx?|odt|ods|odp|zip|tar|t?gz|tbz2?|bz2|xz|7z|rar|jar|war|ear|class|exe|dll|so|dylib|a|o|bin|dat|sqlite3?|db|mdb|pyc|pyo|wasm|mp3|mp4|m4a|wav|flac|ogg|opus|aac|avi|mov|mkv|webm|wmv|ttf|otf|woff2?|eot)$/i;
 
 function leaf(path: string): string {
   const idx = path.lastIndexOf('/');
@@ -96,6 +97,7 @@ export default function WorkspaceEditor({ agentId, path, refreshKey, onChanged }
   const [versionErr, setVersionErr] = useState<string | null>(null);
   const [versionLoading, setVersionLoading] = useState(false);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [previewVersion, setPreviewVersion] = useState<PreviewFile | null>(null);
   // Display only — never affects the textarea's value. Default off so what the user
   // sees matches what is on disk; soft-wrap is opt-in.
   const [softWrap, setSoftWrap] = useState(false);
@@ -103,13 +105,15 @@ export default function WorkspaceEditor({ agentId, path, refreshKey, onChanged }
   const viewable = !!path && !BINARY_EXT.test(path);
 
   useEffect(() => {
+    setPreviewVersion(null);
     if (!path) {
-      setContent(''); setErr(null); setVersions([]); setVersionErr(null);
+      setContent(''); setErr(null); setVersions([]); setVersionErr(null); setLoading(false);
       return;
     }
     if (!viewable) {
       setContent('');
-      setErr('Binary file — preview not supported. Download via API to inspect.');
+      setErr(null);
+      setLoading(false);
       return;
     }
     setLoading(true);
@@ -167,6 +171,7 @@ export default function WorkspaceEditor({ agentId, path, refreshKey, onChanged }
   }
 
   return (
+    <>
     <div style={S.root}>
       <div style={S.bar}>
         <span style={S.pathTxt}>{path}</span>
@@ -175,19 +180,21 @@ export default function WorkspaceEditor({ agentId, path, refreshKey, onChanged }
         <button type="button" style={S.actionBtn} onClick={handleDownload} title="Download current file">
           <Download size={13} /> Download
         </button>
-        <button
-          type="button"
-          style={{ ...S.wrapToggle, ...(softWrap ? S.wrapToggleActive : {}) }}
-          onClick={() => setSoftWrap(w => !w)}
-          title={softWrap ? 'Soft-wrap on (display only)' : 'No wrap — long lines scroll horizontally'}
-        >
-          <WrapText size={13} /> {softWrap ? 'Wrap on' : 'Wrap off'}
-        </button>
+        {viewable && (
+          <button
+            type="button"
+            style={{ ...S.wrapToggle, ...(softWrap ? S.wrapToggleActive : {}) }}
+            onClick={() => setSoftWrap(w => !w)}
+            title={softWrap ? 'Soft-wrap on (display only)' : 'No wrap — long lines scroll horizontally'}
+          >
+            <WrapText size={13} /> {softWrap ? 'Wrap on' : 'Wrap off'}
+          </button>
+        )}
       </div>
       {loading ? (
         <div style={S.empty}>Loading…</div>
       ) : !viewable ? (
-        <div style={S.empty}>{err ?? 'Cannot view this file in the browser.'}</div>
+        <FilePreviewPane agentId={agentId} file={{ path, name: leaf(path) }} refreshKey={refreshKey} className="file-preview--workspace" />
       ) : (
         <textarea
           wrap={softWrap ? 'soft' : 'off'}
@@ -209,6 +216,7 @@ export default function WorkspaceEditor({ agentId, path, refreshKey, onChanged }
           <span>Source</span>
           <span />
           <span />
+          <span />
         </div>
         {versionLoading && <div style={{ padding: '10px 18px', color: '#94a3b8', fontSize: '0.78rem' }}>Loading versions…</div>}
         {versionErr && <div style={{ padding: '10px 18px', color: '#dc2626', fontSize: '0.78rem' }}>{versionErr}</div>}
@@ -220,6 +228,9 @@ export default function WorkspaceEditor({ agentId, path, refreshKey, onChanged }
             <span>{v.current ? <span style={S.currentBadge}>v{v.versionNo}</span> : `v${v.versionNo}`}</span>
             <span>{v.sizeBytes} B</span>
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.source ?? '-'}</span>
+            <button type="button" style={S.actionBtn} onClick={() => setPreviewVersion({ path: v.logicalPath, name: leaf(v.logicalPath), versionId: v.id, sizeBytes: v.sizeBytes })}>
+              <Eye size={12} /> Preview
+            </button>
             <button type="button" style={S.actionBtn} onClick={() => handleVersionDownload(v)}>
               <Download size={12} /> Download
             </button>
@@ -230,5 +241,7 @@ export default function WorkspaceEditor({ agentId, path, refreshKey, onChanged }
         ))}
       </div>
     </div>
+    <FilePreviewDialog agentId={agentId} file={previewVersion} onClose={() => setPreviewVersion(null)} />
+    </>
   );
 }
