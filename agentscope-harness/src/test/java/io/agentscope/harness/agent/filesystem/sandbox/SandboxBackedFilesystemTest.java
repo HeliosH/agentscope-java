@@ -34,6 +34,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
@@ -321,6 +322,86 @@ class SandboxBackedFilesystemTest {
         assertEquals(null, archivedFile(sandbox.hydratedArchive, "sessions/session-1.jsonl"));
     }
 
+    @Test
+    void persistentWorkspaceHydratesOnlyChangedRemoteVersions() throws Exception {
+        InMemoryStore store = new InMemoryStore();
+        RemoteFilesystem remote = new RemoteFilesystem(store, NS);
+        remote.write(RC, "/MEMORY.md", "v1");
+        SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        FakeSandbox sandbox = new FakeSandbox(tarArchive(Map.of("MEMORY.md", "v1")), "", true);
+
+        assertEquals(1, fs.hydrateRemoteWorkspace(RC, sandbox));
+        assertEquals(0, fs.hydrateRemoteWorkspace(RC, sandbox));
+
+        remote.uploadFiles(
+                RC, List.of(Map.entry("/MEMORY.md", "v2".getBytes(StandardCharsets.UTF_8))));
+        assertEquals(1, fs.hydrateRemoteWorkspace(RC, sandbox));
+        assertArrayEquals(
+                "v2".getBytes(StandardCharsets.UTF_8),
+                archivedFile(sandbox.hydratedArchive, "MEMORY.md"));
+    }
+
+    @Test
+    void persistentWorkspaceProjectsOnlyChangedContent() throws Exception {
+        InMemoryStore store = new InMemoryStore();
+        RemoteFilesystem remote = new RemoteFilesystem(store, NS);
+        remote.write(RC, "/MEMORY.md", "same");
+        SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        FakeSandbox sandbox = new FakeSandbox(tarArchive(Map.of("MEMORY.md", "same")), "", true);
+        RuntimeContext rc = contextWithSandbox(sandbox);
+        assertEquals(1, fs.hydrateRemoteWorkspace(RC, sandbox));
+
+        assertEquals(0, fs.projectSandboxWorkspaceToRemote(rc));
+        assertEquals(1L, remote.fileVersions(RC).get("/MEMORY.md"));
+    }
+
+    @Test
+    void persistentWorkspacePreservesConcurrentRemoteAndSandboxChanges() throws Exception {
+        InMemoryStore store = new InMemoryStore();
+        RemoteFilesystem remote = new RemoteFilesystem(store, NS);
+        remote.write(RC, "/report.txt", "original");
+        SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        FakeSandbox sandbox =
+                new FakeSandbox(tarArchive(Map.of("report.txt", "agent edit")), "", true);
+        assertEquals(1, fs.hydrateRemoteWorkspace(RC, sandbox));
+
+        remote.uploadFiles(
+                RC,
+                List.of(Map.entry("/report.txt", "browser edit".getBytes(StandardCharsets.UTF_8))));
+        assertEquals(1, fs.projectSandboxWorkspaceToRemote(contextWithSandbox(sandbox)));
+
+        assertEquals("browser edit", remote.read(RC, "/report.txt", 0, 0).fileData().content());
+        String conflictPath =
+                remote.fileVersions(RC).keySet().stream()
+                        .filter(path -> path.startsWith("/generated/conflicts/"))
+                        .findFirst()
+                        .orElseThrow();
+        assertEquals("agent edit", remote.read(RC, conflictPath, 0, 0).fileData().content());
+    }
+
+    @Test
+    void persistentWorkspaceDoesNotResurrectConcurrentRemoteDelete() throws Exception {
+        InMemoryStore store = new InMemoryStore();
+        RemoteFilesystem remote = new RemoteFilesystem(store, NS);
+        remote.write(RC, "/report.txt", "original");
+        SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        FakeSandbox sandbox =
+                new FakeSandbox(tarArchive(Map.of("report.txt", "agent edit")), "", true);
+        assertEquals(1, fs.hydrateRemoteWorkspace(RC, sandbox));
+
+        assertTrue(remote.delete(RC, "/report.txt").isSuccess());
+        assertEquals(1, fs.projectSandboxWorkspaceToRemote(contextWithSandbox(sandbox)));
+
+        assertFalse(remote.exists(RC, "/report.txt"));
+        assertTrue(
+                remote.fileVersions(RC).keySet().stream()
+                        .anyMatch(path -> path.startsWith("/generated/conflicts/")));
+    }
+
     private static RuntimeContext contextWithSandbox(Sandbox sandbox) {
         RuntimeContext rc = RuntimeContext.empty();
         rc.put(Sandbox.class, sandbox);
@@ -328,9 +409,12 @@ class SandboxBackedFilesystemTest {
     }
 
     /** A minimal Sandbox that reports success for any exec (so uploadFiles proceeds). */
-    private static final class FakeSandbox implements Sandbox {
+    private static class FakeSandbox implements Sandbox {
         private final byte[] workspaceArchive;
         private final String execOutput;
+        private final boolean persistentWorkspace;
+        private final StringBuilder manifestBase64 = new StringBuilder();
+        private byte[] volumeManifest;
         private byte[] hydratedArchive;
 
         private FakeSandbox() {
@@ -346,8 +430,14 @@ class SandboxBackedFilesystemTest {
         }
 
         private FakeSandbox(byte[] workspaceArchive, String execOutput) {
+            this(workspaceArchive, execOutput, false);
+        }
+
+        private FakeSandbox(
+                byte[] workspaceArchive, String execOutput, boolean persistentWorkspace) {
             this.workspaceArchive = workspaceArchive != null ? workspaceArchive : new byte[0];
             this.execOutput = execOutput != null ? execOutput : "";
+            this.persistentWorkspace = persistentWorkspace;
         }
 
         @Override
@@ -370,7 +460,37 @@ class SandboxBackedFilesystemTest {
         }
 
         @Override
+        public boolean hasPersistentWorkspace() {
+            return persistentWorkspace;
+        }
+
+        @Override
         public ExecResult exec(RuntimeContext runtimeContext, String command, Integer timeout) {
+            if (persistentWorkspace) {
+                if (command.startsWith("if test -f ")) {
+                    if (volumeManifest == null) {
+                        return new ExecResult(1, "", "", false);
+                    }
+                    return new ExecResult(
+                            0, Base64.getEncoder().encodeToString(volumeManifest), "", false);
+                }
+                if (command.contains(": > '.agentscope/volume_sync_manifest.json.b64'")) {
+                    manifestBase64.setLength(0);
+                    return new ExecResult(0, "", "", false);
+                }
+                if (command.startsWith("printf '%s' '")
+                        && command.contains("volume_sync_manifest.json.b64")) {
+                    int start = "printf '%s' '".length();
+                    int end = command.indexOf("' >>", start);
+                    manifestBase64.append(command, start, end);
+                    return new ExecResult(0, "", "", false);
+                }
+                if (command.startsWith("base64 -d ")
+                        && command.contains("volume_sync_manifest.json")) {
+                    volumeManifest = Base64.getDecoder().decode(manifestBase64.toString());
+                    return new ExecResult(0, "", "", false);
+                }
+            }
             return new ExecResult(0, execOutput, "", false);
         }
 

@@ -1,5 +1,8 @@
 # CubeSandbox 持久化、Skills 与恢复方案
 
+> 本文保留 Cube hostPath 与快照兼容方案。Cube 0.6 及以上生产部署的推荐工作区方案已升级为
+> [CubeSandbox Volume 持久工作区优化方案](./24-cubesandbox-volume-workspace-plan.md)。
+
 ## 1. 目标与边界
 
 CubeSandbox 是部署时选择的企业生产沙箱 Provider，用户、任务规划器和子 Agent 不感知

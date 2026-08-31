@@ -15,6 +15,7 @@
  */
 package io.agentscope.harness.agent.sandbox;
 
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
 
 /**
@@ -24,6 +25,11 @@ import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
  */
 public interface SandboxClient<O extends SandboxClientOptions> {
 
+    /** Whether this backend consumes {@link RuntimeContext} during create/resume. */
+    default boolean supportsRuntimeContext() {
+        return false;
+    }
+
     /**
      * Creates a new sandbox with the given workspace spec and snapshot spec.
      *
@@ -32,9 +38,29 @@ public interface SandboxClient<O extends SandboxClientOptions> {
     Sandbox create(WorkspaceSpec workspaceSpec, SandboxSnapshotSpec snapshotSpec, O options);
 
     /**
+     * Creates a sandbox with access to the current call context.
+     *
+     * <p>Backends with deployment-managed persistent storage can use the context to resolve an
+     * isolation-scoped workspace volume. Existing backends keep the legacy behavior through this
+     * default implementation.
+     */
+    default Sandbox create(
+            WorkspaceSpec workspaceSpec,
+            SandboxSnapshotSpec snapshotSpec,
+            O options,
+            RuntimeContext runtimeContext) {
+        return create(workspaceSpec, snapshotSpec, options);
+    }
+
+    /**
      * Resumes a sandbox from previously serialized {@link SandboxState}.
      */
     Sandbox resume(SandboxState state);
+
+    /** Context-aware resume counterpart used by persistent-volume backends. */
+    default Sandbox resume(SandboxState state, RuntimeContext runtimeContext) {
+        return resume(state);
+    }
 
     void delete(Sandbox sandbox);
 

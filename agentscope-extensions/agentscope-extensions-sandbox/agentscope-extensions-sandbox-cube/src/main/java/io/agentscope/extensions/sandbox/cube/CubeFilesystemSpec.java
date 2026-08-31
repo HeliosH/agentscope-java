@@ -15,6 +15,7 @@
  */
 package io.agentscope.extensions.sandbox.cube;
 
+import io.agentscope.harness.agent.filesystem.remote.store.NamespaceFactory;
 import io.agentscope.harness.agent.filesystem.spec.SandboxFilesystemSpec;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
 import io.agentscope.harness.agent.sandbox.SandboxClientOptions;
@@ -119,6 +120,21 @@ public class CubeFilesystemSpec extends SandboxFilesystemSpec {
     public CubeFilesystemSpec commonSkillsOverlay(String mountPath, String targetPath) {
         options.setCommonSkillsMountPath(mountPath);
         options.setCommonSkillsTargetPath(targetPath);
+        return this;
+    }
+
+    public CubeFilesystemSpec volumeMounts(List<CubeVolumeMount> mounts) {
+        options.setVolumeMounts(mounts);
+        return this;
+    }
+
+    /** Enables one deterministic persistent workspace Volume per resolved isolation namespace. */
+    public CubeFilesystemSpec persistentWorkspaceVolume(
+            String namePrefix, String driver, NamespaceFactory namespaceFactory) {
+        options.setWorkspaceVolumeEnabled(true);
+        options.setWorkspaceVolumeNamePrefix(namePrefix);
+        options.setWorkspaceVolumeDriver(driver);
+        options.setWorkspaceVolumeNamespaceFactory(namespaceFactory);
         return this;
     }
 

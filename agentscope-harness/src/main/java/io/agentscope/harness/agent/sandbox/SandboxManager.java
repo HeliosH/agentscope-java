@@ -89,7 +89,7 @@ public class SandboxManager {
 
         // Priority 2: user-supplied state — guard does not apply
         if (sandboxContext.getExternalSandboxState() != null) {
-            Sandbox sandbox = client.resume(sandboxContext.getExternalSandboxState());
+            Sandbox sandbox = resume(sandboxContext.getExternalSandboxState(), runtimeContext);
             log.debug(
                     "[sandbox] Priority 2: resuming from explicit state: {}",
                     sandboxContext.getExternalSandboxState().getSessionId());
@@ -125,7 +125,7 @@ public class SandboxManager {
                             state.setSnapshot(
                                     sandboxContext.getSnapshotSpec().build(state.getSessionId()));
                         }
-                        Sandbox sandbox = client.resume(state);
+                        Sandbox sandbox = resume(state, runtimeContext);
                         return SandboxAcquireResult.selfManaged(
                                 sandbox, lease, AcquisitionSource.RESUME);
                     }
@@ -148,11 +148,21 @@ public class SandboxManager {
             @SuppressWarnings("unchecked")
             SandboxClient<SandboxClientOptions> typedClient =
                     (SandboxClient<SandboxClientOptions>) client;
-            Sandbox sandbox =
-                    typedClient.create(
-                            spec,
-                            sandboxContext.getSnapshotSpec(),
-                            sandboxContext.getClientOptions());
+            Sandbox sandbox;
+            if (client.supportsRuntimeContext()) {
+                sandbox =
+                        typedClient.create(
+                                spec,
+                                sandboxContext.getSnapshotSpec(),
+                                sandboxContext.getClientOptions(),
+                                runtimeContext);
+            } else {
+                sandbox =
+                        typedClient.create(
+                                spec,
+                                sandboxContext.getSnapshotSpec(),
+                                sandboxContext.getClientOptions());
+            }
             return SandboxAcquireResult.selfManaged(sandbox, lease, AcquisitionSource.CREATE);
 
         } catch (Exception e) {
@@ -160,6 +170,12 @@ public class SandboxManager {
             lease.close();
             throw e;
         }
+    }
+
+    private Sandbox resume(SandboxState state, RuntimeContext runtimeContext) {
+        return client.supportsRuntimeContext()
+                ? client.resume(state, runtimeContext)
+                : client.resume(state);
     }
 
     public void release(SandboxAcquireResult result) {

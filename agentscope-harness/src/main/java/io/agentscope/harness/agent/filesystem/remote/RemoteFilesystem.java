@@ -540,6 +540,23 @@ public class RemoteFilesystem implements AbstractFilesystem {
         return responses;
     }
 
+    /**
+     * Returns the authoritative store version for every file in the current namespace.
+     *
+     * <p>Persistent-volume sandboxes use this lightweight inventory to transfer only files that
+     * changed while no sandbox was active. A version of {@code 0} means the backend cannot provide
+     * a stable version and callers must conservatively refresh that file.
+     */
+    public Map<String, Long> fileVersions(RuntimeContext runtimeContext) {
+        Map<String, Long> versions = new HashMap<>();
+        for (StoreItem item : searchAllItems(runtimeContext)) {
+            if (item != null && item.key() != null) {
+                versions.put(item.key(), item.version());
+            }
+        }
+        return Map.copyOf(versions);
+    }
+
     @Override
     public boolean exists(RuntimeContext runtimeContext, String path) {
         if (path == null || path.isBlank()) {

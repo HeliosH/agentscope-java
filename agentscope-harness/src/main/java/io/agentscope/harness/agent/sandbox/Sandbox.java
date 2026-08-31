@@ -62,6 +62,16 @@ public interface Sandbox extends AutoCloseable {
     SandboxState getState();
 
     /**
+     * Whether the backend keeps the workspace independently of the sandbox instance lifecycle.
+     *
+     * <p>Persistent-volume backends return {@code true}; snapshot-oriented and ephemeral backends
+     * keep the default. The runtime uses this signal to avoid redundant whole-workspace snapshots.
+     */
+    default boolean hasPersistentWorkspace() {
+        return false;
+    }
+
+    /**
      * Runs a shell command in the sandbox workspace.
      *
      * @param runtimeContext per-call agent context (session, user, attributes); may be {@code null}

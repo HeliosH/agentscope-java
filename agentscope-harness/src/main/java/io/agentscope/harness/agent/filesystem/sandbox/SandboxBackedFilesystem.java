@@ -15,6 +15,8 @@
  */
 package io.agentscope.harness.agent.filesystem.sandbox;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.filesystem.model.EditResult;
 import io.agentscope.harness.agent.filesystem.model.ExecuteResponse;
@@ -34,8 +36,10 @@ import io.agentscope.harness.agent.sandbox.SandboxException;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -66,6 +70,10 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
     private static final long REMOTE_PROJECTION_MAX_TOTAL_BYTES = 256L * 1024L * 1024L;
     private static final String REMOTE_PROJECTION_MANIFEST =
             "/.agentscope/sandbox_projection_manifest";
+    private static final String VOLUME_SYNC_MANIFEST = "/.agentscope/volume_sync_manifest.json";
+    private static final ObjectMapper MANIFEST_MAPPER = new ObjectMapper();
+    private static final TypeReference<Map<String, VolumeSyncEntry>> SYNC_MANIFEST_TYPE =
+            new TypeReference<>() {};
 
     private final String fsId;
     private volatile Sandbox sandbox;
@@ -139,26 +147,55 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
         if (fallback == null || target == null) {
             return 0;
         }
-        GlobResult glob = fallback.glob(runtimeContext, "**/*", "/");
-        if (!glob.isSuccess() || glob.matches() == null || glob.matches().isEmpty()) {
+        boolean incremental = target.hasPersistentWorkspace();
+        Map<String, Long> remoteVersions =
+                incremental ? normalizedRemoteVersions(runtimeContext, fallback) : Map.of();
+        Map<String, VolumeSyncEntry> previous =
+                incremental ? readVolumeSyncManifest(runtimeContext, target) : Map.of();
+        GlobResult glob = fallback.glob(runtimeContext, "**", "/");
+        if (!glob.isSuccess() || glob.matches() == null) {
             return 0;
         }
 
-        List<String> paths =
+        List<String> allPaths =
                 glob.matches().stream()
                         .filter(file -> !file.isDirectory())
                         .map(FileInfo::path)
                         .filter(path -> normalizeHydrationPath(path) != null)
                         .limit(REMOTE_PROJECTION_MAX_FILES + 1L)
                         .toList();
-        if (paths.size() > REMOTE_PROJECTION_MAX_FILES) {
+        if (allPaths.size() > REMOTE_PROJECTION_MAX_FILES) {
             throw new IllegalStateException(
                     "Remote workspace exceeds hydration file limit " + REMOTE_PROJECTION_MAX_FILES);
+        }
+        List<String> paths =
+                incremental
+                        ? allPaths.stream()
+                                .filter(
+                                        path -> {
+                                            String normalized = normalizeHydrationPath(path);
+                                            VolumeSyncEntry entry = previous.get(normalized);
+                                            long version =
+                                                    remoteVersions.getOrDefault(normalized, 0L);
+                                            return entry == null
+                                                    || version == 0L
+                                                    || entry.remoteVersion() != version;
+                                        })
+                                .toList()
+                        : allPaths;
+
+        if (incremental) {
+            removeRemoteDeletedVolumeFiles(runtimeContext, target, previous, remoteVersions);
         }
 
         ByteArrayOutputStream archiveBytes = new ByteArrayOutputStream();
         long totalBytes = 0L;
         int hydrated = 0;
+        Map<String, VolumeSyncEntry> next =
+                incremental ? new LinkedHashMap<>(previous) : new LinkedHashMap<>();
+        if (incremental) {
+            next.keySet().retainAll(remoteVersions.keySet());
+        }
         try (TarArchiveOutputStream archive = new TarArchiveOutputStream(archiveBytes)) {
             ArchiveOutputStream<TarArchiveEntry> compatibleArchive = archive;
             archive.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
@@ -198,6 +235,12 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                     archive.write(content);
                     archive.closeArchiveEntry();
                     hydrated++;
+                    if (incremental) {
+                        next.put(
+                                path,
+                                new VolumeSyncEntry(
+                                        remoteVersions.getOrDefault(path, 0L), sha256(content)));
+                    }
                 }
             }
             archive.finish();
@@ -210,6 +253,14 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                     "[sandbox-fs] Hydrated {} remote workspace files ({} bytes)",
                     hydrated,
                     totalBytes);
+        }
+        if (incremental) {
+            writeVolumeSyncManifest(runtimeContext, target, next);
+            log.info(
+                    "[sandbox-fs] Volume workspace sync: total={} changed={} unchanged={}",
+                    allPaths.size(),
+                    hydrated,
+                    Math.max(0, allPaths.size() - hydrated));
         }
         return hydrated;
     }
@@ -438,11 +489,22 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
             return 0;
         }
 
+        boolean incremental = active.hasPersistentWorkspace();
+        Map<String, VolumeSyncEntry> previous =
+                incremental ? readVolumeSyncManifest(runtimeContext, active) : Map.of();
+        Map<String, Long> remoteBefore =
+                incremental ? normalizedRemoteVersions(runtimeContext, fallback) : Map.of();
+        Map<String, String> localHashes = new LinkedHashMap<>();
+        Set<String> remoteConflicts = new LinkedHashSet<>();
+        Set<String> remoteDeletes = new LinkedHashSet<>();
+
         try (InputStream archive = active.persistWorkspace();
                 TarArchiveInputStream tar = new TarArchiveInputStream(archive)) {
             List<Map.Entry<String, byte[]>> batch = new ArrayList<>(REMOTE_PROJECTION_BATCH_SIZE);
             Set<String> currentProjection = new LinkedHashSet<>();
             int projected = 0;
+            int scanned = 0;
+            int unchanged = 0;
             long totalBytes = 0;
             boolean completeScan = true;
             TarArchiveEntry entry;
@@ -457,10 +519,11 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                             entry.getName());
                     continue;
                 }
-                if (REMOTE_PROJECTION_MANIFEST.equals(path)) {
+                if (REMOTE_PROJECTION_MANIFEST.equals(path) || VOLUME_SYNC_MANIFEST.equals(path)) {
                     continue;
                 }
                 currentProjection.add(path);
+                scanned++;
                 long size = entry.getSize();
                 if (size > REMOTE_PROJECTION_MAX_FILE_BYTES) {
                     log.warn(
@@ -469,7 +532,7 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                             size);
                     continue;
                 }
-                if (projected >= REMOTE_PROJECTION_MAX_FILES) {
+                if (scanned > REMOTE_PROJECTION_MAX_FILES) {
                     log.warn(
                             "[sandbox-fs] Workspace remote projection hit file limit {}",
                             REMOTE_PROJECTION_MAX_FILES);
@@ -492,9 +555,49 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                     completeScan = false;
                     break;
                 }
+                totalBytes += content.length;
+                String hash = sha256(content);
+                localHashes.put(path, hash);
+                if (incremental) {
+                    VolumeSyncEntry old = previous.get(path);
+                    long remoteVersion = remoteBefore.getOrDefault(path, 0L);
+                    boolean localUnchanged = old != null && old.sha256().equals(hash);
+                    boolean remoteDeleted =
+                            old != null
+                                    && old.remoteVersion() != 0L
+                                    && !remoteBefore.containsKey(path);
+                    boolean remoteChanged =
+                            old != null
+                                    && (remoteDeleted
+                                            || (remoteVersion != 0L
+                                                    && old.remoteVersion() != remoteVersion));
+                    if (remoteChanged) {
+                        // Never overwrite a browser/API update made while the sandbox was active.
+                        // Preserve a concurrently changed sandbox copy as a visible conflict file.
+                        remoteConflicts.add(path);
+                        if (remoteDeleted) {
+                            remoteDeletes.add(path);
+                        }
+                        if (localUnchanged) {
+                            unchanged++;
+                        } else {
+                            batch.add(Map.entry(conflictProjectionPath(path), content));
+                            projected++;
+                            if (batch.size() >= REMOTE_PROJECTION_BATCH_SIZE) {
+                                flushProjectionBatch(runtimeContext, fallback, batch);
+                            }
+                        }
+                        continue;
+                    }
+                    if (localUnchanged
+                            && remoteVersion != 0L
+                            && old.remoteVersion() == remoteVersion) {
+                        unchanged++;
+                        continue;
+                    }
+                }
                 batch.add(Map.entry(path, content));
                 projected++;
-                totalBytes += content.length;
 
                 if (batch.size() >= REMOTE_PROJECTION_BATCH_SIZE) {
                     flushProjectionBatch(runtimeContext, fallback, batch);
@@ -505,19 +608,85 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
             }
             int deleted = 0;
             if (completeScan) {
-                deleted = reconcileRemoteProjection(runtimeContext, fallback, currentProjection);
+                deleted =
+                        incremental
+                                ? reconcileVolumeProjection(
+                                        runtimeContext,
+                                        fallback,
+                                        currentProjection,
+                                        previous,
+                                        remoteBefore)
+                                : reconcileRemoteProjection(
+                                        runtimeContext, fallback, currentProjection);
                 writeProjectionManifest(runtimeContext, fallback, currentProjection);
             }
-            if (projected > 0) {
-                log.debug(
-                        "[sandbox-fs] Projected {} workspace files to remote fallback ({} bytes,"
-                                + " deleted {} stale projection files)",
+            if (incremental && completeScan) {
+                Map<String, Long> refreshed = normalizedRemoteVersions(runtimeContext, fallback);
+                Map<String, VolumeSyncEntry> next = new LinkedHashMap<>();
+                for (Map.Entry<String, String> local : localHashes.entrySet()) {
+                    if (!remoteConflicts.contains(local.getKey())) {
+                        next.put(
+                                local.getKey(),
+                                new VolumeSyncEntry(
+                                        refreshed.getOrDefault(local.getKey(), 0L),
+                                        local.getValue()));
+                    }
+                }
+                // Keep the previous entry as a tombstone hint. The next acquire compares it with
+                // the absent remote key and removes the stale local file from the Volume.
+                for (String deletedPath : remoteDeletes) {
+                    VolumeSyncEntry old = previous.get(deletedPath);
+                    if (old != null) {
+                        next.put(deletedPath, old);
+                    }
+                }
+                writeVolumeSyncManifest(runtimeContext, active, next);
+            }
+            if (projected > 0 || incremental) {
+                log.info(
+                        "[sandbox-fs] Workspace projection: scanned={} uploaded={} unchanged={}"
+                                + " conflicts={} bytes={} deleted={}",
+                        scanned,
                         projected,
+                        unchanged,
+                        remoteConflicts.size(),
                         totalBytes,
                         deleted);
             }
             return projected;
         }
+    }
+
+    private int reconcileVolumeProjection(
+            RuntimeContext runtimeContext,
+            RemoteFilesystem fallback,
+            Set<String> currentProjection,
+            Map<String, VolumeSyncEntry> previous,
+            Map<String, Long> remoteVersions) {
+        int deleted = 0;
+        for (Map.Entry<String, VolumeSyncEntry> old : previous.entrySet()) {
+            String path = old.getKey();
+            if (currentProjection.contains(path)) {
+                continue;
+            }
+            long remoteVersion = remoteVersions.getOrDefault(path, 0L);
+            if (remoteVersion != 0L && remoteVersion != old.getValue().remoteVersion()) {
+                // A browser/API writer changed a file that the sandbox deleted. Preserve the
+                // newer remote value and let the next acquire restore it into the Volume.
+                continue;
+            }
+            try {
+                fallback.delete(runtimeContext, path);
+                notifyProjectionDeleted(runtimeContext, path);
+                deleted++;
+            } catch (Exception e) {
+                log.warn(
+                        "[sandbox-fs] Failed to delete stale Volume projection {}: {}",
+                        path,
+                        e.getMessage());
+            }
+        }
+        return deleted;
     }
 
     private int reconcileRemoteProjection(
@@ -660,10 +829,156 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
         if (!normalized.startsWith("/")) {
             normalized = "/" + normalized;
         }
-        if (REMOTE_PROJECTION_MANIFEST.equals(normalized)) {
+        if (REMOTE_PROJECTION_MANIFEST.equals(normalized)
+                || VOLUME_SYNC_MANIFEST.equals(normalized)) {
             return null;
         }
         return toRemoteProjectionPath(normalized.substring(1));
+    }
+
+    private Map<String, Long> normalizedRemoteVersions(
+            RuntimeContext runtimeContext, RemoteFilesystem fallback) {
+        Map<String, Long> normalized = new LinkedHashMap<>();
+        for (Map.Entry<String, Long> entry : fallback.fileVersions(runtimeContext).entrySet()) {
+            String path = normalizeHydrationPath(entry.getKey());
+            if (path != null) {
+                normalized.put(path, entry.getValue() != null ? entry.getValue() : 0L);
+            }
+        }
+        return Map.copyOf(normalized);
+    }
+
+    private Map<String, VolumeSyncEntry> readVolumeSyncManifest(
+            RuntimeContext runtimeContext, Sandbox target) {
+        try {
+            String relative = VOLUME_SYNC_MANIFEST.substring(1);
+            ExecResult result =
+                    target.exec(
+                            runtimeContext,
+                            "if test -f "
+                                    + shellSingleQuote(relative)
+                                    + "; then base64 "
+                                    + shellSingleQuote(relative)
+                                    + "; fi",
+                            30);
+            if (!result.ok() || result.truncated() || result.stdout() == null) {
+                return Map.of();
+            }
+            byte[] json = Base64.getMimeDecoder().decode(result.stdout());
+            Map<String, VolumeSyncEntry> decoded =
+                    MANIFEST_MAPPER.readValue(json, SYNC_MANIFEST_TYPE);
+            Map<String, VolumeSyncEntry> normalized = new LinkedHashMap<>();
+            for (Map.Entry<String, VolumeSyncEntry> entry : decoded.entrySet()) {
+                String path = normalizeManifestPath(entry.getKey());
+                if (path != null && entry.getValue() != null) {
+                    normalized.put(path, entry.getValue());
+                }
+            }
+            return Map.copyOf(normalized);
+        } catch (Exception e) {
+            log.warn("[sandbox-fs] Ignoring unreadable Volume sync manifest: {}", e.getMessage());
+            return Map.of();
+        }
+    }
+
+    private void writeVolumeSyncManifest(
+            RuntimeContext runtimeContext, Sandbox target, Map<String, VolumeSyncEntry> entries) {
+        try {
+            byte[] json = MANIFEST_MAPPER.writeValueAsBytes(entries);
+            String encoded = Base64.getEncoder().encodeToString(json);
+            String relative = VOLUME_SYNC_MANIFEST.substring(1);
+            String temp = relative + ".b64";
+            ExecResult initialize =
+                    target.exec(
+                            runtimeContext,
+                            "mkdir -p .agentscope && : > " + shellSingleQuote(temp),
+                            30);
+            if (!initialize.ok()) {
+                throw new IllegalStateException(initialize.combinedOutput());
+            }
+            for (int offset = 0; offset < encoded.length(); offset += 4000) {
+                String chunk = encoded.substring(offset, Math.min(offset + 4000, encoded.length()));
+                ExecResult append =
+                        target.exec(
+                                runtimeContext,
+                                "printf '%s' '" + chunk + "' >> " + shellSingleQuote(temp),
+                                30);
+                if (!append.ok()) {
+                    throw new IllegalStateException(append.combinedOutput());
+                }
+            }
+            ExecResult commit =
+                    target.exec(
+                            runtimeContext,
+                            "base64 -d "
+                                    + shellSingleQuote(temp)
+                                    + " > "
+                                    + shellSingleQuote(relative)
+                                    + " && rm -f "
+                                    + shellSingleQuote(temp),
+                            30);
+            if (!commit.ok()) {
+                throw new IllegalStateException(commit.combinedOutput());
+            }
+        } catch (Exception e) {
+            log.warn("[sandbox-fs] Failed to persist Volume sync manifest: {}", e.getMessage());
+        }
+    }
+
+    private void removeRemoteDeletedVolumeFiles(
+            RuntimeContext runtimeContext,
+            Sandbox target,
+            Map<String, VolumeSyncEntry> previous,
+            Map<String, Long> remoteVersions)
+            throws Exception {
+        List<String> deleted =
+                previous.keySet().stream()
+                        .filter(path -> !remoteVersions.containsKey(path))
+                        .toList();
+        for (int offset = 0; offset < deleted.size(); offset += REMOTE_PROJECTION_BATCH_SIZE) {
+            List<String> batch =
+                    deleted.subList(
+                            offset,
+                            Math.min(deleted.size(), offset + REMOTE_PROJECTION_BATCH_SIZE));
+            String command =
+                    batch.stream()
+                            .map(path -> shellSingleQuote(path.substring(1)))
+                            .collect(Collectors.joining(" ", "rm -f -- ", ""));
+            ExecResult result = target.exec(runtimeContext, command, 30);
+            if (!result.ok()) {
+                throw new IllegalStateException(
+                        "Failed to remove files deleted from remote workspace: "
+                                + result.combinedOutput());
+            }
+        }
+    }
+
+    private static String sha256(byte[] content) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(content);
+            StringBuilder out = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                out.append(String.format(java.util.Locale.ROOT, "%02x", b & 0xff));
+            }
+            return out.toString();
+        } catch (Exception e) {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
+        }
+    }
+
+    private static String conflictProjectionPath(String path) {
+        String name = path.substring(path.lastIndexOf('/') + 1);
+        String safeName = name.replaceAll("[^A-Za-z0-9._-]", "_");
+        return "/generated/conflicts/"
+                + UUID.randomUUID().toString().substring(0, 8)
+                + "-"
+                + safeName;
+    }
+
+    private record VolumeSyncEntry(long remoteVersion, String sha256) {
+        private VolumeSyncEntry {
+            sha256 = sha256 != null ? sha256 : "";
+        }
     }
 
     private Sandbox activeSandbox(RuntimeContext runtimeContext) {

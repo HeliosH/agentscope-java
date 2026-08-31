@@ -18,8 +18,11 @@ package io.agentscope.extensions.sandbox.cube;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.WorkspaceSpec;
 import io.agentscope.harness.agent.sandbox.snapshot.LocalSnapshotSpec;
@@ -127,6 +130,22 @@ class CubeSandboxClientTest {
     }
 
     @Test
+    void create_acceptsCommonSkillsSourceFromReadOnlyVolume() {
+        CubeSandboxClientOptions options = new CubeSandboxClientOptions();
+        options.setCommonSkillsMountPath("/opt/skills");
+        options.setVolumeMounts(
+                List.of(CubeVolumeMount.existing("enterprise-skills", "/opt/skills", true)));
+
+        CubeSandboxState state =
+                (CubeSandboxState)
+                        new CubeSandboxClient()
+                                .create(new WorkspaceSpec(), null, options)
+                                .getState();
+
+        assertEquals("enterprise-skills", state.getVolumeMounts().get(0).volumeId());
+    }
+
+    @Test
     void stateRoundTripPreservesResolvedMountAndSkillsOverlay() {
         CubeSandboxClientOptions options = new CubeSandboxClientOptions();
         options.setHostMounts(
@@ -145,5 +164,59 @@ class CubeSandboxClientTest {
 
         assertEquals(original.getHostMounts(), restored.getHostMounts());
         assertEquals("/opt/agentscope-common-skills", restored.getCommonSkillsMountPath());
+    }
+
+    @Test
+    void persistentWorkspaceVolume_isStablePerNamespaceAndDisablesSnapshot(@TempDir Path tmp) {
+        CubeSandboxClientOptions options = new CubeSandboxClientOptions();
+        options.setWorkspaceVolumeEnabled(true);
+        options.setWorkspaceVolumeDriver("s3");
+        options.setWorkspaceVolumeNamespaceFactory(
+                ctx -> List.of("org", ctx.get("orgId"), "user", ctx.getUserId()));
+        RuntimeContext first =
+                RuntimeContext.builder().userId("user-1").put("orgId", "org-1").build();
+        RuntimeContext second =
+                RuntimeContext.builder().userId("user-1").put("orgId", "org-1").build();
+        CubeSandboxClient client = new CubeSandboxClient();
+
+        CubeSandboxState a =
+                (CubeSandboxState)
+                        client.create(
+                                        new WorkspaceSpec(),
+                                        new LocalSnapshotSpec(tmp.toString()),
+                                        options,
+                                        first)
+                                .getState();
+        CubeSandboxState b =
+                (CubeSandboxState)
+                        client.create(
+                                        new WorkspaceSpec(),
+                                        new LocalSnapshotSpec(tmp.toString()),
+                                        options,
+                                        second)
+                                .getState();
+
+        assertTrue(a.isPersistentWorkspace());
+        assertEquals(a.getVolumeMounts().get(0).volumeId(), b.getVolumeMounts().get(0).volumeId());
+        assertEquals("/home/user", a.getVolumeMounts().get(0).mountPath());
+        assertNull(a.getSnapshot(), "persistent Volume must replace whole-workspace snapshots");
+    }
+
+    @Test
+    void persistentWorkspaceVolume_rejectsAnonymousNamespace() {
+        CubeSandboxClientOptions options = new CubeSandboxClientOptions();
+        options.setWorkspaceVolumeEnabled(true);
+        options.setWorkspaceVolumeNamespaceFactory(
+                ctx -> List.of("org", "_anonymous", "user", "_anonymous"));
+
+        assertThrows(
+                IllegalStateException.class,
+                () ->
+                        new CubeSandboxClient()
+                                .create(
+                                        new WorkspaceSpec(),
+                                        new NoopSnapshotSpec(),
+                                        options,
+                                        RuntimeContext.empty()));
     }
 }

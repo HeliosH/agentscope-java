@@ -54,6 +54,7 @@ QwenPaw 是 **Python 产品**。框架有"等价物" ≠ QwenPaw 代码能直接
 | 21 | [QwenPaw 后端能力差距收敛](./21-qwenpaw-backend-gap-closure.md) | QwenPaw 对比、后端能力补齐与验证边界 |
 | 22 | [CubeSandbox 持久化、Skills 与恢复方案](./22-cubesandbox-persistence-skills-practice.md) | host-mount 安全边界、公共 Skills 覆盖、MinIO 冷备、网络与重建验收 |
 | 23 | [企业扩展运行时优化落地方案](./23-enterprise-extension-runtime-plan.md) | 请求级工具隔离、可撤销扩展、依赖治理、运行能力快照与企业插件路线图 |
+| 24 | [CubeSandbox Volume 持久工作区优化方案](./24-cubesandbox-volume-workspace-plan.md) | 用户工作卷、公共 Skills Volume、增量同步、冲突保护、回收与跨 Provider 恢复 |
 
 ## 一页速读
 

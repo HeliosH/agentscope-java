@@ -17,6 +17,7 @@ package io.agentscope.extensions.sandbox.cube;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -64,7 +65,10 @@ class CubePlatformHttpTest {
                 300,
                 List.of(
                         new CubeHostMount("/data/shared/skills", "/opt/skills", true),
-                        new CubeHostMount("/data/shared/output", "/output", false)));
+                        new CubeHostMount("/data/shared/output", "/output", false)),
+                List.of(
+                        CubeVolumeMount.managed("agentscope-ws-123", "/home/user", false, "s3"),
+                        CubeVolumeMount.existing("enterprise-skills", "/opt/shared", true)));
 
         Buffer body = new Buffer();
         captured.get().body().writeTo(body);
@@ -76,6 +80,58 @@ class CubePlatformHttpTest {
         assertEquals("/data/shared/skills", mounts.get(0).path("hostPath").asText());
         assertEquals("/opt/skills", mounts.get(0).path("mountPath").asText());
         assertEquals(true, mounts.get(0).path("readOnly").asBoolean());
+        assertEquals(2, request.path("volumeMounts").size());
+        assertEquals(
+                "agentscope-ws-123", request.path("volumeMounts").get(0).path("name").asText());
+        assertEquals("/home/user", request.path("volumeMounts").get(0).path("path").asText());
+        assertTrue(request.path("volumeMounts").get(0).path("readOnly").isMissingNode());
+        assertTrue(request.path("volumeMounts").get(1).path("readOnly").asBoolean());
         assertNull(captured.get().header("X-API-Key"));
+    }
+
+    @Test
+    void ensureVolume_createsAfterNotFoundAndReusesDeterministicName() throws Exception {
+        AtomicReference<String> methods = new AtomicReference<>("");
+        OkHttpClient http =
+                new OkHttpClient.Builder()
+                        .addInterceptor(
+                                chain -> {
+                                    Request request = chain.request();
+                                    methods.updateAndGet(
+                                            value ->
+                                                    value
+                                                            + request.method()
+                                                            + " "
+                                                            + request.url().encodedPath()
+                                                            + "\n");
+                                    if ("GET".equals(request.method())) {
+                                        return response(request, 404, "{}");
+                                    }
+                                    return response(
+                                            request,
+                                            201,
+                                            "{\"volumeID\":\"agentscope-ws-1\","
+                                                + "\"name\":\"agentscope-ws-1\",\"token\":\"t\"}");
+                                })
+                        .build();
+        CubeSandboxClientOptions options = new CubeSandboxClientOptions();
+        options.setApiUrl("http://cube.test");
+
+        CubeVolumeInfo info =
+                new CubePlatformHttp(http, new ObjectMapper(), options)
+                        .ensureVolume("agentscope-ws-1", "s3");
+
+        assertEquals("agentscope-ws-1", info.volumeId());
+        assertEquals("GET /volumes/agentscope-ws-1\nPOST /volumes\n", methods.get());
+    }
+
+    private static Response response(Request request, int code, String body) {
+        return new Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(code)
+                .message(code == 404 ? "Not Found" : "OK")
+                .body(ResponseBody.create(body, JSON))
+                .build();
     }
 }

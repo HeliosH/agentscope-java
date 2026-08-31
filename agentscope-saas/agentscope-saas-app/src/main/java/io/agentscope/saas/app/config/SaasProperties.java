@@ -822,11 +822,26 @@ public class SaasProperties {
         /** Optional Cubelet path containing centrally managed enterprise Skills. */
         private String cubeCommonSkillsHostPath;
 
+        /** Optional existing Cube Volume containing centrally managed enterprise Skills. */
+        private String cubeCommonSkillsVolumeId;
+
         /** Read-only path where enterprise Skills are mounted inside Cube. */
         private String cubeCommonSkillsMountPath = "/opt/agentscope-common-skills";
 
         /** Optional private-first Skills target; blank means {@code <workspaceRoot>/skills}. */
         private String cubeCommonSkillsTargetPath;
+
+        /** Deployment-controlled JSON array of existing Cube Volume mounts. */
+        private String cubeVolumeMountsJson = "[]";
+
+        /** Provision one persistent workspace Volume per authenticated tenant/user namespace. */
+        private boolean cubeWorkspaceVolumeEnabled;
+
+        /** Optional Cube Volume plugin driver; blank selects Cube's configured default. */
+        private String cubeWorkspaceVolumeDriver;
+
+        /** Prefix used for deterministic, hashed workspace Volume identifiers. */
+        private String cubeWorkspaceVolumeNamePrefix = "agentscope-ws";
 
         // --- E2B-specific fields ---
 
@@ -1241,6 +1256,14 @@ public class SaasProperties {
             this.cubeCommonSkillsHostPath = cubeCommonSkillsHostPath;
         }
 
+        public String getCubeCommonSkillsVolumeId() {
+            return cubeCommonSkillsVolumeId;
+        }
+
+        public void setCubeCommonSkillsVolumeId(String cubeCommonSkillsVolumeId) {
+            this.cubeCommonSkillsVolumeId = cubeCommonSkillsVolumeId;
+        }
+
         public String getCubeCommonSkillsMountPath() {
             return cubeCommonSkillsMountPath;
         }
@@ -1255,6 +1278,38 @@ public class SaasProperties {
 
         public void setCubeCommonSkillsTargetPath(String cubeCommonSkillsTargetPath) {
             this.cubeCommonSkillsTargetPath = cubeCommonSkillsTargetPath;
+        }
+
+        public String getCubeVolumeMountsJson() {
+            return cubeVolumeMountsJson;
+        }
+
+        public void setCubeVolumeMountsJson(String cubeVolumeMountsJson) {
+            this.cubeVolumeMountsJson = cubeVolumeMountsJson;
+        }
+
+        public boolean isCubeWorkspaceVolumeEnabled() {
+            return cubeWorkspaceVolumeEnabled;
+        }
+
+        public void setCubeWorkspaceVolumeEnabled(boolean cubeWorkspaceVolumeEnabled) {
+            this.cubeWorkspaceVolumeEnabled = cubeWorkspaceVolumeEnabled;
+        }
+
+        public String getCubeWorkspaceVolumeDriver() {
+            return cubeWorkspaceVolumeDriver;
+        }
+
+        public void setCubeWorkspaceVolumeDriver(String cubeWorkspaceVolumeDriver) {
+            this.cubeWorkspaceVolumeDriver = cubeWorkspaceVolumeDriver;
+        }
+
+        public String getCubeWorkspaceVolumeNamePrefix() {
+            return cubeWorkspaceVolumeNamePrefix;
+        }
+
+        public void setCubeWorkspaceVolumeNamePrefix(String cubeWorkspaceVolumeNamePrefix) {
+            this.cubeWorkspaceVolumeNamePrefix = cubeWorkspaceVolumeNamePrefix;
         }
 
         public String getE2bApiKey() {

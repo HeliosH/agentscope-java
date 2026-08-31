@@ -15,10 +15,15 @@
  */
 package io.agentscope.extensions.sandbox.cube;
 
+import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.harness.agent.filesystem.remote.store.NamespaceFactory;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
 import io.agentscope.harness.agent.sandbox.SandboxClientOptions;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import okhttp3.OkHttpClient;
 
 /**
@@ -86,6 +91,21 @@ public class CubeSandboxClientOptions extends SandboxClientOptions {
 
     /** Private-first Skills directory. Blank resolves to {@code <workspaceRoot>/skills}. */
     private String commonSkillsTargetPath;
+
+    /** Deployment-defined persistent Volumes attached to every Cube sandbox. */
+    private List<CubeVolumeMount> volumeMounts = List.of();
+
+    /** Whether to provision and mount one persistent workspace Volume per isolation namespace. */
+    private boolean workspaceVolumeEnabled;
+
+    /** Optional Cube Volume plugin driver. Blank lets Cube select its default driver. */
+    private String workspaceVolumeDriver;
+
+    /** Prefix for deterministic, non-secret workspace Volume identifiers. */
+    private String workspaceVolumeNamePrefix = "agentscope-ws";
+
+    /** Resolves the tenant/user isolation tuple used to derive the workspace Volume identifier. */
+    private NamespaceFactory workspaceVolumeNamespaceFactory;
 
     @Override
     public String getType() {
@@ -251,6 +271,46 @@ public class CubeSandboxClientOptions extends SandboxClientOptions {
         this.commonSkillsTargetPath = commonSkillsTargetPath;
     }
 
+    public List<CubeVolumeMount> getVolumeMounts() {
+        return volumeMounts;
+    }
+
+    public void setVolumeMounts(List<CubeVolumeMount> volumeMounts) {
+        this.volumeMounts = volumeMounts == null ? List.of() : List.copyOf(volumeMounts);
+    }
+
+    public boolean isWorkspaceVolumeEnabled() {
+        return workspaceVolumeEnabled;
+    }
+
+    public void setWorkspaceVolumeEnabled(boolean workspaceVolumeEnabled) {
+        this.workspaceVolumeEnabled = workspaceVolumeEnabled;
+    }
+
+    public String getWorkspaceVolumeDriver() {
+        return workspaceVolumeDriver;
+    }
+
+    public void setWorkspaceVolumeDriver(String workspaceVolumeDriver) {
+        this.workspaceVolumeDriver = workspaceVolumeDriver;
+    }
+
+    public String getWorkspaceVolumeNamePrefix() {
+        return workspaceVolumeNamePrefix;
+    }
+
+    public void setWorkspaceVolumeNamePrefix(String workspaceVolumeNamePrefix) {
+        this.workspaceVolumeNamePrefix = normalizeVolumePrefix(workspaceVolumeNamePrefix);
+    }
+
+    public NamespaceFactory getWorkspaceVolumeNamespaceFactory() {
+        return workspaceVolumeNamespaceFactory;
+    }
+
+    public void setWorkspaceVolumeNamespaceFactory(NamespaceFactory namespaceFactory) {
+        this.workspaceVolumeNamespaceFactory = namespaceFactory;
+    }
+
     List<CubeHostMount> resolveHostMounts(String sessionId) {
         List<CubeHostMount> resolved =
                 hostMounts.stream()
@@ -261,5 +321,62 @@ public class CubeSandboxClientOptions extends SandboxClientOptions {
             throw new IllegalArgumentException("Cube host mounts must use unique mountPath values");
         }
         return resolved;
+    }
+
+    List<CubeVolumeMount> resolveVolumeMounts(RuntimeContext runtimeContext) {
+        ArrayList<CubeVolumeMount> resolved = new ArrayList<>(volumeMounts);
+        if (workspaceVolumeEnabled) {
+            if (workspaceVolumeNamespaceFactory == null) {
+                throw new IllegalStateException(
+                        "Cube workspace Volume requires an isolation namespace factory");
+            }
+            List<String> namespace = workspaceVolumeNamespaceFactory.getNamespace(runtimeContext);
+            if (namespace == null
+                    || namespace.isEmpty()
+                    || namespace.stream()
+                            .anyMatch(
+                                    value ->
+                                            value == null
+                                                    || value.isBlank()
+                                                    || "_anonymous".equals(value))) {
+                throw new IllegalStateException(
+                        "Cube workspace Volume requires an authenticated isolation namespace");
+            }
+            String canonical = String.join("\u0000", namespace);
+            String volumeId = workspaceVolumeNamePrefix + "-" + sha256(canonical).substring(0, 40);
+            resolved.add(
+                    CubeVolumeMount.managed(volumeId, workspaceRoot, false, workspaceVolumeDriver));
+        }
+        long distinctTargets = resolved.stream().map(CubeVolumeMount::mountPath).distinct().count();
+        if (distinctTargets != resolved.size()) {
+            throw new IllegalArgumentException("Cube Volumes must use unique mountPath values");
+        }
+        return List.copyOf(resolved);
+    }
+
+    private static String normalizeVolumePrefix(String value) {
+        String normalized =
+                value == null || value.isBlank()
+                        ? "agentscope-ws"
+                        : value.trim().toLowerCase(Locale.ROOT);
+        if (!normalized.matches("[a-z0-9_-]{1,80}")) {
+            throw new IllegalArgumentException("Invalid Cube workspace Volume prefix: " + value);
+        }
+        return normalized;
+    }
+
+    private static String sha256(String value) {
+        try {
+            byte[] digest =
+                    MessageDigest.getInstance("SHA-256")
+                            .digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder out = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                out.append(String.format(Locale.ROOT, "%02x", b & 0xff));
+            }
+            return out.toString();
+        } catch (Exception e) {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
+        }
     }
 }

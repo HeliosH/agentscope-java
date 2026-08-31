@@ -59,6 +59,12 @@ public class CubeSandboxState extends SandboxState {
     @JsonProperty("commonSkillsTargetPath")
     private String commonSkillsTargetPath;
 
+    @JsonProperty("volumeMounts")
+    private List<CubeVolumeMount> volumeMounts = List.of();
+
+    @JsonProperty("persistentWorkspace")
+    private boolean persistentWorkspace;
+
     public String getSandboxId() {
         return sandboxId;
     }
@@ -145,5 +151,21 @@ public class CubeSandboxState extends SandboxState {
 
     public void setCommonSkillsTargetPath(String commonSkillsTargetPath) {
         this.commonSkillsTargetPath = commonSkillsTargetPath;
+    }
+
+    public List<CubeVolumeMount> getVolumeMounts() {
+        return volumeMounts;
+    }
+
+    public void setVolumeMounts(List<CubeVolumeMount> volumeMounts) {
+        this.volumeMounts = volumeMounts == null ? List.of() : List.copyOf(volumeMounts);
+    }
+
+    public boolean isPersistentWorkspace() {
+        return persistentWorkspace;
+    }
+
+    public void setPersistentWorkspace(boolean persistentWorkspace) {
+        this.persistentWorkspace = persistentWorkspace;
     }
 }

@@ -34,8 +34,8 @@ import org.slf4j.LoggerFactory;
  * Cube sandbox instance backed by a CubeSandbox microVM. Communicates with the Cube platform via
  * E2B-compatible REST API for lifecycle and Connect+protobuf envd for command execution.
  *
- * <p>Only TAR-based workspace persistence is supported (no E2B native snapshots). Cube's private
- * deployment model means sandboxes are typically managed by the platform with TTL-based cleanup.
+ * <p>Workspace persistence can use a Cube Volume or the provider-neutral TAR snapshot fallback.
+ * Sandbox compute instances remain disposable and are normally cleaned up by release/TTL.
  */
 final class CubeSandbox extends AbstractBaseSandbox {
 
@@ -74,6 +74,7 @@ final class CubeSandbox extends AbstractBaseSandbox {
         }
         ensureSandbox();
         verifyHostMounts();
+        verifyVolumeMounts();
         super.start();
         try {
             applyCommonSkillsOverlay();
@@ -183,13 +184,24 @@ final class CubeSandbox extends AbstractBaseSandbox {
         return state;
     }
 
+    @Override
+    public boolean hasPersistentWorkspace() {
+        return state.isPersistentWorkspace();
+    }
+
     // ---- internals ----
 
     private void ensureSandbox() throws Exception {
         if (state.getSandboxId() == null || state.getSandboxId().isBlank()) {
             // Create new sandbox
+            ensureManagedVolumes();
             int timeout = opt.getSandboxTimeoutSeconds();
-            var json = platform.createSandbox(opt.getTemplateId(), timeout, state.getHostMounts());
+            var json =
+                    platform.createSandbox(
+                            opt.getTemplateId(),
+                            timeout,
+                            state.getHostMounts(),
+                            state.getVolumeMounts());
             CubePlatformHttp.applySandboxFields(state, json);
             applyDefaultDomain();
             log.info("Created Cube sandbox id={}", state.getSandboxId());
@@ -253,6 +265,36 @@ final class CubeSandbox extends AbstractBaseSandbox {
         }
     }
 
+    private void ensureManagedVolumes() throws Exception {
+        for (CubeVolumeMount mount : state.getVolumeMounts()) {
+            if (mount.managed()) {
+                platform.ensureVolume(mount.volumeId(), mount.driver());
+            }
+        }
+    }
+
+    private void verifyVolumeMounts() throws Exception {
+        if (state.getVolumeMounts().isEmpty()) {
+            return;
+        }
+        String checks =
+                state.getVolumeMounts().stream()
+                        .map(
+                                mount ->
+                                        "test -d "
+                                                + shellSingleQuote(mount.mountPath())
+                                                + " || { echo "
+                                                + shellSingleQuote(
+                                                        "missing Cube Volume mount: "
+                                                                + mount.mountPath())
+                                                + " >&2; exit 43; }")
+                        .collect(Collectors.joining(" && "));
+        ExecResult result = envd().runShell(state, "/", checks, 30);
+        if (!result.ok()) {
+            throw new IllegalStateException("Cube Volume verification failed: " + result.stderr());
+        }
+    }
+
     private void applyCommonSkillsOverlay() throws Exception {
         String source = state.getCommonSkillsMountPath();
         if (source == null || source.isBlank()) {
@@ -286,19 +328,27 @@ final class CubeSandbox extends AbstractBaseSandbox {
     private boolean hasWritableWorkspaceMount() {
         Path workspace = Path.of(state.getWorkspaceRoot()).normalize();
         return state.getHostMounts().stream()
-                .anyMatch(
-                        mount ->
-                                !mount.readOnly()
-                                        && Path.of(mount.mountPath())
-                                                .normalize()
-                                                .equals(workspace));
+                        .anyMatch(
+                                mount ->
+                                        !mount.readOnly()
+                                                && Path.of(mount.mountPath())
+                                                        .normalize()
+                                                        .equals(workspace))
+                || state.getVolumeMounts().stream()
+                        .anyMatch(
+                                mount ->
+                                        !mount.readOnly()
+                                                && Path.of(mount.mountPath())
+                                                        .normalize()
+                                                        .equals(workspace));
     }
 
     private String nestedMountExcludes() {
         Path workspace = Path.of(state.getWorkspaceRoot()).normalize();
         List<String> excludes =
-                state.getHostMounts().stream()
-                        .map(CubeHostMount::mountPath)
+                java.util.stream.Stream.concat(
+                                state.getHostMounts().stream().map(CubeHostMount::mountPath),
+                                state.getVolumeMounts().stream().map(CubeVolumeMount::mountPath))
                         .map(Path::of)
                         .map(Path::normalize)
                         .filter(path -> path.startsWith(workspace) && !path.equals(workspace))

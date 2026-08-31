@@ -60,6 +60,15 @@ final class CubePlatformHttp {
      */
     JsonNode createSandbox(String templateId, int timeout, List<CubeHostMount> hostMounts)
             throws Exception {
+        return createSandbox(templateId, timeout, hostMounts, List.of());
+    }
+
+    JsonNode createSandbox(
+            String templateId,
+            int timeout,
+            List<CubeHostMount> hostMounts,
+            List<CubeVolumeMount> volumeMounts)
+            throws Exception {
         ObjectNode body = objectMapper.createObjectNode();
         body.put("templateID", templateId != null ? templateId : "base");
         body.put("timeout", timeout);
@@ -67,7 +76,77 @@ final class CubePlatformHttp {
             ObjectNode metadata = body.putObject("metadata");
             metadata.put("host-mount", objectMapper.writeValueAsString(hostMounts));
         }
+        if (volumeMounts != null && !volumeMounts.isEmpty()) {
+            var mounts = body.putArray("volumeMounts");
+            for (CubeVolumeMount mount : volumeMounts) {
+                ObjectNode item = mounts.addObject();
+                item.put("name", mount.volumeId());
+                item.put("path", mount.mountPath());
+                if (mount.readOnly()) {
+                    item.put("readOnly", true);
+                }
+            }
+        }
         return CubeRetry.withRetries(maxRetries, () -> post("/sandboxes", body));
+    }
+
+    CubeVolumeInfo ensureVolume(String name, String driver) throws Exception {
+        CubeVolumeInfo existing = getVolume(name);
+        if (existing != null) {
+            return existing;
+        }
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("name", name);
+        if (driver != null && !driver.isBlank()) {
+            body.put("driver", driver);
+        }
+        try {
+            return volumeInfo(post("/volumes", body));
+        } catch (Exception createError) {
+            // Concurrent creators may race after the initial 404. A successful read proves the
+            // desired deterministic Volume now exists; otherwise preserve the original failure.
+            CubeVolumeInfo raced = getVolume(name);
+            if (raced != null) {
+                return raced;
+            }
+            throw createError;
+        }
+    }
+
+    CubeVolumeInfo getVolume(String volumeId) throws Exception {
+        return CubeRetry.withRetries(
+                maxRetries,
+                () -> {
+                    Request.Builder request =
+                            new Request.Builder().url(baseUrl + "/volumes/" + volumeId).get();
+                    applyApiKey(request);
+                    try (Response response = http.newCall(request.build()).execute()) {
+                        if (response.code() == 404) {
+                            return null;
+                        }
+                        if (!response.isSuccessful()) {
+                            throw httpFailure("GET /volumes/" + volumeId, response);
+                        }
+                        String json = response.body() != null ? response.body().string() : "{}";
+                        return volumeInfo(objectMapper.readTree(json));
+                    }
+                });
+    }
+
+    void deleteVolume(String volumeId) throws Exception {
+        CubeRetry.withRetries(
+                maxRetries,
+                () -> {
+                    Request.Builder request =
+                            new Request.Builder().url(baseUrl + "/volumes/" + volumeId).delete();
+                    applyApiKey(request);
+                    try (Response response = http.newCall(request.build()).execute()) {
+                        if (!response.isSuccessful() && response.code() != 404) {
+                            throw httpFailure("DELETE /volumes/" + volumeId, response);
+                        }
+                    }
+                    return null;
+                });
     }
 
     /**
@@ -95,9 +174,7 @@ final class CubePlatformHttp {
                 () -> {
                     Request.Builder rb =
                             new Request.Builder().url(baseUrl + "/sandboxes/" + sandboxId).delete();
-                    if (apiKey != null && !apiKey.isBlank()) {
-                        rb.header("X-API-Key", apiKey);
-                    }
+                    applyApiKey(rb);
                     try (Response res = http.newCall(rb.build()).execute()) {
                         if (!res.isSuccessful() && res.code() != 404) {
                             throw new SandboxException.SandboxRuntimeException(
@@ -117,9 +194,7 @@ final class CubePlatformHttp {
                 new Request.Builder()
                         .url(baseUrl + path)
                         .post(RequestBody.create(bodyBytes, JSON_MT));
-        if (apiKey != null && !apiKey.isBlank()) {
-            request.header("X-API-Key", apiKey);
-        }
+        applyApiKey(request);
         Request req = request.build();
 
         try (Response res = http.newCall(req).execute()) {
@@ -150,6 +225,31 @@ final class CubePlatformHttp {
         if (json.has("envdVersion")) {
             state.setEnvdVersion(json.get("envdVersion").asText());
         }
+    }
+
+    private CubeVolumeInfo volumeInfo(JsonNode json) {
+        String volumeId = json.path("volumeID").asText();
+        if (volumeId.isBlank()) {
+            throw new SandboxException.SandboxRuntimeException(
+                    SandboxErrorCode.WORKSPACE_START_ERROR,
+                    "Cube Volume response is missing volumeID");
+        }
+        return new CubeVolumeInfo(
+                volumeId, json.path("name").asText(volumeId), json.path("token").asText(""));
+    }
+
+    private void applyApiKey(Request.Builder request) {
+        if (apiKey != null && !apiKey.isBlank()) {
+            request.header("X-API-Key", apiKey);
+        }
+    }
+
+    private SandboxException.SandboxRuntimeException httpFailure(
+            String operation, Response response) throws IOException {
+        String body = response.body() != null ? response.body().string() : "";
+        return new SandboxException.SandboxRuntimeException(
+                SandboxErrorCode.WORKSPACE_START_ERROR,
+                "Cube API " + operation + " failed HTTP " + response.code() + ": " + body);
     }
 
     private static String stripTrailingSlash(String url) {

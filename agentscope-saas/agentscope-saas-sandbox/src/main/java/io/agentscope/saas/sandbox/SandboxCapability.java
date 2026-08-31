@@ -17,7 +17,8 @@ public enum SandboxCapability {
     COMMAND_CANCEL,
     CONCURRENT_EXEC,
     CUSTOM_IMAGE,
-    CUSTOM_TEMPLATE;
+    CUSTOM_TEMPLATE,
+    PERSISTENT_WORKSPACE;
 
     public static SandboxCapability parse(String value) {
         if (value == null || value.isBlank()) {

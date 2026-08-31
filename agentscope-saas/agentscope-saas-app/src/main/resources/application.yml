@@ -145,8 +145,14 @@ saas:
     cube-verify-host-mounts: ${SAAS_SANDBOX_CUBE_VERIFY_HOST_MOUNTS:true}
     # Optional read-only enterprise Skills mount; private workspace Skills keep precedence.
     cube-common-skills-host-path: ${SAAS_SANDBOX_CUBE_COMMON_SKILLS_HOST_PATH:}
+    cube-common-skills-volume-id: ${SAAS_SANDBOX_CUBE_COMMON_SKILLS_VOLUME_ID:}
     cube-common-skills-mount-path: ${SAAS_SANDBOX_CUBE_COMMON_SKILLS_MOUNT_PATH:/opt/agentscope-common-skills}
     cube-common-skills-target-path: ${SAAS_SANDBOX_CUBE_COMMON_SKILLS_TARGET_PATH:}
+    # Cube >= 0.6 persistent Volumes. Existing shared volumes are deployment-controlled.
+    cube-volume-mounts-json: '${SAAS_SANDBOX_CUBE_VOLUME_MOUNTS_JSON:[]}'
+    cube-workspace-volume-enabled: ${SAAS_SANDBOX_CUBE_WORKSPACE_VOLUME_ENABLED:false}
+    cube-workspace-volume-driver: ${SAAS_SANDBOX_CUBE_WORKSPACE_VOLUME_DRIVER:}
+    cube-workspace-volume-name-prefix: ${SAAS_SANDBOX_CUBE_WORKSPACE_VOLUME_NAME_PREFIX:agentscope-ws}
     # --- E2B (official hosted sandbox, https://e2b.app). Used when type=e2b. ---
     # API key is required for type=e2b. Get one at https://e2b.app.
     e2b-api-key: ${SAAS_SANDBOX_E2B_API_KEY:}

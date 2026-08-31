@@ -78,6 +78,27 @@ class SandboxConfigCapabilityTest {
     }
 
     @Test
+    void persistentWorkspaceCapabilityRequiresCubeVolumeConfiguration() {
+        SaasProperties properties = properties("cube");
+        properties.getSandbox().setCubeWorkspaceVolumeEnabled(true);
+        properties.getSandbox().setRequiredCapabilities(List.of("persistent-workspace"));
+
+        assertThat(config.activeSandboxDeployment(properties, objectMapper).capabilities())
+                .contains(SandboxCapability.PERSISTENT_WORKSPACE);
+    }
+
+    @Test
+    void cubePersistentWorkspaceDoesNotAdvertiseUnusedSnapshotCapability() {
+        SaasProperties properties = properties("cube");
+        properties.getSandbox().setCubeWorkspaceVolumeEnabled(true);
+        properties.getSandbox().setRequiredCapabilities(List.of("snapshot"));
+
+        assertThatThrownBy(() -> config.activeSandboxDeployment(properties, objectMapper))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("SNAPSHOT");
+    }
+
+    @Test
     void parsesDeploymentHostMountsAndAddsReadOnlyCommonSkills() {
         SaasProperties properties = properties("cube");
         properties
@@ -145,6 +166,29 @@ class SandboxConfigCapabilityTest {
                                         properties.getSandbox(), "/workspace"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("child of the workspace");
+    }
+
+    @Test
+    void mountsEnterpriseSkillsFromReadOnlyVolume() {
+        SaasProperties properties = properties("cube");
+        properties.getSandbox().setCubeCommonSkillsVolumeId("enterprise-skills");
+
+        var mounts = SandboxConfig.cubeVolumeMounts(properties.getSandbox(), objectMapper);
+
+        assertThat(mounts).hasSize(1);
+        assertThat(mounts.get(0).volumeId()).isEqualTo("enterprise-skills");
+        assertThat(mounts.get(0).readOnly()).isTrue();
+    }
+
+    @Test
+    void rejectsTwoEnterpriseSkillsSources() {
+        SaasProperties properties = properties("cube");
+        properties.getSandbox().setCubeCommonSkillsHostPath("/data/shared/skills");
+        properties.getSandbox().setCubeCommonSkillsVolumeId("enterprise-skills");
+
+        assertThatThrownBy(() -> SandboxConfig.validateCommonSkillsSource(properties.getSandbox()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("either hostPath or Volume");
     }
 
     private static SaasProperties properties(String provider) {
