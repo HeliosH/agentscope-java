@@ -57,6 +57,11 @@ public class CubeFilesystemSpec extends SandboxFilesystemSpec {
         return this;
     }
 
+    public CubeFilesystemSpec proxyUrl(String proxyUrl) {
+        options.setProxyUrl(proxyUrl);
+        return this;
+    }
+
     public CubeFilesystemSpec templateId(String templateId) {
         options.setTemplateId(templateId);
         return this;

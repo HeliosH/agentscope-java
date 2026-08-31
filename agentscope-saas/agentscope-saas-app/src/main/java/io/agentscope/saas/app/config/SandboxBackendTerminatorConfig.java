@@ -93,6 +93,7 @@ public class SandboxBackendTerminatorConfig {
         options.setApiUrl(sandbox.getCubeApiUrl());
         options.setDomain(sandbox.getCubeDomain());
         options.setEnvdHostPattern(sandbox.getCubeEnvdHostPattern());
+        options.setProxyUrl(sandbox.getCubeProxyUrl());
         options.setTemplateId(sandbox.getCubeTemplateId());
         if (sandbox.getWorkspaceRoot() != null && !sandbox.getWorkspaceRoot().isBlank()) {
             options.setWorkspaceRoot(sandbox.getWorkspaceRoot());

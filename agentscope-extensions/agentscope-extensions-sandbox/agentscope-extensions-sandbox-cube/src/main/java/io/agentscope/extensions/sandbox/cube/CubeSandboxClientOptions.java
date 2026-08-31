@@ -49,6 +49,12 @@ public class CubeSandboxClientOptions extends SandboxClientOptions {
      */
     private String envdHostPattern = "https://{port}-{sandboxId}.{domain}";
 
+    /**
+     * Optional CubeProxy base URL used when wildcard sandbox DNS is unavailable. Requests connect
+     * to this URL while retaining the E2B routing host in the HTTP Host header.
+     */
+    private String proxyUrl;
+
     /** Cube template ID (defaults to {@code "base"}). */
     private String templateId = "base";
 
@@ -155,6 +161,14 @@ public class CubeSandboxClientOptions extends SandboxClientOptions {
 
     public void setEnvdHostPattern(String envdHostPattern) {
         this.envdHostPattern = envdHostPattern;
+    }
+
+    public String getProxyUrl() {
+        return proxyUrl;
+    }
+
+    public void setProxyUrl(String proxyUrl) {
+        this.proxyUrl = proxyUrl;
     }
 
     public String getTemplateId() {

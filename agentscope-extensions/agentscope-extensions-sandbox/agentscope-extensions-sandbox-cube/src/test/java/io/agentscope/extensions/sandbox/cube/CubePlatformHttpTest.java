@@ -17,11 +17,14 @@ package io.agentscope.extensions.sandbox.cube;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -87,6 +90,29 @@ class CubePlatformHttpTest {
         assertTrue(request.path("volumeMounts").get(0).path("readOnly").isMissingNode());
         assertTrue(request.path("volumeMounts").get(1).path("readOnly").asBoolean());
         assertNull(captured.get().header("X-API-Key"));
+    }
+
+    @Test
+    void create_doesNotReplayRequestAfterAmbiguousTransportFailure() {
+        AtomicInteger requests = new AtomicInteger();
+        OkHttpClient http =
+                new OkHttpClient.Builder()
+                        .addInterceptor(
+                                chain -> {
+                                    requests.incrementAndGet();
+                                    throw new IOException("response stream closed");
+                                })
+                        .build();
+        CubeSandboxClientOptions options = new CubeSandboxClientOptions();
+        options.setApiUrl("http://cube.test");
+        options.setMaxRetries(3);
+
+        CubePlatformHttp platform = new CubePlatformHttp(http, new ObjectMapper(), options);
+
+        assertThrows(
+                IOException.class,
+                () -> platform.createSandbox("tpl-code", 300, List.of(), List.of()));
+        assertEquals(1, requests.get());
     }
 
     @Test

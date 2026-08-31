@@ -27,6 +27,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -110,8 +111,9 @@ final class CubeEnvdProcessClient {
                 timeoutSeconds > 0
                         ? http.newBuilder().callTimeout(timeoutSeconds, TimeUnit.SECONDS).build()
                         : http;
-        String host = envdHost(state);
-        String url = host + "/process.Process/Start";
+        String routingHost = envdHost(state);
+        String requestBase = proxyBaseUrl(routingHost);
+        String url = requestBase + "/process.Process/Start";
         DynamicMessage startReq = buildStartRequest(shellCommand, cwd);
         byte[] envelope = encodeUnaryEnvelope(startReq.toByteArray());
         Request.Builder rb =
@@ -123,6 +125,9 @@ final class CubeEnvdProcessClient {
                         .addHeader("E2b-Sandbox-Id", state.getSandboxId())
                         .addHeader("E2b-Sandbox-Port", Integer.toString(ENVD_PORT))
                         .addHeader("Authorization", basicAuthUser(opt.getRunUser()));
+        if (opt.getProxyUrl() != null && !opt.getProxyUrl().isBlank()) {
+            rb.header("Host", URI.create(routingHost).getHost());
+        }
         if (state.getEnvdAccessToken() != null && !state.getEnvdAccessToken().isBlank()) {
             rb.addHeader("X-Access-Token", state.getEnvdAccessToken());
         }
@@ -144,7 +149,9 @@ final class CubeEnvdProcessClient {
         } catch (Exception e) {
             String message =
                     "envd request failed host="
-                            + host
+                            + routingHost
+                            + " proxy="
+                            + requestBase
                             + " sandboxId="
                             + state.getSandboxId()
                             + " cmd="
@@ -152,11 +159,11 @@ final class CubeEnvdProcessClient {
                             + ": "
                             + e.getMessage()
                             + ". "
-                            + diagnosticHint(state, host, e);
+                            + diagnosticHint(state, routingHost, e);
             log.warn(
                     "[cube-envd] exec failed cmd={} host={} exit={} stdout='{}' stderr='{}'",
                     shellCommand,
-                    host,
+                    routingHost,
                     exit,
                     new String(stdout.toByteArray(), StandardCharsets.UTF_8).trim(),
                     new String(stderr.toByteArray(), StandardCharsets.UTF_8).trim(),
@@ -287,6 +294,22 @@ final class CubeEnvdProcessClient {
         return host;
     }
 
+    private String proxyBaseUrl(String routingHost) {
+        String proxyUrl = opt.getProxyUrl();
+        if (proxyUrl == null || proxyUrl.isBlank()) {
+            return stripTrailingSlash(routingHost);
+        }
+        String resolved = proxyUrl;
+        if (!resolved.startsWith("http://") && !resolved.startsWith("https://")) {
+            resolved = "http://" + resolved;
+        }
+        return stripTrailingSlash(resolved);
+    }
+
+    private static String stripTrailingSlash(String value) {
+        return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
+    }
+
     private String diagnosticHint(CubeSandboxState state, String host, Exception error) {
         StringBuilder sb = new StringBuilder();
         sb.append("Cube envd diagnostics: pattern=")
@@ -298,6 +321,8 @@ final class CubeEnvdProcessClient {
                                 : opt.getDomain())
                 .append(", envdPort=")
                 .append(ENVD_PORT)
+                .append(", proxyUrl=")
+                .append(opt.getProxyUrl())
                 .append(", insecureSkipTlsVerify=")
                 .append(opt.isInsecureSkipTlsVerify())
                 .append(". ");

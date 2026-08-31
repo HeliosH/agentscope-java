@@ -21,7 +21,11 @@ EMAIL="${SANDBOX_SMOKE_EMAIL:-${CUBE_SMOKE_EMAIL:-sandbox-smoke@e2e.test}}"
 PASSWORD="${SANDBOX_SMOKE_PASSWORD:-${CUBE_SMOKE_PASSWORD:-pw-sandbox-smoke}}"
 MARKER="${SANDBOX_SMOKE_MARKER:-${CUBE_SMOKE_MARKER:-sandbox-smoke-ok}}"
 FILE_PATH="${SANDBOX_SMOKE_FILE:-${CUBE_SMOKE_FILE:-outputs/report.txt}}"
-COMMAND="${SANDBOX_SMOKE_COMMAND:-${CUBE_SMOKE_COMMAND:-grep -q '^browser-upload-' inputs/browser-upload.txt && mkdir -p \"\$(dirname \"$FILE_PATH\")\" && printf '%s\n' $MARKER > $FILE_PATH && cat $FILE_PATH}}"
+FILE_DIR="${FILE_PATH%/*}"
+if [ "$FILE_DIR" = "$FILE_PATH" ]; then
+  FILE_DIR="."
+fi
+COMMAND="${SANDBOX_SMOKE_COMMAND:-${CUBE_SMOKE_COMMAND:-grep -q '^browser-upload-' inputs/browser-upload.txt && mkdir -p \"$FILE_DIR\" && printf '%s\n' \"$MARKER\" > \"$FILE_PATH\" && cat \"$FILE_PATH\"}}"
 TIMEOUT="${SANDBOX_SMOKE_TIMEOUT:-${CUBE_SMOKE_TIMEOUT:-120}}"
 BACKEND_RELEASE_TIMEOUT="${SANDBOX_SMOKE_BACKEND_RELEASE_TIMEOUT:-${CUBE_SMOKE_BACKEND_RELEASE_TIMEOUT:-0}}"
 BACKEND_RELEASE_POLL_SECONDS="${SANDBOX_SMOKE_BACKEND_RELEASE_POLL_SECONDS:-2}"

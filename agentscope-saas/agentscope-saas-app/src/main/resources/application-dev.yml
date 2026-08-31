@@ -1,10 +1,9 @@
 # ===================================================================
 # AgentScope Enterprise SaaS Platform — dev profile
 # Functional verification against a real CubeSandbox test environment.
-# Zero external dependencies beyond the sandbox itself: H2 in-memory DB,
-# in-memory session/state, scripted tool-driving model (no LLM), and a
-# dev auth bypass (no login). Sandbox execution + snapshot persistence
-# are exercised against the configured CubeSandbox endpoint.
+# Uses H2 for relational data, local Redis for workspace projection/state, and a scripted
+# tool-driving model (no LLM). Sandbox execution + snapshot persistence are exercised against the
+# configured CubeSandbox endpoint. Normal local JWT login remains enabled for browser/E2E testing.
 # Activate with: --spring.profiles.active=dev
 # ===================================================================
 spring:
@@ -35,20 +34,31 @@ saas:
     # ReAct agent to execute it via the "execute" tool in the sandbox. No LLM.
     type: scripted
   redis:
-    enabled: false
+    # The durable file catalog remains in the database; Redis projects current workspace files
+    # into newly created sandboxes and supports out-of-call workspace access.
+    enabled: ${SAAS_REDIS_ENABLED:true}
+    uri: ${SAAS_REDIS_URI:redis://localhost:6379}
   sandbox:
     enabled: true
     type: cube
     isolation-scope: USER
     workspace-root: /home/user
     idle-ttl-seconds: 120
-    cube-api-url: ${SAAS_SANDBOX_CUBE_API_URL:http://cubesandbox.dev.comnova.cc:3000}
+    cube-api-url: ${SAAS_SANDBOX_CUBE_API_URL:http://192.168.48.248:3000}
     cube-api-key: ${SAAS_SANDBOX_CUBE_API_KEY:}
-    cube-template-id: ${SAAS_SANDBOX_CUBE_TEMPLATE_ID:tpl-sandbox-code}
-    cube-domain: ${SAAS_SANDBOX_CUBE_DOMAIN:cubesandbox.dev.comnova.cc}
+    cube-template-id: ${SAAS_SANDBOX_CUBE_TEMPLATE_ID:tpl-656d09e1ad904f4e86be068b}
+    cube-domain: ${SAAS_SANDBOX_CUBE_DOMAIN:tmp.cubsandbox.cc}
     cube-envd-host-pattern: "${SAAS_SANDBOX_CUBE_ENVD_HOST_PATTERN:https://{port}-{sandboxId}.{domain}}"
+    # Connect to CubeProxy directly and route with the sandbox Host header. This avoids requiring
+    # wildcard sandbox DNS on developer workstations.
+    cube-proxy-url: ${SAAS_SANDBOX_CUBE_PROXY_URL:http://192.168.48.248}
     cube-insecure-skip-tls-verify: true
     cube-sandbox-timeout-seconds: 300
+    # Enable after the Cube deployment's Volume plugin passes POST /volumes.
+    # The current test cluster has a malformed volume-cos.conf and rejects Volume creation.
+    cube-workspace-volume-enabled: ${SAAS_SANDBOX_CUBE_WORKSPACE_VOLUME_ENABLED:false}
+    cube-workspace-volume-driver: ${SAAS_SANDBOX_CUBE_WORKSPACE_VOLUME_DRIVER:}
+    cube-workspace-volume-name-prefix: ${SAAS_SANDBOX_CUBE_WORKSPACE_VOLUME_NAME_PREFIX:agentscope-dev-ws}
     snapshot:
       enabled: true
       table: agentscope_sandbox_snapshots
@@ -66,7 +76,7 @@ saas:
       ask-tools: []
   security:
     dev:
-      enabled: true
+      enabled: ${SAAS_SECURITY_DEV_ENABLED:false}
       org-id: dev-org
       user-id: dev-user
       role: owner

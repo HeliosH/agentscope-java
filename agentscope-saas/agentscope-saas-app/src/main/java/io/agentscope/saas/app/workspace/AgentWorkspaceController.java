@@ -258,29 +258,36 @@ public class AgentWorkspaceController {
                             TenantContext tenant = TenantContext.from(rc);
                             String abs = toAbsFsPath(path);
                             String rel = toRelFsPath(path);
-                            if (!fs.exists(FS_RC, abs)) {
-                                return readStoredTextOr404(tenant, rel, path);
+                            try {
+                                if (fs.exists(FS_RC, abs)) {
+                                    ReadResult rr = fs.read(FS_RC, abs, 0, Integer.MAX_VALUE);
+                                    if (rr.isSuccess() && rr.fileData() != null) {
+                                        String content = rr.fileData().content();
+                                        String encoding = rr.fileData().encoding();
+                                        if (content == null) {
+                                            return "";
+                                        }
+                                        if ("base64".equalsIgnoreCase(encoding)) {
+                                            return "(binary file: "
+                                                    + content.length()
+                                                    + " base64 chars; not editable)";
+                                        }
+                                        if (content.length() > MAX_FILE_SIZE) {
+                                            return "(file too large to display: "
+                                                    + content.length()
+                                                    + " bytes)";
+                                        }
+                                        return content;
+                                    }
+                                }
+                            } catch (Exception e) {
+                                log.debug(
+                                        "Workspace read unavailable for {}; falling back to file"
+                                                + " catalog: {}",
+                                        rel,
+                                        e.getMessage());
                             }
-                            ReadResult rr = fs.read(FS_RC, abs, 0, Integer.MAX_VALUE);
-                            if (!rr.isSuccess() || rr.fileData() == null) {
-                                return readStoredTextOr404(tenant, rel, path);
-                            }
-                            String content = rr.fileData().content();
-                            String encoding = rr.fileData().encoding();
-                            if (content == null) {
-                                return "";
-                            }
-                            if ("base64".equalsIgnoreCase(encoding)) {
-                                return "(binary file: "
-                                        + content.length()
-                                        + " base64 chars; not editable)";
-                            }
-                            if (content.length() > MAX_FILE_SIZE) {
-                                return "(file too large to display: "
-                                        + content.length()
-                                        + " bytes)";
-                            }
-                            return content;
+                            return readStoredTextOr404(tenant, rel, path);
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -304,35 +311,48 @@ public class AgentWorkspaceController {
                             TenantContext tenant = TenantContext.from(rc);
                             String abs = toAbsFsPath(path);
                             String rel = toRelFsPath(path);
-                            List<FileDownloadResponse> results =
-                                    fs.downloadFiles(FS_RC, List.of(abs));
-                            FileDownloadResponse result =
-                                    results == null || results.isEmpty() ? null : results.get(0);
-                            if (result == null || !result.isSuccess() || result.content() == null) {
-                                return fileCatalogService
-                                        .readCurrentFile(tenant, rel)
-                                        .map(stored -> downloadResponse(abs, stored.content()))
-                                        .orElseThrow(
-                                                () ->
-                                                        new ResponseStatusException(
-                                                                HttpStatus.NOT_FOUND,
-                                                                result != null
-                                                                                && result.error()
-                                                                                        != null
-                                                                        ? result.error()
-                                                                        : "File not found: "
-                                                                                + path));
+                            String sandboxError = null;
+                            try {
+                                List<FileDownloadResponse> results =
+                                        fs.downloadFiles(FS_RC, List.of(abs));
+                                FileDownloadResponse result =
+                                        results == null || results.isEmpty()
+                                                ? null
+                                                : results.get(0);
+                                if (result != null
+                                        && result.isSuccess()
+                                        && result.content() != null) {
+                                    fileCatalogService.recordWorkspaceFile(
+                                            tenant,
+                                            agentUuid(agentId),
+                                            sessionUuid(rc),
+                                            rel,
+                                            result.content(),
+                                            MediaType.APPLICATION_OCTET_STREAM_VALUE,
+                                            FileCatalogService.SOURCE_WORKSPACE_DOWNLOAD,
+                                            Map.of("api", "workspace.download"));
+                                    return downloadResponse(abs, result.content());
+                                }
+                                sandboxError = result != null ? result.error() : null;
+                            } catch (Exception e) {
+                                sandboxError = e.getMessage();
+                                log.debug(
+                                        "Workspace download unavailable for {}; falling back to"
+                                                + " file catalog: {}",
+                                        rel,
+                                        sandboxError);
                             }
-                            fileCatalogService.recordWorkspaceFile(
-                                    tenant,
-                                    agentUuid(agentId),
-                                    sessionUuid(rc),
-                                    rel,
-                                    result.content(),
-                                    MediaType.APPLICATION_OCTET_STREAM_VALUE,
-                                    FileCatalogService.SOURCE_WORKSPACE_DOWNLOAD,
-                                    Map.of("api", "workspace.download"));
-                            return downloadResponse(abs, result.content());
+                            String failure = sandboxError;
+                            return fileCatalogService
+                                    .readCurrentFile(tenant, rel)
+                                    .map(stored -> downloadResponse(abs, stored.content()))
+                                    .orElseThrow(
+                                            () ->
+                                                    new ResponseStatusException(
+                                                            HttpStatus.NOT_FOUND,
+                                                            failure != null && !failure.isBlank()
+                                                                    ? failure
+                                                                    : "File not found: " + path));
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -638,6 +658,10 @@ public class AgentWorkspaceController {
                                         new ResponseStatusException(
                                                 HttpStatus.NOT_FOUND,
                                                 "File not found: " + requestedPath));
+        return storedText(stored, relPath);
+    }
+
+    private String storedText(FileCatalogService.StoredFile stored, String relPath) {
         byte[] content = stored.content() != null ? stored.content() : new byte[0];
         if (!isProbablyText(stored.contentType(), relPath)) {
             return "(binary file: " + content.length + " bytes; not editable)";

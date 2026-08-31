@@ -266,6 +266,10 @@ public class CubeSandboxClient implements SandboxClient<CubeSandboxClientOptions
                                         .equals("https://{port}-{sandboxId}.{domain}")
                         ? override.getEnvdHostPattern()
                         : defaultOptions.getEnvdHostPattern());
+        merged.setProxyUrl(
+                override.getProxyUrl() != null
+                        ? override.getProxyUrl()
+                        : defaultOptions.getProxyUrl());
         merged.setTemplateId(
                 override.getTemplateId() != null && !override.getTemplateId().equals("base")
                         ? override.getTemplateId()
@@ -351,6 +355,7 @@ public class CubeSandboxClient implements SandboxClient<CubeSandboxClientOptions
         c.setApiUrl(src.getApiUrl());
         c.setDomain(src.getDomain());
         c.setEnvdHostPattern(src.getEnvdHostPattern());
+        c.setProxyUrl(src.getProxyUrl());
         c.setTemplateId(src.getTemplateId());
         c.setWorkspaceRoot(src.getWorkspaceRoot());
         c.setSandboxTimeoutSeconds(src.getSandboxTimeoutSeconds());

@@ -87,7 +87,10 @@ final class CubePlatformHttp {
                 }
             }
         }
-        return CubeRetry.withRetries(maxRetries, () -> post("/sandboxes", body));
+        // Cube v0.6 generates its request ID inside CubeAPI and does not expose an idempotency
+        // key to callers. Replaying this POST after an ambiguous transport failure can therefore
+        // create an orphan sandbox when the first response was lost.
+        return post("/sandboxes", body);
     }
 
     CubeVolumeInfo ensureVolume(String name, String driver) throws Exception {

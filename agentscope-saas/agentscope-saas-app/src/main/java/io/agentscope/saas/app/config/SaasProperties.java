@@ -798,6 +798,9 @@ public class SaasProperties {
          */
         private String cubeEnvdHostPattern;
 
+        /** Optional CubeProxy base URL for deployments without wildcard sandbox DNS. */
+        private String cubeProxyUrl;
+
         /** Cube sandbox idle timeout in seconds (defaults to 300). */
         private int cubeSandboxTimeoutSeconds = 300;
 
@@ -1206,6 +1209,14 @@ public class SaasProperties {
 
         public void setCubeEnvdHostPattern(String cubeEnvdHostPattern) {
             this.cubeEnvdHostPattern = cubeEnvdHostPattern;
+        }
+
+        public String getCubeProxyUrl() {
+            return cubeProxyUrl;
+        }
+
+        public void setCubeProxyUrl(String cubeProxyUrl) {
+            this.cubeProxyUrl = cubeProxyUrl;
         }
 
         public int getCubeSandboxTimeoutSeconds() {

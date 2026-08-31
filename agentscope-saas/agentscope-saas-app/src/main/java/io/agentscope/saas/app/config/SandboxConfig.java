@@ -180,6 +180,9 @@ public class SandboxConfig {
                         if (sb.getCubeEnvdHostPattern() != null) {
                             cubeSpec.envdHostPattern(sb.getCubeEnvdHostPattern());
                         }
+                        if (sb.getCubeProxyUrl() != null) {
+                            cubeSpec.proxyUrl(sb.getCubeProxyUrl());
+                        }
                         if (hasText(sb.getCubeCommonSkillsHostPath())
                                 || hasText(sb.getCubeCommonSkillsVolumeId())) {
                             validateCommonSkillsTarget(sb, workspaceRoot);
