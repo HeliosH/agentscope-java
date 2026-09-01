@@ -19,6 +19,8 @@ public interface RunArtifactRepository {
 
     List<RunArtifact> findByRunId(UUID runId, UUID orgId);
 
+    List<RunArtifact> findByRunIds(List<UUID> runIds, UUID orgId);
+
     List<RunArtifact> findByAttemptId(UUID attemptId, UUID orgId);
 
     record NewRunArtifact(

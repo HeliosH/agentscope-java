@@ -41,6 +41,16 @@ public class MyBatisRunArtifactRepository implements RunArtifactRepository {
     }
 
     @Override
+    public List<RunArtifact> findByRunIds(List<UUID> runIds, UUID orgId) {
+        if (runIds == null || runIds.isEmpty()) {
+            return List.of();
+        }
+        return mapper.findByRunIds(runIds, orgId).stream()
+                .map(MyBatisRunArtifactRepository::toDomain)
+                .toList();
+    }
+
+    @Override
     public List<RunArtifact> findByAttemptId(UUID attemptId, UUID orgId) {
         return mapper.findByAttemptId(attemptId, orgId).stream()
                 .map(MyBatisRunArtifactRepository::toDomain)

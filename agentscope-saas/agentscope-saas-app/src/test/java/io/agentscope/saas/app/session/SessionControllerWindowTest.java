@@ -21,11 +21,15 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.saas.app.chat.ChatPersistenceService;
+import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.domain.model.ChatMessageEntity;
 import io.agentscope.saas.domain.model.ChatSessionEntity;
+import io.agentscope.saas.domain.orchestration.RunArtifactRepository;
+import io.agentscope.saas.domain.orchestration.RunArtifactRepository.RunArtifact;
 import io.agentscope.saas.domain.repository.ChatMessageRepository;
 import io.agentscope.saas.domain.repository.ChatSessionRepository;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -36,9 +40,22 @@ class SessionControllerWindowTest {
 
     private final ChatSessionRepository sessions = mock(ChatSessionRepository.class);
     private final ChatMessageRepository messages = mock(ChatMessageRepository.class);
+    private final RunArtifactRepository artifacts = mock(RunArtifactRepository.class);
     private final SessionController controller =
             new SessionController(
-                    sessions, messages, mock(ChatPersistenceService.class), new ObjectMapper());
+                    sessions,
+                    messages,
+                    artifacts,
+                    mock(ChatPersistenceService.class),
+                    new ObjectMapper(),
+                    claims ->
+                            new TenantContext(
+                                    String.valueOf(claims.get("org_id")),
+                                    String.valueOf(claims.get("user_id")),
+                                    "member",
+                                    "standard",
+                                    1,
+                                    Long.MAX_VALUE));
 
     @Test
     void returnsNewestWindowInChronologicalOrderAndWalksBackwards() {
@@ -87,6 +104,57 @@ class SessionControllerWindowTest {
                 .extracting(SessionController.TurnEntry::seq)
                 .containsExactly(1L, 2L);
         assertThat(older.hasMore()).isFalse();
+    }
+
+    @Test
+    void restoresUserFacingArtifactsForHistoricalAssistantTurns() {
+        UUID orgId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID agentId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        UUID runId = UUID.randomUUID();
+        UUID versionId = UUID.randomUUID();
+        ChatSessionEntity session = new ChatSessionEntity();
+        session.setId(sessionId);
+        ChatMessageEntity assistant = message(2);
+        assistant.setRole("assistant");
+        assistant.setSourceRunId(runId);
+        when(sessions.findByIdAndOrgIdAndUserIdAndAgentId(sessionId, orgId, userId, agentId))
+                .thenReturn(Optional.of(session));
+        when(messages.pageBeforeSeq(sessionId, null, 2)).thenReturn(List.of(assistant));
+        when(artifacts.findByRunIds(List.of(runId), orgId))
+                .thenReturn(
+                        List.of(
+                                new RunArtifact(
+                                        UUID.randomUUID(),
+                                        orgId,
+                                        runId,
+                                        UUID.randomUUID(),
+                                        UUID.randomUUID(),
+                                        UUID.randomUUID(),
+                                        versionId,
+                                        "outputs/report.pdf",
+                                        "result",
+                                        "{\"sizeBytes\":2048}",
+                                        OffsetDateTime.now())));
+
+        SessionController.TurnWindow window =
+                controller
+                        .turnsWindow(
+                                jwt(orgId, userId),
+                                agentId.toString(),
+                                sessionId.toString(),
+                                null,
+                                1)
+                        .block();
+
+        assertThat(window).isNotNull();
+        assertThat(window.items()).hasSize(1);
+        assertThat(window.items().get(0).sourceRunId()).isEqualTo(runId.toString());
+        assertThat(window.items().get(0).artifacts())
+                .containsExactly(
+                        new SessionController.TurnArtifact(
+                                "outputs/report.pdf", versionId.toString(), 2048L));
     }
 
     private static ChatMessageEntity message(long seq) {

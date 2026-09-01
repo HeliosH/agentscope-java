@@ -19,12 +19,18 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.saas.app.chat.ChatPersistenceService;
+import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.core.tenant.TenantResolver;
 import io.agentscope.saas.domain.model.ChatMessageEntity;
 import io.agentscope.saas.domain.model.ChatSessionEntity;
+import io.agentscope.saas.domain.orchestration.RunArtifactRepository;
+import io.agentscope.saas.domain.orchestration.RunArtifactRepository.RunArtifact;
 import io.agentscope.saas.domain.repository.ChatMessageRepository;
 import io.agentscope.saas.domain.repository.ChatSessionRepository;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -65,18 +71,24 @@ public class SessionController {
 
     private final ChatSessionRepository sessionRepository;
     private final ChatMessageRepository messageRepository;
+    private final RunArtifactRepository artifactRepository;
     private final ChatPersistenceService persistenceService;
     private final ObjectMapper objectMapper;
+    private final TenantResolver tenantResolver;
 
     public SessionController(
             ChatSessionRepository sessionRepository,
             ChatMessageRepository messageRepository,
+            RunArtifactRepository artifactRepository,
             ChatPersistenceService persistenceService,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            TenantResolver tenantResolver) {
         this.sessionRepository = sessionRepository;
         this.messageRepository = messageRepository;
+        this.artifactRepository = artifactRepository;
         this.persistenceService = persistenceService;
         this.objectMapper = objectMapper;
+        this.tenantResolver = tenantResolver;
     }
 
     // -----------------------------------------------------------------
@@ -213,15 +225,8 @@ public class SessionController {
                         () -> {
                             ChatSessionEntity session =
                                     requireSession(orgId, userId, agentUuid, sessionUuid);
-                            List<TurnEntry> turns = new ArrayList<>();
-                            String prevId = null;
-                            for (ChatMessageEntity m :
-                                    messagePage(session.getId(), afterSeq, limit).items()) {
-                                TurnEntry t = toTurn(m, prevId);
-                                turns.add(t);
-                                prevId = t.id();
-                            }
-                            return turns;
+                            return toTurns(
+                                    messagePage(session.getId(), afterSeq, limit).items(), orgId);
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -242,14 +247,10 @@ public class SessionController {
                             ChatSessionEntity session =
                                     requireSession(orgId, userId, agentUuid, sessionUuid);
                             EntityPage page = messagePage(session.getId(), afterSeq, limit);
-                            List<TurnEntry> turns = new ArrayList<>();
-                            String prevId = null;
-                            for (ChatMessageEntity m : page.items()) {
-                                TurnEntry t = toTurn(m, prevId);
-                                turns.add(t);
-                                prevId = t.id();
-                            }
-                            return new TurnPage(turns, page.nextAfterSeq(), page.hasMore());
+                            return new TurnPage(
+                                    toTurns(page.items(), orgId),
+                                    page.nextAfterSeq(),
+                                    page.hasMore());
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -271,14 +272,10 @@ public class SessionController {
                             ChatSessionEntity session =
                                     requireSession(orgId, userId, agentUuid, sessionUuid);
                             EntityWindow window = messageWindow(session.getId(), beforeSeq, limit);
-                            List<TurnEntry> turns = new ArrayList<>();
-                            String prevId = null;
-                            for (ChatMessageEntity m : window.items()) {
-                                TurnEntry turn = toTurn(m, prevId);
-                                turns.add(turn);
-                                prevId = turn.id();
-                            }
-                            return new TurnWindow(turns, window.nextBeforeSeq(), window.hasMore());
+                            return new TurnWindow(
+                                    toTurns(window.items(), orgId),
+                                    window.nextBeforeSeq(),
+                                    window.hasMore());
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -382,12 +379,16 @@ public class SessionController {
         return new EntityWindow(newestFirst, nextBeforeSeq, hasMore);
     }
 
-    private static UUID orgId(Jwt jwt) {
-        return UUID.fromString(jwt.getClaimAsString("org_id"));
+    private UUID orgId(Jwt jwt) {
+        return UUID.fromString(tenant(jwt).orgId());
     }
 
-    private static UUID userId(Jwt jwt) {
-        return UUID.fromString(jwt.getClaimAsString("user_id"));
+    private UUID userId(Jwt jwt) {
+        return UUID.fromString(tenant(jwt).userId());
+    }
+
+    private TenantContext tenant(Jwt jwt) {
+        return tenantResolver.resolve(jwt == null ? Map.of() : jwt.getClaims());
     }
 
     private static UUID parseUuid(String s) {
@@ -435,7 +436,46 @@ public class SessionController {
      * block (if present) populates {@code toolName}/{@code toolInput}. The role is upper-cased to
      * match paw's {@code USER}/{@code ASSISTANT}/{@code TOOL} convention.
      */
-    private TurnEntry toTurn(ChatMessageEntity m, String parentId) {
+    private List<TurnEntry> toTurns(List<ChatMessageEntity> messages, UUID orgId) {
+        List<UUID> runIds =
+                messages.stream()
+                        .map(ChatMessageEntity::getSourceRunId)
+                        .filter(java.util.Objects::nonNull)
+                        .distinct()
+                        .toList();
+        Map<UUID, LinkedHashMap<String, TurnArtifact>> artifactsByRun = new LinkedHashMap<>();
+        List<RunArtifact> storedArtifacts =
+                runIds.isEmpty() ? List.of() : artifactRepository.findByRunIds(runIds, orgId);
+        for (RunArtifact artifact : storedArtifacts) {
+            if (!isUserFacingArtifact(artifact.logicalPath())) {
+                continue;
+            }
+            TurnArtifact view =
+                    new TurnArtifact(
+                            artifact.logicalPath(),
+                            artifact.fileVersionId().toString(),
+                            artifactSize(artifact.evidenceJson()));
+            artifactsByRun
+                    .computeIfAbsent(artifact.runId(), ignored -> new LinkedHashMap<>())
+                    .put(artifact.logicalPath(), view);
+        }
+
+        List<TurnEntry> turns = new ArrayList<>(messages.size());
+        String prevId = null;
+        for (ChatMessageEntity message : messages) {
+            UUID sourceRunId = message.getSourceRunId();
+            List<TurnArtifact> artifacts =
+                    sourceRunId == null || !artifactsByRun.containsKey(sourceRunId)
+                            ? List.of()
+                            : List.copyOf(artifactsByRun.get(sourceRunId).values());
+            TurnEntry turn = toTurn(message, prevId, artifacts);
+            turns.add(turn);
+            prevId = turn.id();
+        }
+        return turns;
+    }
+
+    private TurnEntry toTurn(ChatMessageEntity m, String parentId, List<TurnArtifact> artifacts) {
         String text = null;
         String toolName = m.getToolName();
         String toolInput = m.getToolInput();
@@ -474,7 +514,29 @@ public class SessionController {
                 toEpochMillis(m.getCreatedAt()),
                 toolName,
                 toolInput,
-                m.getToolResult());
+                m.getToolResult(),
+                m.getSourceRunId() == null ? null : m.getSourceRunId().toString(),
+                artifacts.isEmpty() ? null : artifacts);
+    }
+
+    private Long artifactSize(String evidenceJson) {
+        if (evidenceJson == null || evidenceJson.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode size = objectMapper.readTree(evidenceJson).get("sizeBytes");
+            return size == null || !size.canConvertToLong() ? null : size.longValue();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static boolean isUserFacingArtifact(String path) {
+        if (path == null) {
+            return false;
+        }
+        String normalized = path.replaceFirst("^/+", "");
+        return normalized.startsWith("outputs/") || normalized.startsWith("generated/");
     }
 
     // -----------------------------------------------------------------
@@ -501,7 +563,12 @@ public class SessionController {
             long timestampMs,
             String toolName,
             String toolInput,
-            String toolResult) {}
+            String toolResult,
+            String sourceRunId,
+            List<TurnArtifact> artifacts) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record TurnArtifact(String path, String versionId, Long sizeBytes) {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record ResetResult(String sessionKey, boolean reset) {}

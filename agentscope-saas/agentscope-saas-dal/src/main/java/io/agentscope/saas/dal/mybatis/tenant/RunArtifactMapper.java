@@ -45,6 +45,23 @@ public interface RunArtifactMapper {
 
     @Select(
             """
+            <script>
+            SELECT id, org_id, run_id, task_id, attempt_id, file_id, file_version_id,
+                   logical_path, artifact_type, evidence_json, created_at
+              FROM run_artifacts
+             WHERE org_id = #{orgId}
+               AND run_id IN
+               <foreach collection="runIds" item="runId" open="(" separator="," close=")">
+                 #{runId}
+               </foreach>
+             ORDER BY run_id, created_at, id
+            </script>
+            """)
+    List<RunArtifactData> findByRunIds(
+            @Param("runIds") List<UUID> runIds, @Param("orgId") UUID orgId);
+
+    @Select(
+            """
             SELECT id, org_id, run_id, task_id, attempt_id, file_id, file_version_id,
                    logical_path, artifact_type, evidence_json, created_at
               FROM run_artifacts

@@ -69,7 +69,20 @@ function turnsToMessages(turns: TurnEntry[]): Message[] {
     if (role === 'USER') {
       out.push({ id: t.id, role: 'user', text: t.content ?? '', tools: [] });
     } else if (role === 'ASSISTANT') {
-      out.push({ id: t.id, role: 'assistant', text: t.content ?? '', tools: [] });
+      const files = t.artifacts?.map(artifact => ({
+        path: artifact.path,
+        name: fileName(artifact.path),
+        sizeBytes: artifact.sizeBytes ?? undefined,
+        versionId: artifact.versionId,
+        kind: 'generated' as const,
+      }));
+      out.push({
+        id: t.id,
+        role: 'assistant',
+        text: t.content ?? '',
+        tools: [],
+        files: files?.length ? files : undefined,
+      });
     } else if (role === 'TOOL') {
       const last = out.length > 0 ? out[out.length - 1] : null;
       const tool: ToolEntry = {

@@ -23,6 +23,14 @@ export interface TurnEntry {
   toolName: string | null;
   toolInput: string | null;
   toolResult: string | null;
+  sourceRunId?: string | null;
+  artifacts?: TurnArtifact[] | null;
+}
+
+export interface TurnArtifact {
+  path: string;
+  versionId: string;
+  sizeBytes?: number | null;
 }
 
 export interface TurnPage {
