@@ -1,0 +1,27 @@
+services:
+  clawsentry:
+    build:
+      context: ../../..
+      dockerfile: agentscope-saas/agentscope-saas-app/docker/clawsentry/Dockerfile
+      args:
+        CLAWSENTRY_REF: ${CLAWSENTRY_REF:-2a3a826bb731cb18db88f84be9a6dd3974a321f9}
+    image: agentscope/clawsentry-gateway:local
+    restart: unless-stopped
+    environment:
+      CS_HTTP_HOST: 0.0.0.0
+      CS_HTTP_PORT: 8080
+      CS_AUTH_TOKEN: ${CS_AUTH_TOKEN:-}
+      CS_TRAJECTORY_DB_PATH: /data/clawsentry-trajectory.db
+    ports:
+      - "${CLAWSENTRY_HTTP_PORT:-18081}:8080"
+    volumes:
+      - clawsentry-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  clawsentry-data:

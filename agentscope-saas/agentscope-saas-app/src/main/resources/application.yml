@@ -293,6 +293,18 @@ saas:
       # Set issuer-uri or jwk-set-uri to validate tokens from an enterprise IdP (SSO).
       issuer-uri: ${SAAS_OIDC_ISSUER_URI:}
       jwk-set-uri: ${SAAS_OIDC_JWK_SET_URI:}
+    # Optional internal AHP gateway. Disabled by default; enable per deployment environment.
+    clawsentry:
+      enabled: ${SAAS_SECURITY_CLAWSENTRY_ENABLED:false}
+      base-url: ${SAAS_SECURITY_CLAWSENTRY_BASE_URL:http://localhost:18081}
+      api-path: ${SAAS_SECURITY_CLAWSENTRY_API_PATH:/ahp}
+      api-token: ${SAAS_SECURITY_CLAWSENTRY_API_TOKEN:}
+      connect-timeout-millis: ${SAAS_SECURITY_CLAWSENTRY_CONNECT_TIMEOUT_MS:250}
+      decision-timeout-millis: ${SAAS_SECURITY_CLAWSENTRY_DECISION_TIMEOUT_MS:1500}
+      source-framework: ${SAAS_SECURITY_CLAWSENTRY_SOURCE_FRAMEWORK:agentscope-java}
+      decision-tier: ${SAAS_SECURITY_CLAWSENTRY_DECISION_TIER:L1}
+      failure-mode: ${SAAS_SECURITY_CLAWSENTRY_FAILURE_MODE:ASK}
+      audit-enabled: ${SAAS_SECURITY_CLAWSENTRY_AUDIT_ENABLED:true}
 
 management:
   endpoints:

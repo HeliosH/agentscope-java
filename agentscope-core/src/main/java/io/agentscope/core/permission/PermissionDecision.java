@@ -126,6 +126,28 @@ public final class PermissionDecision {
                 .build();
     }
 
+    /** Returns a copy with a different decision reason. */
+    public PermissionDecision withDecisionReason(String decisionReason) {
+        return builder()
+                .behavior(behavior)
+                .message(message)
+                .decisionReason(decisionReason)
+                .updatedInput(updatedInput)
+                .suggestedRules(suggestedRules)
+                .build();
+    }
+
+    /** Returns a copy with a rewritten tool input. */
+    public PermissionDecision withUpdatedInput(Map<String, Object> updatedInput) {
+        return builder()
+                .behavior(behavior)
+                .message(message)
+                .decisionReason(decisionReason)
+                .updatedInput(updatedInput)
+                .suggestedRules(suggestedRules)
+                .build();
+    }
+
     public static Builder builder() {
         return new Builder();
     }

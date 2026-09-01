@@ -41,6 +41,7 @@ import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.ToolSchema;
 import io.agentscope.core.permission.PermissionContextState;
 import io.agentscope.core.permission.PermissionDecision;
+import io.agentscope.core.permission.ToolSecurityPolicy;
 import io.agentscope.core.state.AgentState;
 import io.agentscope.core.tool.ToolBase;
 import io.agentscope.core.tool.ToolCallParam;
@@ -139,7 +140,7 @@ class ReActAgentHitlTest {
         }
     }
 
-    private static final class AllowingTool extends ToolBase {
+    private static class AllowingTool extends ToolBase {
         AllowingTool(String name) {
             super(name, "auto-allow", schemaFor(), true, true, false, null, false, false);
         }
@@ -178,6 +179,16 @@ class ReActAgentHitlTest {
 
     private static ReActAgent buildAgent(ChatModelBase model, Toolkit toolkit) {
         return ReActAgent.builder().name("asst").model(model).toolkit(toolkit).build();
+    }
+
+    private static ReActAgent buildAgent(
+            ChatModelBase model, Toolkit toolkit, ToolSecurityPolicy securityPolicy) {
+        return ReActAgent.builder()
+                .name("asst")
+                .model(model)
+                .toolkit(toolkit)
+                .toolSecurityPolicy(securityPolicy)
+                .build();
     }
 
     private static int indexOf(List<AgentEvent> events, Class<?> type) {
@@ -356,5 +367,65 @@ class ReActAgentHitlTest {
         ToolResultEndEvent end =
                 (ToolResultEndEvent) events.get(indexOf(events, ToolResultEndEvent.class));
         assertEquals(ToolResultState.SUCCESS, end.getState());
+    }
+
+    @Test
+    void externalSecurityPolicyBlocksBeforeToolExecution() {
+        ChatModelBase model =
+                new ScriptedModel(List.of(() -> Flux.just(toolUseResponse("tc1", "allow", "x"))));
+        AtomicInteger executions = new AtomicInteger();
+        AllowingTool tool =
+                new AllowingTool("allow") {
+                    @Override
+                    public Mono<ToolResultBlock> callAsync(ToolCallParam param) {
+                        executions.incrementAndGet();
+                        return super.callAsync(param);
+                    }
+                };
+        ReActAgent agent =
+                buildAgent(
+                        model,
+                        toolkitWith(tool),
+                        request -> Mono.just(PermissionDecision.deny("ClawSentry block")));
+
+        List<AgentEvent> events = agent.streamEvents(List.of()).collectList().block();
+
+        assertNotNull(events);
+        assertEquals(0, executions.get());
+        ToolResultEndEvent end =
+                (ToolResultEndEvent) events.get(indexOf(events, ToolResultEndEvent.class));
+        assertEquals(ToolResultState.DENIED, end.getState());
+    }
+
+    @Test
+    void externalSecurityPolicyModificationIsUsedForExecution() {
+        ChatModelBase model =
+                new ScriptedModel(
+                        List.of(
+                                () -> Flux.just(toolUseResponse("tc1", "allow", "original")),
+                                () -> Flux.just(textResponse("done"))));
+        ReActAgent agent =
+                buildAgent(
+                        model,
+                        toolkitWith(new AllowingTool("allow")),
+                        request ->
+                                Mono.just(
+                                        PermissionDecision.allow("rewrite")
+                                                .withUpdatedInput(Map.of("query", "rewritten"))));
+
+        Msg result = agent.call(List.of()).block();
+
+        assertNotNull(result);
+        List<String> resultTexts =
+                agent.getAgentState().getContext().stream()
+                        .flatMap(m -> m.getContentBlocks(ToolResultBlock.class).stream())
+                        .flatMap(tr -> tr.getOutput().stream())
+                        .filter(TextBlock.class::isInstance)
+                        .map(TextBlock.class::cast)
+                        .map(TextBlock::getText)
+                        .toList();
+        assertTrue(
+                resultTexts.stream().anyMatch(text -> text.contains("rewritten")),
+                "the modified input must be passed to the tool: " + resultTexts);
     }
 }

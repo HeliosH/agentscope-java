@@ -45,6 +45,7 @@ import io.agentscope.saas.app.orchestration.OrchestrationGovernanceService;
 import io.agentscope.saas.app.orchestration.PgTaskRepository;
 import io.agentscope.saas.app.orchestration.PlanPublishTool;
 import io.agentscope.saas.app.org.OrgToolsConfigService;
+import io.agentscope.saas.app.security.ClawSentryToolSecurityPolicy;
 import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
 import io.agentscope.saas.core.middleware.RateLimitMiddleware;
 import io.agentscope.saas.core.middleware.TenantContextMiddleware;
@@ -65,6 +66,7 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -77,6 +79,7 @@ import org.springframework.context.annotation.Configuration;
  * framework appends its built-in sandbox-lifecycle, permission, and trace middlewares.
  */
 @Configuration
+@EnableConfigurationProperties(ClawSentryProperties.class)
 public class AgentConfig {
 
     private static final String WORKSPACE_FILE_POLICY =
@@ -112,7 +115,8 @@ public class AgentConfig {
             ObjectProvider<AgentRunMetrics> agentRunMetricsProvider,
             OrchestrationGovernanceService orchestrationGovernance,
             ExecutionPlanService executionPlanService,
-            ObjectProvider<PgTaskRepository> pgTaskRepositoryProvider) {
+            ObjectProvider<PgTaskRepository> pgTaskRepositoryProvider,
+            ClawSentryToolSecurityPolicy clawSentryPolicy) {
 
         SaasProperties.Agent agentCfg = properties.getAgent();
         SaasProperties.RateLimit rl = properties.getRateLimit();
@@ -286,6 +290,7 @@ public class AgentConfig {
         // ASK; DONT_ASK demotes ASK to DENY for unattended runs. Unset tool names are no-ops.
         PermissionContextState permissionContext = buildPermissionContext(agentCfg);
         builder.permissionContext(permissionContext);
+        builder.toolSecurityPolicy(clawSentryPolicy);
         log.info(
                 "Permission tool_guard mode={} allow={} ask={} deny={}",
                 agentCfg.getPermission().getMode(),

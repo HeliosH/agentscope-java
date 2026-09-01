@@ -96,6 +96,7 @@ import io.agentscope.core.permission.PermissionEngine;
 import io.agentscope.core.permission.PermissionMode;
 import io.agentscope.core.permission.PermissionRule;
 import io.agentscope.core.permission.ToolInputSecurityGuard;
+import io.agentscope.core.permission.ToolSecurityPolicy;
 import io.agentscope.core.rag.GenericRAGHook;
 import io.agentscope.core.rag.Knowledge;
 import io.agentscope.core.rag.KnowledgeRetrievalTools;
@@ -256,6 +257,9 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
      */
     private final PermissionContextState initialPermissionContext;
 
+    /** Optional application-owned pre-tool security policy (for example, an internal gateway). */
+    private final ToolSecurityPolicy toolSecurityPolicy;
+
     // ==================== 2.0 Core Fields ====================
 
     /** Active per-call RuntimeContext, set during call lifecycle only. */
@@ -311,6 +315,10 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                         ? builder.defaultSessionId
                         : (builder.name != null ? builder.name : "ReActAgent");
         this.initialPermissionContext = builder.permissionContext;
+        this.toolSecurityPolicy =
+                builder.toolSecurityPolicy != null
+                        ? builder.toolSecurityPolicy
+                        : ToolSecurityPolicy.ALLOW_ALL;
 
         this.modelConfig = assembleModelConfig(builder);
         this.reactConfig = assembleReactConfig(builder);
@@ -2276,21 +2284,16 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
             return evaluatePermissions(toolCalls)
                     .flatMapMany(
                             gate -> {
+                                List<ToolUseBlock> effectiveToolCalls = gate.toolCalls();
                                 List<ToolUseBlock> pending = gate.pendingAsk();
                                 Set<String> autoDenied = gate.autoDeniedIds();
 
-                                // Mark ToolUseBlock.state in context for every gated tool. ALLOWED
-                                // calls run immediately; ASKING calls cause the agent to pause and
-                                // return; DENIED calls get DENIED ToolResultBlocks written below.
-                                Map<String, ToolCallState> stateUpdates = new HashMap<>();
-                                for (ToolUseBlock tc : toolCalls) {
-                                    if (autoDenied.contains(tc.getId())) {
-                                        // DENIED tools don't need a state change — they'll get a
-                                        // DENIED ToolResultBlock and won't reappear in pending.
-                                        continue;
-                                    }
-                                    stateUpdates.put(
-                                            tc.getId(),
+                                // Persist the effective payload and gate state in context before
+                                // execution. This also makes external MODIFY decisions visible to
+                                // the approval flow and later session replay.
+                                Map<String, ToolUseBlock> replacements = new HashMap<>();
+                                for (ToolUseBlock tc : effectiveToolCalls) {
+                                    ToolCallState state =
                                             pending.stream()
                                                             .anyMatch(
                                                                     p ->
@@ -2299,13 +2302,14 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                                                                             tc
                                                                                                     .getId()))
                                                     ? ToolCallState.ASKING
-                                                    : ToolCallState.ALLOWED);
+                                                    : ToolCallState.ALLOWED;
+                                    replacements.put(tc.getId(), tc.withState(state));
                                 }
-                                updateToolCallStates(stateUpdates);
+                                applyToolUseBlockReplacements(replacements);
 
                                 if (pending.isEmpty()) {
                                     return runToolBatch(
-                                            toolCalls, autoDenied, replyId, resultHolder);
+                                            effectiveToolCalls, autoDenied, replyId, resultHolder);
                                 }
 
                                 // Permission HITL: surface the pending tool calls, persist any
@@ -2316,7 +2320,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                 if (!autoDenied.isEmpty()) {
                                     // Write DENIED results in-place so they aren't re-evaluated on
                                     // resume.
-                                    writeAutoDeniedResults(toolCalls, autoDenied);
+                                    writeAutoDeniedResults(effectiveToolCalls, autoDenied);
                                 }
                                 // resultHolder may be inspected by the caller after stream
                                 // completion;
@@ -2515,7 +2519,10 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
          * @param autoDeniedIds ids of tool calls whose decision was {@code DENY}; the agent loop
          *     synthesises denied results for them without invoking the tool.
          */
-        private record PermissionGate(List<ToolUseBlock> pendingAsk, Set<String> autoDeniedIds) {}
+        private record PermissionGate(
+                List<ToolUseBlock> toolCalls,
+                List<ToolUseBlock> pendingAsk,
+                Set<String> autoDeniedIds) {}
 
         /**
          * Run every tool call through the permission gate.
@@ -2531,7 +2538,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
          */
         private Mono<PermissionGate> evaluatePermissions(List<ToolUseBlock> toolCalls) {
             if (toolCalls == null || toolCalls.isEmpty()) {
-                return Mono.just(new PermissionGate(List.of(), Set.of()));
+                return Mono.just(new PermissionGate(List.of(), List.of(), Set.of()));
             }
             boolean useEngine = !state.getPermissionContext().isTrivial();
             return Flux.fromIterable(toolCalls)
@@ -2550,7 +2557,10 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                         }
                                     }
                                 }
-                                return new PermissionGate(pending, denied);
+                                return new PermissionGate(
+                                        verdicts.stream().map(PermissionVerdict::use).toList(),
+                                        pending,
+                                        denied);
                             });
         }
 
@@ -2560,46 +2570,110 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                 return Mono.just(new PermissionVerdict(use, PermissionBehavior.ALLOW));
             }
             Map<String, Object> input = use.getInput() == null ? Map.of() : use.getInput();
-            PermissionDecision securityDecision = ToolInputSecurityGuard.inspect(tb, input);
-            if (securityDecision.getBehavior() == PermissionBehavior.DENY) {
+            PermissionDecision localDecision = ToolInputSecurityGuard.inspect(tb, input);
+            if (localDecision.getBehavior() == PermissionBehavior.DENY) {
                 return Mono.just(new PermissionVerdict(use, PermissionBehavior.DENY));
             }
-            // ASK findings can be resumed after explicit user approval; DENY findings above cannot.
-            if (securityDecision.getBehavior() == PermissionBehavior.ASK
-                    && use.getState() != ToolCallState.ALLOWED
-                    && !useEngine) {
-                return Mono.just(new PermissionVerdict(use, PermissionBehavior.ASK));
-            }
-            // Tools already promoted to ALLOWED by user confirmation skip ordinary rule evaluation.
-            if (use.getState() == ToolCallState.ALLOWED) {
-                return Mono.just(new PermissionVerdict(use, PermissionBehavior.ALLOW));
-            }
-            if (useEngine) {
-                return permissionEngine
-                        .checkPermission(tb, input)
-                        .map(
-                                decision ->
-                                        new PermissionVerdict(
-                                                use,
-                                                decision == null
-                                                        ? PermissionBehavior.ASK
-                                                        : decision.getBehavior()));
-            }
-            return tb.checkPermissions(input, state.getPermissionContext())
-                    .map(
-                            decision -> {
-                                if (decision == null) {
-                                    return new PermissionVerdict(use, PermissionBehavior.ALLOW);
+
+            ToolSecurityPolicy.Request request =
+                    new ToolSecurityPolicy.Request(getName(), rc, tb, use, input);
+            return toolSecurityPolicy
+                    .evaluate(request)
+                    .defaultIfEmpty(PermissionDecision.passthrough("external policy passthrough"))
+                    .onErrorResume(
+                            error ->
+                                    Mono.just(
+                                            PermissionDecision.ask(
+                                                    "External security policy unavailable")))
+                    .flatMap(
+                            externalDecision -> {
+                                PermissionDecision external =
+                                        externalDecision == null
+                                                ? PermissionDecision.passthrough("null decision")
+                                                : externalDecision;
+                                if (external.getBehavior() == PermissionBehavior.DENY) {
+                                    return Mono.just(
+                                            new PermissionVerdict(use, PermissionBehavior.DENY));
                                 }
-                                // In the legacy lightweight path only an explicit ASK from the tool
-                                // gates execution; PASSTHROUGH and ALLOW both run, DENY is
-                                // honoured.
-                                return switch (decision.getBehavior()) {
-                                    case ASK -> new PermissionVerdict(use, PermissionBehavior.ASK);
-                                    case DENY ->
-                                            new PermissionVerdict(use, PermissionBehavior.DENY);
-                                    default -> new PermissionVerdict(use, PermissionBehavior.ALLOW);
-                                };
+
+                                Map<String, Object> effectiveInput = input;
+                                if (external.getUpdatedInput() != null) {
+                                    effectiveInput = external.getUpdatedInput();
+                                }
+                                boolean modified = !effectiveInput.equals(input);
+                                ToolUseBlock effectiveUse =
+                                        modified ? use.withInput(effectiveInput) : use;
+                                PermissionDecision effectiveLocal =
+                                        ToolInputSecurityGuard.inspect(tb, effectiveInput);
+                                if (effectiveLocal.getBehavior() == PermissionBehavior.DENY) {
+                                    return Mono.just(
+                                            new PermissionVerdict(
+                                                    effectiveUse, PermissionBehavior.DENY));
+                                }
+                                // A changed payload after an earlier approval must be reviewed
+                                // again. This binds approval to the exact effect being executed.
+                                if (modified && use.getState() == ToolCallState.ALLOWED) {
+                                    return Mono.just(
+                                            new PermissionVerdict(
+                                                    effectiveUse, PermissionBehavior.ASK));
+                                }
+                                // External DEFER and local ASK both enter the existing HITL path.
+                                if (external.getBehavior() == PermissionBehavior.ASK
+                                        && use.getState() != ToolCallState.ALLOWED) {
+                                    return Mono.just(
+                                            new PermissionVerdict(
+                                                    effectiveUse, PermissionBehavior.ASK));
+                                }
+                                if (effectiveLocal.getBehavior() == PermissionBehavior.ASK
+                                        && use.getState() != ToolCallState.ALLOWED
+                                        && !useEngine) {
+                                    return Mono.just(
+                                            new PermissionVerdict(
+                                                    effectiveUse, PermissionBehavior.ASK));
+                                }
+                                // Tools already promoted to ALLOWED by user confirmation skip
+                                // ordinary rule evaluation, but never bypass DENY above.
+                                if (use.getState() == ToolCallState.ALLOWED) {
+                                    return Mono.just(
+                                            new PermissionVerdict(
+                                                    effectiveUse, PermissionBehavior.ALLOW));
+                                }
+                                if (useEngine) {
+                                    return permissionEngine
+                                            .checkPermission(tb, effectiveInput)
+                                            .map(
+                                                    decision ->
+                                                            new PermissionVerdict(
+                                                                    effectiveUse,
+                                                                    decision == null
+                                                                            ? PermissionBehavior.ASK
+                                                                            : decision
+                                                                                    .getBehavior()));
+                                }
+                                return tb.checkPermissions(
+                                                effectiveInput, state.getPermissionContext())
+                                        .map(
+                                                decision -> {
+                                                    if (decision == null) {
+                                                        return new PermissionVerdict(
+                                                                effectiveUse,
+                                                                PermissionBehavior.ALLOW);
+                                                    }
+                                                    return switch (decision.getBehavior()) {
+                                                        case ASK ->
+                                                                new PermissionVerdict(
+                                                                        effectiveUse,
+                                                                        PermissionBehavior.ASK);
+                                                        case DENY ->
+                                                                new PermissionVerdict(
+                                                                        effectiveUse,
+                                                                        PermissionBehavior.DENY);
+                                                        default ->
+                                                                new PermissionVerdict(
+                                                                        effectiveUse,
+                                                                        PermissionBehavior.ALLOW);
+                                                    };
+                                                });
                             });
         }
 
@@ -3481,6 +3555,11 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
         return getAgentState().getPermissionContext();
     }
 
+    /** Returns the application-owned pre-tool security policy, or the no-op policy when disabled. */
+    public ToolSecurityPolicy getToolSecurityPolicy() {
+        return toolSecurityPolicy;
+    }
+
     /** Returns the immutable list of registered middlewares. */
     public List<MiddlewareBase> getMiddlewares() {
         return middlewares;
@@ -3547,6 +3626,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
 
         // 2.0 core fields
         private PermissionContextState permissionContext;
+        private ToolSecurityPolicy toolSecurityPolicy;
 
         // Flat setters backing ModelConfig / ReactConfig values
         private Integer flatMaxRetries;
@@ -3955,6 +4035,15 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
          */
         public Builder permissionContext(PermissionContextState permissionContext) {
             this.permissionContext = permissionContext;
+            return this;
+        }
+
+        /**
+         * Sets an optional external pre-tool security policy. Its result is merged with the local
+         * permission engine and cannot override a local DENY decision.
+         */
+        public Builder toolSecurityPolicy(ToolSecurityPolicy toolSecurityPolicy) {
+            this.toolSecurityPolicy = toolSecurityPolicy;
             return this;
         }
 

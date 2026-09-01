@@ -185,6 +185,11 @@ public final class ToolUseBlock extends ContentBlock {
         return new ToolUseBlock(this.id, this.name, this.input, this.content, this.metadata, state);
     }
 
+    /** Returns a copy with replaced input parameters and the existing state. */
+    public ToolUseBlock withInput(Map<String, Object> input) {
+        return new ToolUseBlock(this.id, this.name, input, this.content, this.metadata, this.state);
+    }
+
     /**
      * Creates a new builder for constructing a ToolUseBlock.
      *

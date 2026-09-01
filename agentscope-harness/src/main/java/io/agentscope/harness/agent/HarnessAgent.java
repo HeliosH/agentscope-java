@@ -31,6 +31,7 @@ import io.agentscope.core.model.ExecutionConfig;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.permission.PermissionContextState;
+import io.agentscope.core.permission.ToolSecurityPolicy;
 import io.agentscope.core.skill.repository.AgentSkillRepository;
 import io.agentscope.core.state.AgentState;
 import io.agentscope.core.state.AgentStateStore;
@@ -1224,6 +1225,7 @@ public class HarnessAgent implements Agent, AutoCloseable {
             if (srcPerm != null) {
                 b.permissionContext(srcPerm);
             }
+            b.toolSecurityPolicy(agent.getToolSecurityPolicy());
 
             // Extension chains. Middlewares are the v2 surface; hooks remain for v1 carry-over.
             List<MiddlewareBase> srcMiddlewares = agent.getMiddlewares();
@@ -1410,6 +1412,12 @@ public class HarnessAgent implements Agent, AutoCloseable {
 
         public Builder permissionContext(PermissionContextState permissionContext) {
             inner.permissionContext(permissionContext);
+            return this;
+        }
+
+        /** Sets the application-owned pre-tool security policy used by the wrapped agent. */
+        public Builder toolSecurityPolicy(ToolSecurityPolicy policy) {
+            inner.toolSecurityPolicy(policy);
             return this;
         }
 

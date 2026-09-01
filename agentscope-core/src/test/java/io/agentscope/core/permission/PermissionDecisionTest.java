@@ -75,6 +75,25 @@ class PermissionDecisionTest {
     }
 
     @Test
+    void copyHelpersPreserveOtherDecisionFields() {
+        PermissionDecision original =
+                PermissionDecision.builder()
+                        .behavior(PermissionBehavior.ASK)
+                        .message("confirm")
+                        .decisionReason("local")
+                        .updatedInput(Map.of("path", "/tmp/a"))
+                        .build();
+
+        PermissionDecision copied = original.withDecisionReason("external");
+        PermissionDecision rewritten = copied.withUpdatedInput(Map.of("path", "/tmp/b"));
+
+        assertEquals(PermissionBehavior.ASK, rewritten.getBehavior());
+        assertEquals("confirm", rewritten.getMessage());
+        assertEquals("external", rewritten.getDecisionReason());
+        assertEquals(Map.of("path", "/tmp/b"), rewritten.getUpdatedInput());
+    }
+
+    @Test
     void suggestedRulesAreImmutable() {
         List<PermissionRule> source =
                 new java.util.ArrayList<>(
