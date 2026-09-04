@@ -105,6 +105,9 @@ public class SaasProperties {
         /** Conservative estimation margin kept outside input and output budgets. */
         private int safetyMarginTokens = 1_024;
 
+        /** Automatic recovery for transient model streams that fail after partial output. */
+        private final ModelStreamRecovery streamRecovery = new ModelStreamRecovery();
+
         /** Deploy-time model choices. Empty keeps the legacy single-model behavior. */
         private List<ModelDefinition> catalog = new ArrayList<>();
 
@@ -188,6 +191,10 @@ public class SaasProperties {
             this.safetyMarginTokens = safetyMarginTokens;
         }
 
+        public ModelStreamRecovery getStreamRecovery() {
+            return streamRecovery;
+        }
+
         public List<ModelDefinition> getCatalog() {
             return catalog;
         }
@@ -210,6 +217,46 @@ public class SaasProperties {
 
         public ModelManagement getManagement() {
             return management;
+        }
+    }
+
+    /** Deployment-level policy for retrying a failed model turn without duplicating its prefix. */
+    public static class ModelStreamRecovery {
+        private boolean enabled = true;
+        private int maxAttempts = 3;
+        private long initialBackoffMillis = 1_000;
+        private long maxBackoffMillis = 10_000;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int getMaxAttempts() {
+            return maxAttempts;
+        }
+
+        public void setMaxAttempts(int maxAttempts) {
+            this.maxAttempts = maxAttempts;
+        }
+
+        public long getInitialBackoffMillis() {
+            return initialBackoffMillis;
+        }
+
+        public void setInitialBackoffMillis(long initialBackoffMillis) {
+            this.initialBackoffMillis = initialBackoffMillis;
+        }
+
+        public long getMaxBackoffMillis() {
+            return maxBackoffMillis;
+        }
+
+        public void setMaxBackoffMillis(long maxBackoffMillis) {
+            this.maxBackoffMillis = maxBackoffMillis;
         }
     }
 

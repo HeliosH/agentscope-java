@@ -93,7 +93,9 @@ public final class ModelUtils {
                 LOG.debug("Applied timeout: {} for model: {}", timeout, modelName);
             }
 
-            // Apply retry if configured (maxAttempts > 1 means retry is enabled)
+            // Apply retry if configured (maxAttempts > 1 means retry is enabled). A streaming
+            // response is only retryable before its first item. Once a provider has emitted data,
+            // retryWhen would replay the already-delivered prefix and corrupt the Agent turn.
             Integer maxAttempts = execConfig.getMaxAttempts();
             if (maxAttempts != null && maxAttempts > 1) {
                 Duration initialBackoff = execConfig.getInitialBackoff();
@@ -111,22 +113,59 @@ public final class ModelUtils {
                     retryOn = error -> true; // retry all errors by default
                 }
 
-                Retry retrySpec =
-                        Retry.backoff(maxAttempts - 1, initialBackoff)
-                                .maxBackoff(maxBackoff)
-                                .jitter(0.5)
-                                .filter(retryOn)
-                                .doBeforeRetry(
-                                        signal ->
-                                                LOG.warn(
-                                                        "Retrying model request (attempt {}/{}) due"
-                                                                + " to: {}",
-                                                        signal.totalRetriesInARow() + 1,
-                                                        maxAttempts - 1,
-                                                        signal.failure().getMessage(),
-                                                        signal.failure()));
-
-                responseFlux = responseFlux.retryWhen(retrySpec);
+                Flux<ChatResponse> source = responseFlux;
+                Predicate<Throwable> effectiveRetryOn = retryOn;
+                Duration effectiveInitialBackoff = initialBackoff;
+                Duration effectiveMaxBackoff = maxBackoff;
+                int effectiveMaxAttempts = maxAttempts;
+                responseFlux =
+                        Flux.defer(
+                                () -> {
+                                    java.util.concurrent.atomic.AtomicBoolean emitted =
+                                            new java.util.concurrent.atomic.AtomicBoolean();
+                                    Retry retrySpec =
+                                            Retry.backoff(
+                                                            effectiveMaxAttempts - 1,
+                                                            effectiveInitialBackoff)
+                                                    .maxBackoff(effectiveMaxBackoff)
+                                                    .jitter(0.5)
+                                                    .filter(
+                                                            error ->
+                                                                    !emitted.get()
+                                                                            && effectiveRetryOn
+                                                                                    .test(error))
+                                                    .doBeforeRetry(
+                                                            signal ->
+                                                                    LOG.warn(
+                                                                            "Retrying model request"
+                                                                                + " (attempt {}/{})"
+                                                                                + " due to: {}",
+                                                                            signal
+                                                                                            .totalRetriesInARow()
+                                                                                    + 1,
+                                                                            effectiveMaxAttempts
+                                                                                    - 1,
+                                                                            signal.failure()
+                                                                                    .getMessage(),
+                                                                            signal.failure()));
+                                    return source.doOnNext(ignored -> emitted.set(true))
+                                            .onErrorResume(
+                                                    error -> {
+                                                        if (emitted.get()) {
+                                                            return Flux.error(
+                                                                    new ModelStreamInterruptedException(
+                                                                            "Model stream"
+                                                                                + " interrupted"
+                                                                                + " after partial"
+                                                                                + " output",
+                                                                            error,
+                                                                            modelName,
+                                                                            provider));
+                                                        }
+                                                        return Flux.error(error);
+                                                    })
+                                            .retryWhen(retrySpec);
+                                });
                 LOG.debug(
                         "Applied retry config: maxAttempts={}, initialBackoff={} for model: {}",
                         maxAttempts,

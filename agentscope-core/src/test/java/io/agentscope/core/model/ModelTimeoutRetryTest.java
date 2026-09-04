@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
+import java.io.IOException;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -165,6 +166,38 @@ class ModelTimeoutRetryTest {
 
         // Verify it tried maxAttempts times
         assertEquals(3, attemptCount.get());
+    }
+
+    @Test
+    @DisplayName("Should not replay a partially emitted model stream")
+    void testPartialStreamIsNotRetried() {
+        AtomicInteger attemptCount = new AtomicInteger();
+        Flux<ChatResponse> source =
+                Flux.defer(
+                        () -> {
+                            attemptCount.incrementAndGet();
+                            return Flux.concat(
+                                    Flux.just(ChatResponse.builder().id("partial").build()),
+                                    Flux.error(new IOException("connection reset")));
+                        });
+        GenerateOptions options =
+                GenerateOptions.builder()
+                        .executionConfig(
+                                ExecutionConfig.builder()
+                                        .maxAttempts(3)
+                                        .initialBackoff(Duration.ofMillis(1))
+                                        .retryOn(ExecutionConfig.RETRYABLE_ERRORS)
+                                        .build())
+                        .build();
+
+        StepVerifier.create(
+                        ModelUtils.applyTimeoutAndRetry(
+                                source, options, null, "test-model", "internal"))
+                .expectNextMatches(response -> "partial".equals(response.getId()))
+                .expectError(ModelStreamInterruptedException.class)
+                .verify();
+
+        assertEquals(1, attemptCount.get());
     }
 
     @Test

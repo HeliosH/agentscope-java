@@ -55,6 +55,11 @@ saas:
     context-window-tokens: ${SAAS_MODEL_CONTEXT_WINDOW_TOKENS:32000}
     max-output-tokens: ${SAAS_MODEL_MAX_OUTPUT_TOKENS:4096}
     safety-margin-tokens: ${SAAS_MODEL_SAFETY_MARGIN_TOKENS:1024}
+    stream-recovery:
+      enabled: ${SAAS_MODEL_STREAM_RECOVERY_ENABLED:true}
+      max-attempts: ${SAAS_MODEL_STREAM_RECOVERY_MAX_ATTEMPTS:3}
+      initial-backoff-millis: ${SAAS_MODEL_STREAM_RECOVERY_INITIAL_BACKOFF_MILLIS:1000}
+      max-backoff-millis: ${SAAS_MODEL_STREAM_RECOVERY_MAX_BACKOFF_MILLIS:10000}
     management:
       # Base64-encoded 32-byte AES key. Required before an admin can persist API credentials.
       encryption-key: ${SAAS_MODEL_MANAGEMENT_ENCRYPTION_KEY:}

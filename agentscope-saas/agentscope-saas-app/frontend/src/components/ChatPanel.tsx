@@ -44,6 +44,7 @@ interface Message {
   tools: ToolEntry[];
   confirmTools?: ConfirmToolCall[];
   pending?: boolean;
+  recovery?: { attempt?: number; maxAttempts?: number; message?: string };
   files?: MessageFile[];
 }
 
@@ -278,9 +279,25 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
         setActiveRunId(evt.runId);
         setInspectorOpen(true);
       }
+    } else if (evt.type === 'run_recovering') {
+      setMessages(prev => prev.map(m => m.id === replyId
+        ? {
+            ...m,
+            text: '',
+            tools: [],
+            pending: true,
+            recovery: {
+              attempt: evt.attempt,
+              maxAttempts: evt.maxAttempts,
+              message: evt.message,
+            },
+          }
+        : m));
     } else if (evt.type === 'token') {
       const chunk = evt.data ?? '';
-      setMessages(prev => prev.map(m => m.id === replyId ? { ...m, text: m.text + chunk } : m));
+      setMessages(prev => prev.map(m => m.id === replyId
+        ? { ...m, text: m.text + chunk, recovery: undefined }
+        : m));
     } else if (evt.type === 'tool_call') {
       const entry: ToolEntry = {
         id: `${evt.toolName ?? 'tool'}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -321,7 +338,9 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
           setSearchParams(next, { replace: true });
         }
       }
-      setMessages(prev => prev.map(m => m.id === replyId ? { ...m, pending: false } : m));
+      setMessages(prev => prev.map(m => m.id === replyId
+        ? { ...m, pending: false, recovery: undefined }
+        : m));
     } else if (evt.type === 'error') {
       setMessages(prev => prev.map(m => m.id === replyId
         ? { ...m, pending: false, text: m.text + (m.text ? '\n' : '') + `[error] ${evt.error ?? 'unknown'}` }
@@ -604,6 +623,15 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
                             result={tool.result}
                           />
                         ))}
+                      </div>
+                    )}
+                    {message.recovery && (
+                      <div className="message-recovery" role="status">
+                        <span className="message-recovery__dot" />
+                        <span>{message.recovery.message || '模型连接中断，系统正在恢复当前任务'}</span>
+                        {message.recovery.attempt && message.recovery.maxAttempts && (
+                          <small>{message.recovery.attempt}/{message.recovery.maxAttempts}</small>
+                        )}
                       </div>
                     )}
                     {message.text}

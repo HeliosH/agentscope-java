@@ -27,6 +27,7 @@ import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.model.ContextWindowAwareModel;
+import io.agentscope.core.model.ModelStreamInterruptedException;
 import io.agentscope.core.util.JsonUtils;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.tool.PlanModeTools;
@@ -44,10 +45,12 @@ import io.agentscope.saas.domain.repository.ChatSessionRepository;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
 import io.agentscope.saas.orchestration.TaskComplexityRouter;
 import io.agentscope.saas.orchestration.TaskComplexityRouter.Route;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -114,6 +117,7 @@ public class SaasChatController {
     private final ModelCatalog modelCatalog;
     private final boolean orchestrationEnabled;
     private final boolean plannerEnabled;
+    private final SaasProperties.ModelStreamRecovery modelStreamRecovery;
     private final TaskComplexityRouter complexityRouter = new TaskComplexityRouter();
     private final String sandboxType;
     private final AguiEventEncoder encoder = new AguiEventEncoder();
@@ -146,6 +150,10 @@ public class SaasChatController {
                         && properties.getOrchestration().isEnabled();
         this.plannerEnabled =
                 this.orchestrationEnabled && properties.getOrchestration().isPlannerEnabled();
+        this.modelStreamRecovery =
+                properties != null && properties.getModel() != null
+                        ? properties.getModel().getStreamRecovery()
+                        : new SaasProperties.ModelStreamRecovery();
         this.sandboxType =
                 properties != null && properties.getSandbox() != null
                         ? properties.getSandbox().getType()
@@ -401,10 +409,8 @@ public class SaasChatController {
                 resolved.agentId());
 
         Flux<AguiEvent> agentEvents =
-                agent.streamEvents(List.of(userMsg), ctx)
-                        .subscribeOn(Schedulers.boundedElastic())
-                        .doOnNext(accumulator::onEvent)
-                        .concatMapIterable(converter::convert);
+                recoverableAgentEvents(userMsg, ctx, converter, accumulator, threadId, runId)
+                        .subscribeOn(Schedulers.boundedElastic());
 
         Flux<AguiEvent> withPersistence =
                 persist
@@ -475,6 +481,111 @@ public class SaasChatController {
                                             System.nanoTime() - startedNanos);
                                 });
         return detachClient(execution, runId);
+    }
+
+    /**
+     * Recovers a model turn that failed after partial output without replaying the failed prefix.
+     * The first subscription receives the user message; subsequent subscriptions pass an empty
+     * input so ReActAgent resumes from the already-added user message and any committed tool
+     * results. Only ModelStreamInterruptedException is eligible: tool, permission, validation and
+     * business errors must remain visible failures.
+     */
+    private Flux<AguiEvent> recoverableAgentEvents(
+            Msg userMsg,
+            RuntimeContext context,
+            AguiEventConverter converter,
+            AssistantContentAccumulator accumulator,
+            String threadId,
+            String runId) {
+        SaasProperties.ModelStreamRecovery policy = modelStreamRecovery;
+        AtomicInteger attempt = new AtomicInteger(1);
+        return recoverableAgentEvents(
+                userMsg, context, converter, accumulator, threadId, runId, policy, attempt);
+    }
+
+    private Flux<AguiEvent> recoverableAgentEvents(
+            Msg userMsg,
+            RuntimeContext context,
+            AguiEventConverter converter,
+            AssistantContentAccumulator accumulator,
+            String threadId,
+            String runId,
+            SaasProperties.ModelStreamRecovery policy,
+            AtomicInteger attempt) {
+        int currentAttempt = attempt.get();
+        List<Msg> input = currentAttempt == 1 ? List.of(userMsg) : List.of();
+        return Flux.defer(
+                        () ->
+                                agent.streamEvents(input, context)
+                                        .doOnNext(accumulator::onEvent)
+                                        .concatMapIterable(converter::convert))
+                .onErrorResume(
+                        error -> {
+                            int maxAttempts = Math.max(1, policy.getMaxAttempts());
+                            if (!policy.isEnabled()
+                                    || !isModelStreamInterrupted(error)
+                                    || currentAttempt >= maxAttempts) {
+                                return Flux.error(error);
+                            }
+                            int nextAttempt = attempt.incrementAndGet();
+                            long delayMillis = recoveryDelayMillis(currentAttempt, policy);
+                            converter.resetForRecovery();
+                            Map<String, Object> payload = new HashMap<>();
+                            payload.put("attempt", nextAttempt);
+                            payload.put("maxAttempts", maxAttempts);
+                            payload.put("delayMillis", delayMillis);
+                            payload.put("message", "模型连接中断，系统正在恢复当前任务");
+                            AguiEvent recovering =
+                                    new AguiEvent.Custom(
+                                            threadId, runId, "run_recovering", payload);
+                            log.warn(
+                                    "Recovering model stream for run {} (attempt {}/{}) after {}"
+                                            + " ms",
+                                    runId,
+                                    nextAttempt,
+                                    maxAttempts,
+                                    delayMillis,
+                                    error.toString());
+                            return Flux.concat(
+                                    Flux.just(recovering),
+                                    Mono.delay(Duration.ofMillis(delayMillis))
+                                            .thenMany(
+                                                    recoverableAgentEvents(
+                                                            userMsg,
+                                                            context,
+                                                            converter,
+                                                            accumulator,
+                                                            threadId,
+                                                            runId,
+                                                            policy,
+                                                            attempt)));
+                        });
+    }
+
+    private static long recoveryDelayMillis(
+            int failedAttempt, SaasProperties.ModelStreamRecovery policy) {
+        long initial = Math.max(0L, policy.getInitialBackoffMillis());
+        long maximum = Math.max(initial, policy.getMaxBackoffMillis());
+        long delay = initial;
+        for (int i = 1; i < failedAttempt && delay < maximum; i++) {
+            delay = delay > maximum / 2 ? maximum : Math.min(maximum, delay * 2);
+        }
+        return delay;
+    }
+
+    private static boolean isModelStreamInterrupted(Throwable error) {
+        Throwable current = error;
+        int depth = 0;
+        while (current != null && depth++ < 8) {
+            if (current instanceof ModelStreamInterruptedException) {
+                return true;
+            }
+            if (current.getCause() == current) {
+                break;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private Flux<ServerSentEvent<String>> reusedRunStream(

@@ -60,6 +60,16 @@ public class AguiEventConverter {
         return new AguiEvent.RunStarted(threadId, runId);
     }
 
+    /**
+     * Resets wire-level message state before a recovered Agent turn is exposed. The previous
+     * attempt may have opened a text message before the model stream failed; the client receives a
+     * recovery event and replaces that partial message with the next attempt's output.
+     */
+    public void resetForRecovery() {
+        textOpen = false;
+        textMessageId = null;
+    }
+
     /** Emit the AG-UI run-finished event, closing any open text message first. */
     public List<AguiEvent> runFinished() {
         List<AguiEvent> out = new ArrayList<>();
