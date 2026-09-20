@@ -13,6 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.model.ContextWindowAwareModel;
@@ -102,7 +103,7 @@ class PgTaskRepositoryIntegrationTest {
     }
 
     @Test
-    void durableChildOutlivesCoordinatorAndIsDeliveredExactlyOnce() {
+    void durableChildOutlivesCoordinatorAndIsDeliveredExactlyOnce() throws Exception {
         UUID agentId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
         seedAgentAndSession(agentId, sessionId);
@@ -131,9 +132,9 @@ class PgTaskRepositoryIntegrationTest {
         assertThat(lease.subSessionId()).isEqualTo("sub-research");
         assertThat(lease.agentRunId()).isNotNull();
         assertThat(lease.workspaceIsolationMode()).isEqualTo(WorkspaceIsolationMode.NONE);
-        assertThat(lease.inputJson())
-                .contains("\"sandboxIsolationKey\":\"run/shared\"")
-                .contains("\"modelId\":\"enterprise-large\"");
+        var runtime = new ObjectMapper().readTree(lease.inputJson()).path("_runtime");
+        assertThat(runtime.path("sandboxIsolationKey").asText()).isEqualTo("run/shared");
+        assertThat(runtime.path("modelId").asText()).isEqualTo("enterprise-large");
         assertThat(leases.start(lease.attemptId(), "worker-pg-task")).isTrue();
         assertThat(
                         leases.succeed(
