@@ -26,6 +26,7 @@ import io.agentscope.harness.agent.filesystem.model.GrepMatch;
 import io.agentscope.harness.agent.filesystem.model.GrepResult;
 import io.agentscope.harness.agent.filesystem.model.LsResult;
 import io.agentscope.harness.agent.filesystem.model.ReadResult;
+import io.agentscope.harness.agent.filesystem.model.ShellExecutionRequest;
 import io.agentscope.harness.agent.filesystem.model.WriteResult;
 import io.agentscope.harness.agent.filesystem.sandbox.AbstractSandboxFilesystem;
 import java.util.ArrayList;
@@ -132,6 +133,12 @@ public class OverlayFilesystem implements AbstractFilesystem {
         public ExecuteResponse execute(
                 RuntimeContext runtimeContext, String command, Integer timeoutSeconds) {
             return shellBackend.execute(runtimeContext, command, timeoutSeconds);
+        }
+
+        @Override
+        public ExecuteResponse execute(
+                RuntimeContext runtimeContext, ShellExecutionRequest request) {
+            return shellBackend.execute(runtimeContext, request);
         }
     }
 

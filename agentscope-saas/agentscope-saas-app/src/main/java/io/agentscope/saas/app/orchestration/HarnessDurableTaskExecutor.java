@@ -160,10 +160,11 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
                 .ifPresent(key -> inputMetadata.put(ContextWindowAwareModel.MODEL_ID_KEY, key));
         Msg input =
                 Msg.builder()
+                        .id("task-" + request.taskId())
                         .role(MsgRole.USER)
                         .name(request.userId().toString())
                         .metadata(Map.copyOf(inputMetadata))
-                        .textContent(taskContextAssembler.assemble(request))
+                        .textContent(executionPrompt(request))
                         .build();
         long timeout =
                 Math.max(1L, properties.getOrchestration().getWorkerExecutionTimeoutSeconds());
@@ -179,7 +180,8 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
         if (result == null) {
             throw new IllegalStateException("HarnessAgent completed without a result message");
         }
-        if (isContinuation(request) && !orchestration.hasUnsettledChildren(request.runId())) {
+        if ((isContinuation(request) || isDirectChat(request))
+                && !orchestration.hasUnsettledChildren(request.runId())) {
             chatPersistence.saveAssistantMessageForRun(
                     tenant,
                     request.sessionId(),
@@ -349,6 +351,32 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
         } catch (Exception e) {
             throw new IllegalArgumentException("Unable to read durable task runtime metadata", e);
         }
+    }
+
+    private String executionPrompt(ExecutionRequest request) {
+        if (!isDirectChat(request)) {
+            return taskContextAssembler.assemble(request);
+        }
+        try {
+            JsonNode root = inputRoot(request);
+            String prompt = root.path("prompt").asText("").trim();
+            return prompt.isEmpty() ? request.title() : prompt;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Unable to read direct chat recovery input", e);
+        }
+    }
+
+    private boolean isDirectChat(ExecutionRequest request) {
+        try {
+            return inputRoot(request).path("_runtime").path("directChat").asBoolean(false);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private JsonNode inputRoot(ExecutionRequest request) throws Exception {
+        JsonNode root = objectMapper.readTree(request.inputJson());
+        return root.isTextual() ? objectMapper.readTree(root.textValue()) : root;
     }
 
     private boolean isContinuation(ExecutionRequest request) {

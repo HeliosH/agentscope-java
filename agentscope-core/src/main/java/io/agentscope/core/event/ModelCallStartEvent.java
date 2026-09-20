@@ -17,6 +17,7 @@ package io.agentscope.core.event;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.agentscope.core.tool.StepSnapshot;
 
 /**
  * Emitted when the agent starts a model (LLM) call.
@@ -24,18 +25,34 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 public class ModelCallStartEvent extends AgentEvent {
 
     private final String replyId;
+    private final StepSnapshot stepSnapshot;
 
     @JsonCreator
     public ModelCallStartEvent(
             @JsonProperty("id") String id,
             @JsonProperty("createdAt") String createdAt,
-            @JsonProperty("replyId") String replyId) {
+            @JsonProperty("replyId") String replyId,
+            @JsonProperty("stepSnapshot") StepSnapshot stepSnapshot) {
         super(id, createdAt);
         this.replyId = replyId;
+        this.stepSnapshot = stepSnapshot;
+    }
+
+    public ModelCallStartEvent(String id, String createdAt, String replyId) {
+        this(id, createdAt, replyId, null);
     }
 
     public ModelCallStartEvent(String replyId) {
+        this(replyId, null);
+    }
+
+    public ModelCallStartEvent(String replyId, StepSnapshot stepSnapshot) {
         this.replyId = replyId;
+        this.stepSnapshot = stepSnapshot;
+    }
+
+    public StepSnapshot getStepSnapshot() {
+        return stepSnapshot;
     }
 
     @Override

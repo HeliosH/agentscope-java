@@ -116,6 +116,7 @@ import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.state.LegacyStateLoader;
 import io.agentscope.core.tool.AgentTool;
 import io.agentscope.core.tool.RuntimeToolScope;
+import io.agentscope.core.tool.StepSnapshot;
 import io.agentscope.core.tool.ToolBase;
 import io.agentscope.core.tool.ToolCallParam;
 import io.agentscope.core.tool.ToolExecutionContext;
@@ -622,7 +623,10 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
         }
         if (toolExecutionContext != null) {
             return RuntimeContext.builder()
+                    .sessionId(run.getSessionId())
+                    .userId(run.getUserId())
                     .agentState(run.getAgentState())
+                    .copyAttributesFrom(run)
                     .toolExecutionContext(
                             ToolExecutionContext.merge(
                                     run.asToolExecutionContext(), toolExecutionContext))
@@ -1416,11 +1420,73 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                     : Mono.empty());
         }
 
+        private Toolkit stepToolkit;
+        private Map<String, String> stepSchemas = Map.of();
+        private PermissionContextState stepPermissions;
+        private PermissionEngine stepPermissionEngine;
+        private long stepSequence;
+
         private Toolkit toolkitForCall() {
-            return RuntimeToolScope.resolve(rc, toolkit);
+            return stepToolkit != null ? stepToolkit : RuntimeToolScope.resolve(rc, toolkit);
+        }
+
+        private void beginStep() {
+            // Copy registered handles and activation state before presenting schemas. Mutations
+            // of the request's source toolkit become visible only to the next model step.
+            stepToolkit = RuntimeToolScope.resolve(rc, toolkit).copy();
+            stepToolkit.setActiveGroups(
+                    new ArrayList<>(state.getToolContext().getActivatedGroups()));
+            stepPermissions = permissionEngine.snapshotContext();
+            stepPermissionEngine = new PermissionEngine(stepPermissions);
+            stepSchemas = new HashMap<>();
+            for (ToolSchema schema : stepToolkit.getToolSchemas()) {
+                stepSchemas.put(schema.getName(), StepSnapshot.fingerprint(schema.getParameters()));
+            }
+            if (soTool != null) {
+                stepSchemas.put(soTool.getName(), StepSnapshot.fingerprint(soTool.getParameters()));
+            }
+        }
+
+        private StepSnapshot captureStep(String stepId, ModelCallInput input) {
+            Set<String> visible = new HashSet<>();
+            if (input.tools() != null) {
+                for (ToolSchema schema : input.tools()) {
+                    if (!visible.add(schema.getName())) {
+                        throw new IllegalStateException(
+                                "Duplicate tool in model step: " + schema.getName());
+                    }
+                    String pinned = stepSchemas.get(schema.getName());
+                    if (pinned == null
+                            || !pinned.equals(StepSnapshot.fingerprint(schema.getParameters()))) {
+                        throw new IllegalStateException(
+                                "Model tool schema is not bound to this step: " + schema.getName());
+                    }
+                }
+            }
+            if (stepToolkit != null) {
+                for (String name : new ArrayList<>(stepToolkit.getToolNames())) {
+                    if (!visible.contains(name)) {
+                        stepToolkit.removeTool(name);
+                    }
+                }
+            }
+            StepSnapshot snapshot =
+                    StepSnapshot.capture(
+                            stepId,
+                            ++stepSequence,
+                            rc,
+                            input,
+                            stepPermissions != null
+                                    ? stepPermissions
+                                    : permissionEngine.snapshotContext(),
+                            toolkitForCall().getRegistrationVersion());
+            rc.put(StepSnapshot.class, snapshot);
+            return snapshot;
         }
 
         private Mono<Msg> doCallInner(List<Msg> msgs) {
+            restoreLatestContextCheckpoint();
+
             // Graceful-shutdown deduplication: if the agent's session was previously interrupted
             // by shutdown, the client is likely retrying with the same user prompt that already
             // exists in memory. Discard the duplicate input so the agent resumes purely from its
@@ -1812,8 +1878,91 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
          */
         private void addToContext(List<Msg> msgs) {
             if (msgs != null) {
-                state.contextMutable().addAll(msgs);
+                Set<String> existingIds =
+                        state.contextMutable().stream()
+                                .map(Msg::getId)
+                                .filter(id -> id != null && !id.isBlank())
+                                .collect(Collectors.toSet());
+                for (Msg msg : msgs) {
+                    if (msg == null) {
+                        continue;
+                    }
+                    String id = msg.getId();
+                    if (id == null || id.isBlank() || existingIds.add(id)) {
+                        state.contextMutable().add(msg);
+                    }
+                }
             }
+        }
+
+        private void restoreLatestContextCheckpoint() {
+            io.agentscope.core.tool.ContextCheckpointStore store =
+                    rc.get(io.agentscope.core.tool.ContextCheckpointStore.class);
+            if (store == null) {
+                return;
+            }
+            store.latest()
+                    .ifPresent(
+                            checkpoint -> {
+                                List<Msg> current = state.getContext();
+                                if (checkpoint
+                                        .historyHash()
+                                        .equals(StepSnapshot.fingerprint(current))) {
+                                    return;
+                                }
+                                List<Msg> restored =
+                                        mergeCheckpointTail(current, checkpoint.retainedTail());
+                                state.contextMutable().clear();
+                                state.contextMutable().addAll(restored);
+                                if (!checkpoint.summary().isBlank()) {
+                                    state.setSummary(checkpoint.summary());
+                                }
+                                state.setCurIter(0);
+                                log.info(
+                                        "Restored context checkpoint revision={} historySize={}"
+                                                + " agent={}",
+                                        checkpoint.historyRevision(),
+                                        restored.size(),
+                                        getName());
+                            });
+        }
+
+        private List<Msg> mergeCheckpointTail(List<Msg> current, List<Msg> retainedTail) {
+            if (retainedTail == null || retainedTail.isEmpty()) {
+                return current;
+            }
+            if (current == null || current.isEmpty()) {
+                return new ArrayList<>(retainedTail);
+            }
+            int maximum = Math.min(current.size(), retainedTail.size());
+            for (int overlap = maximum; overlap > 0; overlap--) {
+                boolean matches = true;
+                for (int i = 0; i < overlap; i++) {
+                    Msg left = current.get(current.size() - overlap + i);
+                    Msg right = retainedTail.get(i);
+                    if (!sameCheckpointMessage(left, right)) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (matches) {
+                    List<Msg> merged = new ArrayList<>(current);
+                    merged.addAll(retainedTail.subList(overlap, retainedTail.size()));
+                    return merged;
+                }
+            }
+            return new ArrayList<>(retainedTail);
+        }
+
+        private boolean sameCheckpointMessage(Msg left, Msg right) {
+            if (left == null || right == null) {
+                return left == right;
+            }
+            if (left.getId() != null && !left.getId().isBlank()) {
+                return left.getId().equals(right.getId());
+            }
+            return StepSnapshot.fingerprint(List.of(left))
+                    .equals(StepSnapshot.fingerprint(List.of(right)));
         }
 
         // ==================== Core ReAct Loop ====================
@@ -1876,6 +2025,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                 List<Msg> modelInput =
                                         prependSystemMsg(
                                                 event.getInputMessages(), event.getSystemMessage());
+                                beginStep();
                                 List<ToolSchema> tools =
                                         toolkitForCall()
                                                 .getToolSchemas(
@@ -2041,7 +2191,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                 GenerateOptions options) {
 
             Function<ModelCallInput, Flux<AgentEvent>> modelCallCore =
-                    mci -> modelCallStream(context, mci, true);
+                    mci -> modelCallStream(context, bindModelInput(mci), true);
 
             return MiddlewareChain.build(
                             middlewares,
@@ -2053,16 +2203,27 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                     .doOnNext(this::publishEvent);
         }
 
+        private ModelCallInput bindModelInput(ModelCallInput input) {
+            if (input.model() instanceof io.agentscope.core.model.StepBindableModel router) {
+                Model bound =
+                        Objects.requireNonNull(
+                                router.bindToStep(rc, input.messages()), "bound model");
+                return new ModelCallInput(input.messages(), input.tools(), input.options(), bound);
+            }
+            return input;
+        }
+
         private Flux<AgentEvent> modelCallStream(
                 ReasoningContext context, ModelCallInput mci, boolean withToolEvents) {
 
             String replyId = UUID.randomUUID().toString().replace("-", "");
+            StepSnapshot snapshot = captureStep(replyId, mci);
             AtomicBoolean textStarted = new AtomicBoolean(false);
             AtomicBoolean thinkingStarted = new AtomicBoolean(false);
             Map<String, String> startedToolCalls = new ConcurrentHashMap<>();
 
             Flux<AgentEvent> modelEvents =
-                    mci.model().stream(mci.messages(), mci.tools(), mci.options())
+                    Flux.defer(() -> mci.model().stream(mci.messages(), mci.tools(), mci.options()))
                             .concatMap(chunk -> checkInterrupted().thenReturn(chunk))
                             .concatMap(
                                     chunk -> {
@@ -2111,7 +2272,8 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                 return Flux.fromIterable(events);
                             });
 
-            return Flux.concat(Flux.just(new ModelCallStartEvent(replyId)), modelEvents, endEvents);
+            return Flux.concat(
+                    Flux.just(new ModelCallStartEvent(replyId, snapshot)), modelEvents, endEvents);
         }
 
         private void emitBlockEvents(
@@ -2540,7 +2702,23 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
             if (toolCalls == null || toolCalls.isEmpty()) {
                 return Mono.just(new PermissionGate(List.of(), List.of(), Set.of()));
             }
-            boolean useEngine = !state.getPermissionContext().isTrivial();
+            // A policy update while the model request was in flight invalidates this step's
+            // authorization. The next reasoning step captures the new policy; this one cannot
+            // retain permissions that may have been revoked in the meantime.
+            if (stepPermissions != null
+                    && !StepSnapshot.fingerprint(stepPermissions)
+                            .equals(StepSnapshot.fingerprint(state.getPermissionContext()))) {
+                return Mono.just(
+                        new PermissionGate(
+                                List.copyOf(toolCalls),
+                                List.of(),
+                                toolCalls.stream()
+                                        .map(ToolUseBlock::getId)
+                                        .collect(Collectors.toSet())));
+            }
+            boolean useEngine =
+                    !(stepPermissions != null ? stepPermissions : state.getPermissionContext())
+                            .isTrivial();
             return Flux.fromIterable(toolCalls)
                     .concatMap(use -> evaluateOne(use, useEngine))
                     .collectList()
@@ -2631,15 +2809,22 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                             new PermissionVerdict(
                                                     effectiveUse, PermissionBehavior.ASK));
                                 }
-                                // Tools already promoted to ALLOWED by user confirmation skip
-                                // ordinary rule evaluation, but never bypass DENY above.
+                                // Confirmation satisfies ASK, never explicit policy/tool DENY.
                                 if (use.getState() == ToolCallState.ALLOWED) {
-                                    return Mono.just(
-                                            new PermissionVerdict(
-                                                    effectiveUse, PermissionBehavior.ALLOW));
+                                    return (stepPermissionEngine != null
+                                                    ? stepPermissionEngine
+                                                    : permissionEngine)
+                                            .checkConfirmedPermission(tb, effectiveInput)
+                                            .map(
+                                                    decision ->
+                                                            new PermissionVerdict(
+                                                                    effectiveUse,
+                                                                    decision.getBehavior()));
                                 }
                                 if (useEngine) {
-                                    return permissionEngine
+                                    return (stepPermissionEngine != null
+                                                    ? stepPermissionEngine
+                                                    : permissionEngine)
                                             .checkPermission(tb, effectiveInput)
                                             .map(
                                                     decision ->
@@ -2651,7 +2836,10 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                                                                     .getBehavior()));
                                 }
                                 return tb.checkPermissions(
-                                                effectiveInput, state.getPermissionContext())
+                                                effectiveInput,
+                                                (stepPermissions != null
+                                                        ? stepPermissions
+                                                        : state.getPermissionContext()))
                                         .map(
                                                 decision -> {
                                                     if (decision == null) {
@@ -2928,7 +3116,37 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                 }
                                 Msg resultMsg = e.getToolResultMsg();
                                 state.contextMutable().add(resultMsg);
+                                saveContextCheckpoint();
                             });
+        }
+
+        private void saveContextCheckpoint() {
+            io.agentscope.core.tool.ContextCheckpointStore store =
+                    rc.get(io.agentscope.core.tool.ContextCheckpointStore.class);
+            StepSnapshot step = rc.get(StepSnapshot.class);
+            if (store == null || step == null || step.identity() == null) {
+                return;
+            }
+            List<Msg> history = state.getContext();
+            int tailStart = Math.max(0, history.size() - 20);
+            String operationScope = step.identity().runId();
+            List<String> pendingOperations =
+                    extractPendingToolCalls().stream()
+                            .map(call -> operationScope + ":" + call.getId())
+                            .toList();
+            io.agentscope.core.tool.ExecutionEnvironmentSnapshot environment =
+                    rc.get(io.agentscope.core.tool.ExecutionEnvironmentSnapshot.class);
+            store.save(
+                    new io.agentscope.core.tool.ContextCheckpointStore.Draft(
+                            step.identity(),
+                            rc.get(io.agentscope.core.tool.ExecutionLeaseSnapshot.class),
+                            step.stepId(),
+                            StepSnapshot.fingerprint(history),
+                            state.getSummary(),
+                            history.subList(tailStart, history.size()),
+                            null,
+                            pendingOperations,
+                            environment == null ? null : environment.workspaceVersion()));
         }
 
         /**
@@ -3020,8 +3238,10 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
         Flux<AgentEvent> summaryStream(
                 ReasoningContext context, List<Msg> messages, GenerateOptions options) {
 
+            beginStep();
+
             Function<ModelCallInput, Flux<AgentEvent>> summaryModelCallCore =
-                    mci -> summaryModelCallStream(context, mci, options);
+                    mci -> summaryModelCallStream(context, bindModelInput(mci), options);
 
             return MiddlewareChain.build(
                             middlewares,
@@ -3037,11 +3257,12 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                 ReasoningContext context, ModelCallInput mci, GenerateOptions hookOptions) {
 
             String replyId = UUID.randomUUID().toString().replace("-", "");
+            StepSnapshot snapshot = captureStep(replyId, mci);
             AtomicBoolean textStarted = new AtomicBoolean(false);
             AtomicBoolean thinkingStarted = new AtomicBoolean(false);
 
             Flux<AgentEvent> modelEvents =
-                    mci.model().stream(mci.messages(), mci.tools(), mci.options())
+                    Flux.defer(() -> mci.model().stream(mci.messages(), mci.tools(), mci.options()))
                             .concatMap(chunk -> checkInterrupted().thenReturn(chunk))
                             .concatMap(
                                     chunk -> {
@@ -3103,7 +3324,8 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                 return Flux.fromIterable(events);
                             });
 
-            return Flux.concat(Flux.just(new ModelCallStartEvent(replyId)), modelEvents, endEvents);
+            return Flux.concat(
+                    Flux.just(new ModelCallStartEvent(replyId, snapshot)), modelEvents, endEvents);
         }
 
         private List<Msg> prepareSummaryMessages() {

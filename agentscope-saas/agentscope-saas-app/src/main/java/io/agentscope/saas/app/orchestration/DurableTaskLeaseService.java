@@ -22,6 +22,7 @@ import io.agentscope.saas.domain.orchestration.DurableTaskLeaseRepository.TaskCa
 import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
 import io.agentscope.saas.orchestration.CompletionGate;
 import io.agentscope.saas.orchestration.DurableTaskExecutor.DependencyContext;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -120,16 +121,68 @@ public class DurableTaskLeaseService {
         return repository.heartbeat(attemptId, workerId, now, leaseExpiry(now)) == 1;
     }
 
+    /** Activates the lease used by an HTTP chat execution before it begins streaming. */
+    public boolean activateDirect(UUID attemptId, String leaseOwner) {
+        requireWorker(leaseOwner);
+        OffsetDateTime now = OffsetDateTime.now();
+        return repository.activateDirectAttempt(attemptId, leaseOwner, now, leaseExpiry(now)) == 1;
+    }
+
     public boolean succeed(UUID attemptId, String workerId) {
         return succeed(attemptId, workerId, "{}");
     }
 
     public boolean succeed(UUID attemptId, String workerId, String outputJson) {
-        return finish(attemptId, workerId, "SUCCEEDED", null, null, outputJson, false);
+        return finish(
+                attemptId, workerId, "SUCCEEDED", null, null, outputJson, false, false, true, 0L);
     }
 
     public boolean fail(UUID attemptId, String workerId, String errorCode, String errorMessage) {
-        return finish(attemptId, workerId, "FAILED", errorCode, errorMessage, null, false);
+        return finish(
+                attemptId,
+                workerId,
+                "FAILED",
+                errorCode,
+                errorMessage,
+                null,
+                false,
+                false,
+                true,
+                0L);
+    }
+
+    public boolean recover(
+            UUID attemptId,
+            String workerId,
+            String reasonCode,
+            String errorMessage,
+            long delayMillis) {
+        return finish(
+                attemptId,
+                workerId,
+                "FAILED",
+                reasonCode,
+                errorMessage,
+                null,
+                false,
+                true,
+                true,
+                Math.max(0L, delayMillis));
+    }
+
+    public boolean failTerminal(
+            UUID attemptId, String workerId, String errorCode, String errorMessage) {
+        return finish(
+                attemptId,
+                workerId,
+                "FAILED",
+                errorCode,
+                errorMessage,
+                null,
+                false,
+                false,
+                false,
+                0L);
     }
 
     /** Reclaims Attempts whose worker stopped heartbeating. Retries always use a new Attempt row. */
@@ -146,7 +199,10 @@ public class DurableTaskLeaseService {
                     "WORKER_LEASE_EXPIRED",
                     "Worker heartbeat lease expired",
                     null,
-                    true)) {
+                    true,
+                    true,
+                    true,
+                    0L)) {
                 recovered++;
             }
         }
@@ -243,7 +299,10 @@ public class DurableTaskLeaseService {
             String errorCode,
             String errorMessage,
             String outputJson,
-            boolean requireExpired) {
+            boolean requireExpired,
+            boolean recovery,
+            boolean allowRetry,
+            long recoveryDelayMillis) {
         requireWorker(workerId);
         Boolean finished =
                 transactions.execute(
@@ -303,7 +362,14 @@ public class DurableTaskLeaseService {
                             if ("SUCCEEDED".equals(finalStatus)) {
                                 completeTask(ref, now, normalizedOutput);
                             } else {
-                                retryOrStopTask(ref, now, finalErrorCode, finalErrorMessage);
+                                retryOrStopTask(
+                                        ref,
+                                        now,
+                                        finalErrorCode,
+                                        finalErrorMessage,
+                                        recovery,
+                                        allowRetry,
+                                        recoveryDelayMillis);
                             }
                             return true;
                         });
@@ -359,22 +425,46 @@ public class DurableTaskLeaseService {
     }
 
     private void retryOrStopTask(
-            AttemptRef ref, OffsetDateTime now, String errorCode, String errorMessage) {
-        boolean retryable = RETRY_IDEMPOTENT.equals(ref.retryMode());
+            AttemptRef ref,
+            OffsetDateTime now,
+            String errorCode,
+            String errorMessage,
+            boolean recovery,
+            boolean allowRetry,
+            long recoveryDelayMillis) {
+        boolean retryCapable = RETRY_IDEMPOTENT.equals(ref.retryMode());
         boolean hasAttempts = ref.attemptNo() < ref.maxAttempts();
-        if (retryable && hasAttempts) {
-            OffsetDateTime next = now.plusSeconds(retryDelay(ref));
-            repository.scheduleTaskRetry(
-                    ref.taskId(),
-                    next,
-                    now,
-                    truncate(errorCode, 128),
-                    truncate(errorMessage, MAX_ERROR_LENGTH));
+        if (allowRetry && retryCapable && hasAttempts) {
+            OffsetDateTime next =
+                    recovery && recoveryDelayMillis > 0L
+                            ? now.plus(Duration.ofMillis(recoveryDelayMillis))
+                            : now.plusSeconds(retryDelay(ref));
+            if (recovery) {
+                repository.scheduleTaskRecovery(
+                        ref.taskId(),
+                        ref.orgId(),
+                        ref.runId(),
+                        ref.agentRunId(),
+                        next,
+                        now,
+                        truncate(errorCode, 128),
+                        truncate(errorMessage, MAX_ERROR_LENGTH));
+            } else {
+                repository.scheduleTaskRetry(
+                        ref.taskId(),
+                        next,
+                        now,
+                        truncate(errorCode, 128),
+                        truncate(errorMessage, MAX_ERROR_LENGTH));
+            }
             updateAgentRun(ref.agentRunId(), "READY", now);
-            appendEvent(ref, "TASK_RETRY_SCHEDULED", payload(null, null, ref.attemptNo() + 1));
+            appendEvent(
+                    ref,
+                    recovery ? "RUN_RECOVERY_SCHEDULED" : "TASK_RETRY_SCHEDULED",
+                    payload(null, null, ref.attemptNo() + 1));
             return;
         }
-        String taskStatus = retryable ? "FAILED" : "MANUAL_ACTION";
+        String taskStatus = retryCapable ? "FAILED" : "MANUAL_ACTION";
         repository.stopTask(
                 ref.taskId(),
                 taskStatus,

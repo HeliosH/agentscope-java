@@ -17,8 +17,10 @@ package io.agentscope.core.tool;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
@@ -31,6 +33,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.BeforeEach;
@@ -48,6 +51,69 @@ import reactor.core.publisher.Mono;
 @Tag("unit")
 @DisplayName("ToolExecutor Unit Tests")
 class ToolExecutorTest {
+
+    private record ContextMarker(String value) {}
+
+    @Test
+    @SuppressWarnings("deprecation")
+    void mergingToolkitDefaultsPreservesCompleteRuntimeContext() {
+        ToolExecutionContext defaults =
+                ToolExecutionContext.builder()
+                        .register("toolkit", String.class, "default-value")
+                        .build();
+        Toolkit mergedToolkit =
+                new Toolkit(ToolkitConfig.builder().defaultContext(defaults).build());
+        AtomicReference<RuntimeContext> observed = new AtomicReference<>();
+        mergedToolkit.registerAgentTool(
+                new AgentTool() {
+                    @Override
+                    public String getName() {
+                        return "observe_context";
+                    }
+
+                    @Override
+                    public String getDescription() {
+                        return "observes merged runtime context";
+                    }
+
+                    @Override
+                    public Map<String, Object> getParameters() {
+                        return Map.of("type", "object", "properties", Map.of());
+                    }
+
+                    @Override
+                    public Mono<ToolResultBlock> callAsync(ToolCallParam param) {
+                        observed.set(param.getRuntimeContext());
+                        return Mono.just(ToolResultBlock.text("ok"));
+                    }
+                });
+        ContextMarker marker = new ContextMarker("call-value");
+        RuntimeContext runtime =
+                RuntimeContext.builder()
+                        .sessionId("session-1")
+                        .userId("user-1")
+                        .put("legacy", "legacy-value")
+                        .put(ContextMarker.class, marker)
+                        .build();
+        ToolUseBlock call =
+                ToolUseBlock.builder()
+                        .id("context-1")
+                        .name("observe_context")
+                        .input(Map.of())
+                        .content("{}")
+                        .build();
+
+        mergedToolkit.callTools(List.of(call), null, null, runtime).block(TIMEOUT);
+
+        RuntimeContext effective = observed.get();
+        assertNotNull(effective);
+        assertEquals("session-1", effective.getSessionId());
+        assertEquals("user-1", effective.getUserId());
+        assertEquals("legacy-value", effective.get("legacy"));
+        assertSame(marker, effective.get(ContextMarker.class));
+        assertEquals(
+                "default-value", effective.asToolExecutionContext().get("toolkit", String.class));
+    }
 
     private static final Duration TIMEOUT = Duration.ofSeconds(3);
 

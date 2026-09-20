@@ -137,6 +137,7 @@ final class ReflectiveFunctionTool extends ToolBase {
                         .description(description)
                         .inputSchema(schema)
                         .readOnly(annotation.readOnly())
+                        .retrySafety(annotation.retrySafety())
                         .concurrencySafe(annotation.concurrencySafe())
                         .externalTool(annotation.externalTool())
                         .stateInjected(annotation.stateInjected());
@@ -163,7 +164,12 @@ final class ReflectiveFunctionTool extends ToolBase {
         if (isExternalTool()) {
             return Mono.error(new ToolSuspendException());
         }
-        return methodInvoker.invokeAsync(toolObject, method, param, customConverter);
+        return methodInvoker.invokeAsync(
+                toolObject,
+                method,
+                param,
+                customConverter,
+                getRetrySafety() != ToolRetrySafety.NEVER);
     }
 
     /**

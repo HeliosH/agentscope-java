@@ -17,6 +17,7 @@ package io.agentscope.core.tool;
 
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.message.ToolResultBlock;
+import io.agentscope.core.message.ToolResultState;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.model.ExecutionConfig;
 import io.agentscope.core.shutdown.GracefulShutdownManager;
@@ -27,7 +28,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.Predicate;
 import org.slf4j.Logger;
@@ -165,7 +169,21 @@ class ToolExecutor {
      * @return Mono containing execution result
      */
     Mono<ToolResultBlock> execute(ToolCallParam param) {
-        return TracerRegistry.get().callTool(this.toolkit, param, () -> executeCore(param));
+        return Mono.defer(
+                () -> {
+                    String invocationId = UUID.randomUUID().toString();
+                    return TracerRegistry.get()
+                            .callTool(
+                                    this.toolkit,
+                                    param,
+                                    () ->
+                                            executeCore(param, invocationId)
+                                                    .onErrorResume(
+                                                            error ->
+                                                                    materializeFailure(
+                                                                            param.getToolUseBlock(),
+                                                                            error)));
+                });
     }
 
     /**
@@ -181,7 +199,7 @@ class ToolExecutor {
      *   <li>Actual tool invocation</li>
      * </ul>
      */
-    private Mono<ToolResultBlock> executeCore(ToolCallParam param) {
+    private Mono<ToolResultBlock> executeCore(ToolCallParam param, String invocationId) {
         ToolUseBlock toolCall = param.getToolUseBlock();
         AgentTool tool = toolRegistry.getTool(toolCall.getName());
 
@@ -234,6 +252,10 @@ class ToolExecutor {
                             runtimeContext.asToolExecutionContext(), toolkitDefault);
             runtimeContext =
                     io.agentscope.core.agent.RuntimeContext.builder()
+                            .sessionId(runtimeContext.getSessionId())
+                            .userId(runtimeContext.getUserId())
+                            .agentState(runtimeContext.getAgentState())
+                            .copyAttributesFrom(runtimeContext)
                             .toolExecutionContext(merged)
                             .build();
         }
@@ -263,31 +285,146 @@ class ToolExecutor {
                         .emitter(toolEmitter)
                         .build();
 
-        return tool.callAsync(executionParam)
-                .onErrorResume(
-                        ToolSuspendException.class,
-                        e -> {
-                            // Convert ToolSuspendException to suspended result
-                            logger.debug(
-                                    "Tool '{}' suspended: {}",
-                                    toolCall.getName(),
-                                    e.getReason() != null ? e.getReason() : "no reason");
-                            return Mono.just(ToolResultBlock.suspended(toolCall, e));
-                        })
-                .onErrorResume(
-                        e -> {
-                            String errorMsg =
-                                    e.getMessage() != null
-                                            ? e.getMessage()
-                                            : e.getClass().getSimpleName();
-                            return Mono.just(
-                                    ToolResultBlock.error("Tool execution failed: " + errorMsg));
-                        })
-                .switchIfEmpty(
-                        Mono.just(
-                                ToolResultBlock.error(
-                                        "Tool execution failed: Tool completed without returning a"
-                                                + " result")));
+        Mono<ToolResultBlock> invocation =
+                Mono.defer(() -> tool.callAsync(executionParam))
+                        .onErrorResume(
+                                ToolSuspendException.class,
+                                e -> {
+                                    // Convert ToolSuspendException to suspended result
+                                    logger.debug(
+                                            "Tool '{}' suspended: {}",
+                                            toolCall.getName(),
+                                            e.getReason() != null ? e.getReason() : "no reason");
+                                    return Mono.just(ToolResultBlock.suspended(toolCall, e));
+                                })
+                        .switchIfEmpty(
+                                Mono.just(
+                                        ToolResultBlock.error(
+                                                "Tool execution failed: Tool completed without"
+                                                        + " returning a result")));
+        ToolExecutionJournal journal =
+                runtimeContext == null ? null : runtimeContext.get(ToolExecutionJournal.class);
+        if (journal == null) {
+            return invocation;
+        }
+        StepSnapshot step = runtimeContext.get(StepSnapshot.class);
+        ToolExecutionJournal.Invocation journalInvocation =
+                journalInvocation(runtimeContext, step, toolCall, tool, mergedInput, invocationId);
+        return journaled(journal, journalInvocation, invocation);
+    }
+
+    private static ToolExecutionJournal.Invocation journalInvocation(
+            io.agentscope.core.agent.RuntimeContext runtimeContext,
+            StepSnapshot step,
+            ToolUseBlock call,
+            AgentTool tool,
+            Map<String, Object> input,
+            String invocationId) {
+        StepSnapshot.Identity identity = step == null ? null : step.identity();
+        String scope = identity != null ? identity.runId() : null;
+        if (scope == null || scope.isBlank()) scope = runtimeContext.getSessionId();
+        if (scope == null || scope.isBlank()) scope = "local";
+        return new ToolExecutionJournal.Invocation(
+                scope + ":" + call.getId(),
+                invocationId,
+                step == null ? null : step.stepId(),
+                identity,
+                runtimeContext.get(ExecutionLeaseSnapshot.class),
+                call.getId(),
+                call.getName(),
+                StepSnapshot.fingerprint(input),
+                input,
+                tool.getRetrySafety());
+    }
+
+    private static Mono<ToolResultBlock> journaled(
+            ToolExecutionJournal journal,
+            ToolExecutionJournal.Invocation invocation,
+            Mono<ToolResultBlock> execution) {
+        return Mono.defer(
+                () -> {
+                    ToolExecutionJournal.PrepareResult prepared = journal.prepare(invocation);
+                    if (prepared == null) {
+                        return Mono.error(
+                                new IllegalStateException(
+                                        "Tool journal returned no prepare result"));
+                    }
+                    if (prepared.action() == ToolExecutionJournal.PrepareAction.REUSE) {
+                        return Mono.just(prepared.reusableResult());
+                    }
+                    if (prepared.action() == ToolExecutionJournal.PrepareAction.RECONCILE) {
+                        return Mono.error(
+                                new ToolOutcomeUnknownException(
+                                        prepared.message() == null
+                                                ? "Prior tool outcome requires reconciliation"
+                                                : prepared.message()));
+                    }
+                    journal.markRunning(invocation);
+                    AtomicBoolean terminal = new AtomicBoolean();
+                    return execution
+                            .flatMap(
+                                    result ->
+                                            Mono.fromCallable(
+                                                    () -> {
+                                                        terminal.set(true);
+                                                        ToolExecutionJournal.TerminalStatus status =
+                                                                terminalStatus(result);
+                                                        journal.complete(
+                                                                invocation, status, result, null);
+                                                        return result;
+                                                    }))
+                            .doOnError(
+                                    error -> {
+                                        if (terminal.compareAndSet(false, true)) {
+                                            journal.complete(
+                                                    invocation,
+                                                    errorStatus(invocation, error),
+                                                    null,
+                                                    error);
+                                        }
+                                    })
+                            .doOnCancel(
+                                    () -> {
+                                        if (terminal.compareAndSet(false, true)) {
+                                            journal.complete(
+                                                    invocation,
+                                                    invocation.retrySafety()
+                                                                    == ToolRetrySafety.NEVER
+                                                            ? ToolExecutionJournal.TerminalStatus
+                                                                    .OUTCOME_UNKNOWN
+                                                            : ToolExecutionJournal.TerminalStatus
+                                                                    .CANCELLED,
+                                                    null,
+                                                    new CancellationException(
+                                                            "Tool subscription cancelled"));
+                                        }
+                                    });
+                });
+    }
+
+    private static ToolExecutionJournal.TerminalStatus terminalStatus(ToolResultBlock result) {
+        ToolResultState state = result == null ? null : result.getState();
+        if (state == ToolResultState.INTERRUPTED) {
+            return ToolExecutionJournal.TerminalStatus.CANCELLED;
+        }
+        if (result != null && result.isSuspended()) {
+            return ToolExecutionJournal.TerminalStatus.SUSPENDED;
+        }
+        if (state == ToolResultState.ERROR || state == ToolResultState.DENIED) {
+            return ToolExecutionJournal.TerminalStatus.FAILED;
+        }
+        return ToolExecutionJournal.TerminalStatus.SUCCEEDED;
+    }
+
+    private static ToolExecutionJournal.TerminalStatus errorStatus(
+            ToolExecutionJournal.Invocation invocation, Throwable error) {
+        if (invocation.retrySafety() == ToolRetrySafety.NEVER) {
+            return ToolExecutionJournal.TerminalStatus.OUTCOME_UNKNOWN;
+        }
+        if (error instanceof CancellationException || error instanceof InterruptedException) {
+            return ToolExecutionJournal.TerminalStatus.CANCELLED;
+        }
+        return ToolExecutionJournal.TerminalStatus.FAILED;
     }
 
     // ==================== Batch Tool Execution ====================
@@ -383,9 +520,17 @@ class ToolExecutor {
                         .agent(agent)
                         .runtimeContext(agentRuntimeContext)
                         .build();
+        String invocationId = UUID.randomUUID().toString();
 
         // Get core execution
-        Mono<ToolResultBlock> execution = execute(param);
+        Mono<ToolResultBlock> execution =
+                Mono.defer(
+                        () ->
+                                TracerRegistry.get()
+                                        .callTool(
+                                                this.toolkit,
+                                                param,
+                                                () -> executeCore(param, invocationId)));
 
         // Apply infrastructure layers
         execution = applyScheduling(execution);
@@ -397,13 +542,49 @@ class ToolExecutor {
         return execution
                 .map(result -> result.withIdAndName(toolCall.getId(), toolCall.getName()))
                 .onErrorResume(
-                        e -> {
-                            logger.warn("Tool call failed: {}", toolCall.getName(), e);
-                            String errorMsg = ExceptionUtils.getErrorMessage(e);
-                            return Mono.just(
-                                    ToolResultBlock.error("Tool execution failed: " + errorMsg)
-                                            .withIdAndName(toolCall.getId(), toolCall.getName()));
-                        });
+                        e ->
+                                materializeFailure(toolCall, e)
+                                        .map(
+                                                result ->
+                                                        result.withIdAndName(
+                                                                toolCall.getId(),
+                                                                toolCall.getName())));
+    }
+
+    private Mono<ToolResultBlock> materializeFailure(ToolUseBlock call, Throwable error) {
+        if (error instanceof ToolSuspendException suspended) {
+            return Mono.just(ToolResultBlock.suspended(call, suspended));
+        }
+        return Mono.just(
+                ToolResultBlock.error(
+                        "Tool execution failed: " + ExceptionUtils.getErrorMessage(error)));
+    }
+
+    private static boolean isPermanentFailure(Throwable error) {
+        java.util.Set<Throwable> seen =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            if (!seen.add(cause)) {
+                return true;
+            }
+            if (cause instanceof SecurityException
+                    || cause instanceof IllegalArgumentException
+                    || cause instanceof InterruptedException
+                    || cause instanceof java.util.concurrent.CancellationException
+                    || cause instanceof ToolSuspendException) {
+                return true;
+            }
+            Integer status = null;
+            if (cause instanceof io.agentscope.core.model.transport.HttpTransportException http) {
+                status = http.getStatusCode();
+            } else if (cause instanceof io.agentscope.core.model.exception.OpenAIException openai) {
+                status = openai.getStatusCode();
+            }
+            if (status != null && status >= 400 && status < 500 && status != 429) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ==================== Infrastructure Methods ====================
@@ -426,7 +607,9 @@ class ToolExecutor {
 
         return execution.timeout(
                 timeout,
-                Mono.error(new RuntimeException("Tool execution timeout after " + timeout)));
+                Mono.error(
+                        new java.util.concurrent.TimeoutException(
+                                "Tool execution timeout after " + timeout)));
     }
 
     private Mono<ToolResultBlock> applyRetry(
@@ -435,6 +618,12 @@ class ToolExecutor {
             return execution;
         }
 
+        AgentTool tool = toolRegistry.getTool(toolCall.getName());
+        if (tool == null
+                || tool.getRetrySafety() == null
+                || tool.getRetrySafety() == ToolRetrySafety.NEVER) {
+            return execution;
+        }
         Integer maxAttempts = config.getMaxAttempts();
         Duration initialBackoff =
                 config.getInitialBackoff() != null
@@ -443,13 +632,15 @@ class ToolExecutor {
         Duration maxBackoff =
                 config.getMaxBackoff() != null ? config.getMaxBackoff() : Duration.ofSeconds(10);
         Predicate<Throwable> retryOn =
-                config.getRetryOn() != null ? config.getRetryOn() : error -> true;
+                config.getRetryOn() != null
+                        ? config.getRetryOn()
+                        : ExecutionConfig.RETRYABLE_ERRORS;
 
         Retry retrySpec =
                 Retry.backoff(maxAttempts - 1, initialBackoff)
                         .maxBackoff(maxBackoff)
                         .jitter(0.5)
-                        .filter(retryOn)
+                        .filter(error -> !isPermanentFailure(error) && retryOn.test(error))
                         .doBeforeRetry(
                                 signal ->
                                         logger.warn(

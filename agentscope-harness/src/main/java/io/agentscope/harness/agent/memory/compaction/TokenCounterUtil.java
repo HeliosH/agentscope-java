@@ -18,264 +18,130 @@ package io.agentscope.harness.agent.memory.compaction;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.TextBlock;
+import io.agentscope.core.message.ThinkingBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.core.model.InputTokenAwareModel;
+import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ToolSchema;
+import io.agentscope.core.util.JsonUtils;
 import java.util.List;
-import java.util.Map;
+import java.util.function.ToIntFunction;
 
-/**
- * Utility class for estimating token count in messages.
- *
- * <p>This class provides methods to estimate the number of input tokens that would be
- * consumed when sending messages to an LLM. The estimation uses a character-based
- * approximation that works reasonably well for both English and Chinese text.
- *
- * <p>Token estimation strategy:
- * <ul>
- *   <li>Text content: ~1 token per 2-4 characters (varies by language)
- *   <li>Tool calls: Includes tool name, parameters, and structure overhead
- *   <li>Tool results: Includes output content and structure overhead
- *   <li>Message structure: Role, name, and formatting overhead
- * </ul>
- */
-public class TokenCounterUtil {
+/** Text estimation with explicit provider media costs and saturating arithmetic. */
+public final class TokenCounterUtil {
+    private TokenCounterUtil() {}
 
-    // Token estimation ratios
-    // For English: ~1 token per 4 characters
-    // For Chinese: ~1 token per 1-2 characters
-    // Using a conservative ratio that works for mixed content
-    private static final double CHARS_PER_TOKEN = 2.5;
+    private static final ToIntFunction<ContentBlock> REQUIRE_MEDIA_ESTIMATOR =
+            block -> {
+                throw new ContextWindowExceededException(
+                        "Token cost is unknown for "
+                                + block.getClass().getSimpleName()
+                                + "; configure a provider-specific media token estimator before"
+                                + " submitting this input.");
+            };
 
-    // Overhead tokens for message structure (role, name, formatting)
-    private static final int MESSAGE_OVERHEAD = 5;
-
-    // Overhead tokens for tool call structure
-    private static final int TOOL_CALL_OVERHEAD = 10;
-
-    // Overhead tokens for tool result structure
-    private static final int TOOL_RESULT_OVERHEAD = 8;
-
-    /**
-     * Calculates the estimated total input tokens for a list of messages.
-     *
-     * <p>This method estimates tokens by:
-     * <ul>
-     *   <li>Extracting all text content from messages
-     *   <li>Counting characters in tool calls and results
-     *   <li>Adding structure overhead for each message and content block
-     * </ul>
-     *
-     * @param messages the list of messages to estimate tokens for
-     * @return estimated number of input tokens
-     */
     public static int calculateToken(List<Msg> messages) {
-        if (messages == null || messages.isEmpty()) {
-            return 0;
-        }
-
-        int totalTokens = 0;
-
-        for (Msg msg : messages) {
-            totalTokens += estimateMessageTokens(msg);
-        }
-
-        return totalTokens;
+        return calculateToken(messages, null);
     }
 
-    /** Estimates messages and tool schemas as they are sent in one model request. */
     public static int calculateToken(List<Msg> messages, List<ToolSchema> tools) {
-        int total = calculateToken(messages);
-        if (tools == null) {
-            return total;
+        return calculateToken(messages, tools, REQUIRE_MEDIA_ESTIMATOR);
+    }
+
+    /** Uses a provider estimator when present; rejects invalid negative estimates. */
+    public static int calculateToken(List<Msg> messages, List<ToolSchema> tools, Model model) {
+        if (model instanceof InputTokenAwareModel aware) {
+            long estimate = aware.estimateInputTokens(messages, tools);
+            if (estimate < 0)
+                throw new IllegalArgumentException("Input token estimate must not be negative");
+            return cap(estimate);
         }
-        for (ToolSchema tool : tools) {
-            if (tool == null) {
-                continue;
+        return calculateToken(messages, tools);
+    }
+
+    /** Media costs are supplied by trusted model configuration, never inferred from a URL. */
+    public static int calculateToken(
+            List<Msg> messages,
+            List<ToolSchema> tools,
+            ToIntFunction<ContentBlock> mediaEstimator) {
+        java.util.Objects.requireNonNull(mediaEstimator, "mediaEstimator");
+        int total = 0;
+        if (messages != null) {
+            for (Msg message : messages) {
+                if (message == null) continue;
+                int tokens = add(5, calculateTextToken(message.getName()));
+                if (message.getRole() != null)
+                    tokens = add(tokens, calculateTextToken(message.getRole().name()));
+                if (message.getContent() != null) {
+                    for (ContentBlock block : message.getContent())
+                        tokens = add(tokens, blockTokens(block, mediaEstimator));
+                }
+                total = add(total, tokens);
             }
-            total += 12;
-            total += estimateTextTokens(tool.getName());
-            total += estimateTextTokens(tool.getDescription());
-            total += estimateTextTokens(String.valueOf(tool.getParameters()));
-            total += estimateTextTokens(String.valueOf(tool.getOutputSchema()));
+        }
+        if (tools != null) {
+            for (ToolSchema tool : tools) {
+                if (tool == null) continue;
+                total = add(total, 12);
+                total = add(total, calculateTextToken(tool.getName()));
+                total = add(total, calculateTextToken(tool.getDescription()));
+                total = add(total, jsonTokens(tool.getParameters()));
+                total = add(total, jsonTokens(tool.getOutputSchema()));
+            }
         }
         return total;
     }
 
-    /** Public text estimator used to bound generated compaction prompts. */
+    private static int blockTokens(ContentBlock block, ToIntFunction<ContentBlock> mediaEstimator) {
+        if (block == null) return 0;
+        if (block instanceof TextBlock text) return calculateTextToken(text.getText());
+        if (block instanceof ThinkingBlock thinking)
+            return calculateTextToken(thinking.getThinking());
+        if (block instanceof ToolUseBlock use) {
+            int tokens =
+                    add(
+                            10,
+                            add(
+                                    calculateTextToken(use.getName()),
+                                    calculateTextToken(use.getId())));
+            // Content and input are two representations of the same arguments, not two inputs.
+            return add(
+                    tokens,
+                    Math.max(calculateTextToken(use.getContent()), jsonTokens(use.getInput())));
+        }
+        if (block instanceof ToolResultBlock result) {
+            int tokens =
+                    add(
+                            8,
+                            add(
+                                    calculateTextToken(result.getName()),
+                                    calculateTextToken(result.getId())));
+            if (result.getOutput() != null) {
+                for (ContentBlock output : result.getOutput())
+                    tokens = add(tokens, blockTokens(output, mediaEstimator));
+            }
+            return tokens;
+        }
+        int mediaTokens = mediaEstimator.applyAsInt(block);
+        if (mediaTokens <= 0)
+            throw new IllegalArgumentException("Media token estimate must be positive");
+        return mediaTokens;
+    }
+
     public static int calculateTextToken(String text) {
-        return estimateTextTokens(text);
+        return text == null || text.isEmpty() ? 0 : (int) Math.ceil(text.length() / 2.5);
     }
 
-    /**
-     * Estimates tokens for a single message.
-     *
-     * @param msg the message to estimate
-     * @return estimated number of tokens for this message
-     */
-    private static int estimateMessageTokens(Msg msg) {
-        if (msg == null) {
-            return 0;
-        }
-
-        int tokens = MESSAGE_OVERHEAD;
-
-        // Add overhead for role and name
-        if (msg.getRole() != null) {
-            tokens += estimateTextTokens(msg.getRole().name());
-        }
-        if (msg.getName() != null) {
-            tokens += estimateTextTokens(msg.getName());
-        }
-
-        // Estimate tokens for content blocks
-        List<ContentBlock> content = msg.getContent();
-        if (content != null) {
-            for (ContentBlock block : content) {
-                tokens += estimateContentBlockTokens(block);
-            }
-        }
-
-        return tokens;
+    private static int jsonTokens(Object value) {
+        return value == null ? 0 : calculateTextToken(JsonUtils.getJsonCodec().toJson(value));
     }
 
-    /**
-     * Estimates tokens for a content block.
-     *
-     * @param block the content block to estimate
-     * @return estimated number of tokens for this block
-     */
-    private static int estimateContentBlockTokens(ContentBlock block) {
-        if (block == null) {
-            return 0;
-        }
-
-        if (block instanceof TextBlock textBlock) {
-            return estimateTextTokens(textBlock.getText());
-        } else if (block instanceof ToolUseBlock toolUseBlock) {
-            return estimateToolUseBlockTokens(toolUseBlock);
-        } else if (block instanceof ToolResultBlock toolResultBlock) {
-            return estimateToolResultBlockTokens(toolResultBlock);
-        }
-
-        // For other block types (ImageBlock, AudioBlock, etc.), estimate minimal overhead
-        return 5;
+    private static int add(int a, int b) {
+        return cap((long) a + b);
     }
 
-    /**
-     * Estimates tokens for a ToolUseBlock.
-     *
-     * @param toolUseBlock the tool use block to estimate
-     * @return estimated number of tokens
-     */
-    private static int estimateToolUseBlockTokens(ToolUseBlock toolUseBlock) {
-        int tokens = TOOL_CALL_OVERHEAD;
-
-        // Tool name
-        if (toolUseBlock.getName() != null) {
-            tokens += estimateTextTokens(toolUseBlock.getName());
-        }
-
-        // Tool ID
-        if (toolUseBlock.getId() != null) {
-            tokens += estimateTextTokens(toolUseBlock.getId());
-        }
-
-        // Tool input parameters
-        Map<String, Object> input = toolUseBlock.getInput();
-        if (input != null && !input.isEmpty()) {
-            // Estimate tokens for JSON representation of parameters
-            String inputJson = estimateMapAsJson(input);
-            tokens += estimateTextTokens(inputJson);
-        }
-
-        // Raw content (if present)
-        if (toolUseBlock.getContent() != null) {
-            tokens += estimateTextTokens(toolUseBlock.getContent());
-        }
-
-        return tokens;
-    }
-
-    /**
-     * Estimates tokens for a ToolResultBlock.
-     *
-     * @param toolResultBlock the tool result block to estimate
-     * @return estimated number of tokens
-     */
-    private static int estimateToolResultBlockTokens(ToolResultBlock toolResultBlock) {
-        int tokens = TOOL_RESULT_OVERHEAD;
-
-        // Tool name
-        if (toolResultBlock.getName() != null) {
-            tokens += estimateTextTokens(toolResultBlock.getName());
-        }
-
-        // Tool ID
-        if (toolResultBlock.getId() != null) {
-            tokens += estimateTextTokens(toolResultBlock.getId());
-        }
-
-        // Output content blocks
-        List<ContentBlock> output = toolResultBlock.getOutput();
-        if (output != null) {
-            for (ContentBlock outputBlock : output) {
-                tokens += estimateContentBlockTokens(outputBlock);
-            }
-        }
-
-        return tokens;
-    }
-
-    /**
-     * Estimates tokens for text content.
-     *
-     * <p>Uses a character-based approximation that works reasonably well
-     * for both English and Chinese text.
-     *
-     * @param text the text to estimate
-     * @return estimated number of tokens
-     */
-    private static int estimateTextTokens(String text) {
-        if (text == null || text.isEmpty()) {
-            return 0;
-        }
-
-        // Count characters and apply ratio
-        int charCount = text.length();
-        return (int) Math.ceil(charCount / CHARS_PER_TOKEN);
-    }
-
-    /**
-     * Estimates the JSON string representation of a map for token counting.
-     *
-     * <p>This is a simplified estimation that counts keys and string values.
-     *
-     * @param map the map to estimate
-     * @return estimated JSON string length
-     */
-    private static String estimateMapAsJson(Map<String, Object> map) {
-        if (map == null || map.isEmpty()) {
-            return "{}";
-        }
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("{");
-        boolean first = true;
-        for (Map.Entry<String, Object> entry : map.entrySet()) {
-            if (!first) {
-                sb.append(",");
-            }
-            first = false;
-            sb.append("\"").append(entry.getKey()).append("\":");
-            Object value = entry.getValue();
-            if (value instanceof String) {
-                sb.append("\"").append(value).append("\"");
-            } else {
-                sb.append(value != null ? value.toString() : "null");
-            }
-        }
-        sb.append("}");
-        return sb.toString();
+    private static int cap(long value) {
+        return (int) Math.min(Integer.MAX_VALUE, value);
     }
 }

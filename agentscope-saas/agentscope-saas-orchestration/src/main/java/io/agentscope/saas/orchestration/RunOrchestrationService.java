@@ -119,6 +119,28 @@ public class RunOrchestrationService {
             String userMessage,
             String idempotencyKey,
             RunPolicy requestedPolicy) {
+        return createDirectRun(
+                tenant,
+                agentId,
+                sessionId,
+                triggerMessageId,
+                userMessage,
+                idempotencyKey,
+                requestedPolicy,
+                "{}");
+    }
+
+    /** Creates a direct Run with a restart-safe execution payload for background recovery. */
+    @Transactional
+    public RunHandle createDirectRun(
+            TenantContext tenant,
+            UUID agentId,
+            UUID sessionId,
+            UUID triggerMessageId,
+            String userMessage,
+            String idempotencyKey,
+            RunPolicy requestedPolicy,
+            String executionInputJson) {
         UUID orgId = uuid(tenant.orgId(), "orgId");
         UUID userId = uuid(tenant.userId(), "userId");
         RunPolicy policy = requestedPolicy != null ? requestedPolicy : RunPolicy.unlimited();
@@ -166,7 +188,7 @@ public class RunOrchestrationService {
                         "agent",
                         TASK_RUNNING,
                         0,
-                        "{}",
+                        validJsonObject(executionInputJson),
                         "{}",
                         "{}",
                         "[]",

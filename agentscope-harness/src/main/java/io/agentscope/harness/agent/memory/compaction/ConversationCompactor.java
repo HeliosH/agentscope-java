@@ -100,7 +100,7 @@ public class ConversationCompactor {
         // Step 1: Lightweight arg truncation (non-LLM). Runs at a lower threshold than
         List<Msg> messages = truncateArgs(conversationMessages, config.getTruncateArgsConfig());
 
-        int totalTokens = TokenCounterUtil.calculateToken(messages);
+        int totalTokens = TokenCounterUtil.calculateToken(messages, List.of(), model);
         if (!shouldCompact(messages, totalTokens, config)) {
             return Mono.just(Optional.empty());
         }
@@ -232,8 +232,7 @@ public class ConversationCompactor {
      *
      * <p>The cutoff is adjusted so that ASSISTANT/TOOL pairs are never split.
      */
-    private static int determineCutoffIndex(
-            List<Msg> messages, int totalTokens, CompactionConfig config) {
+    private int determineCutoffIndex(List<Msg> messages, int totalTokens, CompactionConfig config) {
         int rawCutoff;
         if (config.getKeepTokens() > 0) {
             rawCutoff = findTokenBasedCutoff(messages, totalTokens, config.getKeepTokens());
@@ -244,7 +243,7 @@ public class ConversationCompactor {
     }
 
     /** Returns the earliest index such that {@code messages[index:]} fits within the token budget. */
-    private static int findTokenBasedCutoff(List<Msg> messages, int totalTokens, int keepTokens) {
+    private int findTokenBasedCutoff(List<Msg> messages, int totalTokens, int keepTokens) {
         if (totalTokens <= keepTokens) {
             return 0;
         }
@@ -255,7 +254,8 @@ public class ConversationCompactor {
         int maxIter = Integer.SIZE - Integer.numberOfLeadingZeros(messages.size()) + 1;
         for (int i = 0; i < maxIter && left < right; i++) {
             int mid = (left + right) / 2;
-            if (TokenCounterUtil.calculateToken(messages.subList(mid, messages.size()))
+            if (TokenCounterUtil.calculateToken(
+                            messages.subList(mid, messages.size()), List.of(), model)
                     <= keepTokens) {
                 candidate = mid;
                 right = mid;
@@ -532,7 +532,7 @@ public class ConversationCompactor {
             return messages;
         }
 
-        int totalTokens = TokenCounterUtil.calculateToken(messages);
+        int totalTokens = TokenCounterUtil.calculateToken(messages, List.of(), model);
         if (!shouldTruncateArgs(messages, totalTokens, truncateConfig)) {
             return messages;
         }
@@ -571,13 +571,14 @@ public class ConversationCompactor {
         return cfg.getTriggerTokens() > 0 && totalTokens >= cfg.getTriggerTokens();
     }
 
-    private static int determineTruncateCutoff(List<Msg> messages, TruncateArgsConfig cfg) {
+    private int determineTruncateCutoff(List<Msg> messages, TruncateArgsConfig cfg) {
         if (cfg.getKeepTokens() > 0) {
             // Token-budget-based keep window: scan from the end
             int tokensKept = 0;
             for (int i = messages.size() - 1; i >= 0; i--) {
-                int msgTokens = TokenCounterUtil.calculateToken(List.of(messages.get(i)));
-                if (tokensKept + msgTokens > cfg.getKeepTokens()) {
+                int msgTokens =
+                        TokenCounterUtil.calculateToken(List.of(messages.get(i)), List.of(), model);
+                if ((long) tokensKept + msgTokens > cfg.getKeepTokens()) {
                     return i + 1;
                 }
                 tokensKept += msgTokens;

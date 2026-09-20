@@ -15,7 +15,6 @@ import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.ModelCallEndEvent;
-import io.agentscope.core.event.ModelCallStartEvent;
 import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.MiddlewareBase;
 import io.agentscope.core.middleware.ModelCallInput;
@@ -23,9 +22,14 @@ import io.agentscope.core.model.ChatUsage;
 import io.agentscope.core.model.ContextWindowAwareModel;
 import io.agentscope.core.model.ModelContextProfile;
 import io.agentscope.core.permission.PermissionContextState;
+import io.agentscope.core.tool.ContextCheckpointStore;
+import io.agentscope.core.tool.ExecutionLeaseSnapshot;
 import io.agentscope.core.tool.RuntimeToolScope;
+import io.agentscope.core.tool.StepSnapshot;
+import io.agentscope.core.tool.ToolExecutionJournal;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
+import io.agentscope.saas.sandbox.SandboxRuntimeAttributes;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -41,11 +45,30 @@ public final class OrchestrationGovernanceMiddleware implements MiddlewareBase {
 
     private final OrchestrationGovernanceService governance;
     private final ObjectMapper objectMapper;
+    private final DurableToolExecutionJournalFactory toolJournalFactory;
+    private final DurableContextCheckpointFactory contextCheckpointFactory;
 
     public OrchestrationGovernanceMiddleware(
             OrchestrationGovernanceService governance, ObjectMapper objectMapper) {
+        this(governance, objectMapper, null, null);
+    }
+
+    public OrchestrationGovernanceMiddleware(
+            OrchestrationGovernanceService governance,
+            ObjectMapper objectMapper,
+            DurableToolExecutionJournalFactory toolJournalFactory) {
+        this(governance, objectMapper, toolJournalFactory, null);
+    }
+
+    public OrchestrationGovernanceMiddleware(
+            OrchestrationGovernanceService governance,
+            ObjectMapper objectMapper,
+            DurableToolExecutionJournalFactory toolJournalFactory,
+            DurableContextCheckpointFactory contextCheckpointFactory) {
         this.governance = governance;
         this.objectMapper = objectMapper;
+        this.toolJournalFactory = toolJournalFactory;
+        this.contextCheckpointFactory = contextCheckpointFactory;
     }
 
     @Override
@@ -58,32 +81,31 @@ public final class OrchestrationGovernanceMiddleware implements MiddlewareBase {
         if (scope == null) {
             return next.apply(input);
         }
+        ctx.put(
+                StepSnapshot.Identity.class,
+                new StepSnapshot.Identity(
+                        scope.runId().toString(),
+                        scope.agentRunId().toString(),
+                        ctx.get(SandboxRuntimeAttributes.ATTR_TASK_ID),
+                        ctx.get(SandboxRuntimeAttributes.ATTR_ATTEMPT_ID)));
+        String leaseOwner = ctx.get(SandboxRuntimeAttributes.ATTR_LEASE_OWNER);
+        if (leaseOwner != null && !leaseOwner.isBlank()) {
+            ctx.put(ExecutionLeaseSnapshot.class, new ExecutionLeaseSnapshot(leaseOwner));
+        }
+        if (toolJournalFactory != null && ctx.get(ToolExecutionJournal.class) == null) {
+            ctx.put(
+                    ToolExecutionJournal.class,
+                    toolJournalFactory.create(scope.orgId(), scope.runId()));
+        }
+        if (contextCheckpointFactory != null && ctx.get(ContextCheckpointStore.class) == null) {
+            ctx.put(
+                    ContextCheckpointStore.class,
+                    contextCheckpointFactory.create(
+                            scope.orgId(), scope.runId(), scope.agentRunId()));
+        }
         restorePermissions(agent, ctx, scope);
         require(governance.preflight(scope.orgId(), scope.runId(), scope.agentRunId()));
-        Flux<AgentEvent> events =
-                next.apply(input)
-                        .doOnNext(
-                                event -> {
-                                    if (event instanceof ModelCallStartEvent) {
-                                        require(
-                                                governance.preflight(
-                                                        scope.orgId(),
-                                                        scope.runId(),
-                                                        scope.agentRunId()));
-                                    } else if (event instanceof ModelCallEndEvent end) {
-                                        ChatUsage usage = end.getUsage();
-                                        require(
-                                                governance.consume(
-                                                        scope.orgId(),
-                                                        scope.runId(),
-                                                        scope.agentRunId(),
-                                                        usage != null ? usage.getInputTokens() : 0,
-                                                        usage != null ? usage.getOutputTokens() : 0,
-                                                        usage != null
-                                                                ? usage.getTotalTokens()
-                                                                : 0));
-                                    }
-                                });
+        Flux<AgentEvent> events = next.apply(input);
         Duration remaining =
                 governance
                         .remainingTime(scope.orgId(), scope.runId(), scope.agentRunId())
@@ -111,6 +133,9 @@ public final class OrchestrationGovernanceMiddleware implements MiddlewareBase {
             ModelCallInput input,
             Function<ModelCallInput, Flux<AgentEvent>> next) {
         Scope scope = scope(ctx);
+        if (scope != null) {
+            require(governance.preflight(scope.orgId(), scope.runId(), scope.agentRunId()));
+        }
         if (scope != null && ctx.get(RuntimeCapabilityCaptured.class) == null) {
             RuntimeCapabilitySnapshot snapshot = snapshot(ctx, input);
             governance.saveRuntimeCapabilitySnapshot(
@@ -123,7 +148,21 @@ public final class OrchestrationGovernanceMiddleware implements MiddlewareBase {
                     RuntimeCapabilityCaptured.class,
                     new RuntimeCapabilityCaptured(snapshot.hash()));
         }
-        return next.apply(input);
+        return next.apply(input)
+                .doOnNext(
+                        event -> {
+                            if (scope != null && event instanceof ModelCallEndEvent end) {
+                                ChatUsage usage = end.getUsage();
+                                require(
+                                        governance.consume(
+                                                scope.orgId(),
+                                                scope.runId(),
+                                                scope.agentRunId(),
+                                                usage != null ? usage.getInputTokens() : 0,
+                                                usage != null ? usage.getOutputTokens() : 0,
+                                                usage != null ? usage.getTotalTokens() : 0));
+                            }
+                        });
     }
 
     private RuntimeCapabilitySnapshot snapshot(RuntimeContext ctx, ModelCallInput input) {

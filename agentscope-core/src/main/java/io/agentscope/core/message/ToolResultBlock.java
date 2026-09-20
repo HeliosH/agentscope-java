@@ -193,7 +193,11 @@ public final class ToolResultBlock extends ContentBlock {
      */
     public static ToolResultBlock text(String text) {
         return new ToolResultBlock(
-                null, null, List.of(TextBlock.builder().text(text).build()), null);
+                null,
+                null,
+                List.of(TextBlock.builder().text(text).build()),
+                null,
+                ToolResultState.SUCCESS);
     }
 
     /**
@@ -207,7 +211,8 @@ public final class ToolResultBlock extends ContentBlock {
                 null,
                 null,
                 List.of(TextBlock.builder().text("Error: " + errorMessage).build()),
-                null);
+                null,
+                ToolResultState.ERROR);
     }
 
     /**
@@ -217,7 +222,7 @@ public final class ToolResultBlock extends ContentBlock {
      * @return ToolResultBlock with the given output
      */
     public static ToolResultBlock of(ContentBlock output) {
-        return new ToolResultBlock(null, null, List.of(output), null);
+        return new ToolResultBlock(null, null, List.of(output), null, ToolResultState.SUCCESS);
     }
 
     /**
@@ -227,7 +232,7 @@ public final class ToolResultBlock extends ContentBlock {
      * @return ToolResultBlock with the given output
      */
     public static ToolResultBlock of(List<ContentBlock> output) {
-        return new ToolResultBlock(null, null, output, null);
+        return new ToolResultBlock(null, null, output, null, ToolResultState.SUCCESS);
     }
 
     /**
@@ -238,7 +243,7 @@ public final class ToolResultBlock extends ContentBlock {
      * @return ToolResultBlock with output and metadata
      */
     public static ToolResultBlock of(ContentBlock output, Map<String, Object> metadata) {
-        return new ToolResultBlock(null, null, List.of(output), metadata);
+        return new ToolResultBlock(null, null, List.of(output), metadata, ToolResultState.SUCCESS);
     }
 
     /**
@@ -249,7 +254,7 @@ public final class ToolResultBlock extends ContentBlock {
      * @return ToolResultBlock with output and metadata
      */
     public static ToolResultBlock of(List<ContentBlock> output, Map<String, Object> metadata) {
-        return new ToolResultBlock(null, null, output, metadata);
+        return new ToolResultBlock(null, null, output, metadata, ToolResultState.SUCCESS);
     }
 
     /**

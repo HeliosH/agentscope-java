@@ -27,7 +27,6 @@ import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.model.ContextWindowAwareModel;
-import io.agentscope.core.model.ModelStreamInterruptedException;
 import io.agentscope.core.util.JsonUtils;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.tool.PlanModeTools;
@@ -35,6 +34,9 @@ import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.degradation.DegradationManager;
 import io.agentscope.saas.app.model.ModelCatalog;
 import io.agentscope.saas.app.observability.AgentRunMetrics;
+import io.agentscope.saas.app.orchestration.DirectRunLeaseTracker;
+import io.agentscope.saas.app.orchestration.DurableTaskLeaseService;
+import io.agentscope.saas.app.orchestration.RunRecoveryCoordinator;
 import io.agentscope.saas.app.orchestration.WorkspaceArtifactService;
 import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
 import io.agentscope.saas.core.tenant.TenantContext;
@@ -117,7 +119,9 @@ public class SaasChatController {
     private final ModelCatalog modelCatalog;
     private final boolean orchestrationEnabled;
     private final boolean plannerEnabled;
-    private final SaasProperties.ModelStreamRecovery modelStreamRecovery;
+    private final RunRecoveryCoordinator recoveryCoordinator;
+    private final DurableTaskLeaseService durableLeases;
+    private final DirectRunLeaseTracker directRunLeases;
     private final TaskComplexityRouter complexityRouter = new TaskComplexityRouter();
     private final String sandboxType;
     private final AguiEventEncoder encoder = new AguiEventEncoder();
@@ -133,6 +137,9 @@ public class SaasChatController {
             RunOrchestrationService orchestration,
             WorkspaceArtifactService workspaceArtifactService,
             ModelCatalog modelCatalog,
+            RunRecoveryCoordinator recoveryCoordinator,
+            DurableTaskLeaseService durableLeases,
+            DirectRunLeaseTracker directRunLeases,
             SaasProperties properties) {
         this.agent = agent;
         this.tenantResolver = tenantResolver;
@@ -144,16 +151,15 @@ public class SaasChatController {
         this.orchestration = orchestration;
         this.workspaceArtifactService = workspaceArtifactService;
         this.modelCatalog = modelCatalog;
+        this.recoveryCoordinator = recoveryCoordinator;
+        this.durableLeases = durableLeases;
+        this.directRunLeases = directRunLeases;
         this.orchestrationEnabled =
                 properties != null
                         && properties.getOrchestration() != null
                         && properties.getOrchestration().isEnabled();
         this.plannerEnabled =
                 this.orchestrationEnabled && properties.getOrchestration().isPlannerEnabled();
-        this.modelStreamRecovery =
-                properties != null && properties.getModel() != null
-                        ? properties.getModel().getStreamRecovery()
-                        : new SaasProperties.ModelStreamRecovery();
         this.sandboxType =
                 properties != null && properties.getSandbox() != null
                         ? properties.getSandbox().getType()
@@ -266,7 +272,13 @@ public class SaasChatController {
                                                 agentId,
                                                 request.sessionId(),
                                                 message,
-                                                request.requestId());
+                                                request.requestId(),
+                                                agentMessage(request),
+                                                modelCatalog
+                                                        .requireOption(
+                                                                UUID.fromString(tenant.orgId()),
+                                                                request.modelId())
+                                                        .id());
                                 return new ResolvedRun(
                                         started.agentId(),
                                         started.sessionId(),
@@ -336,6 +348,10 @@ public class SaasChatController {
         AguiEventConverter converter = new AguiEventConverter(threadId, runId);
         if (persist && orchestrationEnabled && resolved.reused()) {
             return reusedRunStream(converter, threadId, runId, resolved.status());
+        }
+        String directLeaseOwner = "direct:" + durableRunId;
+        if (persist && orchestrationEnabled && resolved.rootAttemptId() != null) {
+            directRunLeases.register(resolved.rootAttemptId(), directLeaseOwner);
         }
         AssistantContentAccumulator accumulator = new AssistantContentAccumulator();
         long startedNanos = System.nanoTime();
@@ -461,6 +477,54 @@ public class SaasChatController {
                                     if (!persist || !orchestrationEnabled) {
                                         return Flux.just(toSse(errorEvent));
                                     }
+                                    RunRecoveryCoordinator.Decision decision =
+                                            recoveryCoordinator.decide(error, 1);
+                                    if (resolved.rootAttemptId() != null
+                                            && (decision.recoverable() || decision.exhausted())) {
+                                        long delayMillis =
+                                                decision.recoverable()
+                                                        ? decision.delayMillis()
+                                                        : 1_000L;
+                                        return Mono.fromCallable(
+                                                        () ->
+                                                                durableLeases.recover(
+                                                                        resolved.rootAttemptId(),
+                                                                        directLeaseOwner,
+                                                                        decision.reasonCode()
+                                                                                        != null
+                                                                                ? decision
+                                                                                        .reasonCode()
+                                                                                : "MODEL_RECOVERY_REQUIRED",
+                                                                        errorMessage(error),
+                                                                        delayMillis))
+                                                .subscribeOn(Schedulers.boundedElastic())
+                                                .flatMapMany(
+                                                        scheduled -> {
+                                                            if (!scheduled) {
+                                                                log.warn(
+                                                                        "Direct recovery lease was"
+                                                                            + " already lost for"
+                                                                            + " run {}",
+                                                                        runId);
+                                                            }
+                                                            streamOutcome.set("recovering");
+                                                            Map<String, Object> recoveryPayload =
+                                                                    new HashMap<>();
+                                                            recoveryPayload.put(
+                                                                    "message",
+                                                                    "模型连接持续中断，任务已转入后台恢复");
+                                                            recoveryPayload.put("runId", runId);
+                                                            recoveryPayload.put(
+                                                                    "scheduled", scheduled);
+                                                            return Flux.just(
+                                                                    toSse(
+                                                                            new AguiEvent.Custom(
+                                                                                    threadId,
+                                                                                    runId,
+                                                                                    "run_recovery_scheduled",
+                                                                                    recoveryPayload)));
+                                                        });
+                                    }
                                     return Mono.fromRunnable(
                                                     () ->
                                                             orchestration.markFailed(
@@ -474,6 +538,11 @@ public class SaasChatController {
                                 })
                         .doFinally(
                                 signal -> {
+                                    if (persist
+                                            && orchestrationEnabled
+                                            && resolved.rootAttemptId() != null) {
+                                        directRunLeases.unregister(resolved.rootAttemptId());
+                                    }
                                     metrics.recordChatStream(
                                             streamOutcome.get(),
                                             persist,
@@ -485,10 +554,10 @@ public class SaasChatController {
 
     /**
      * Recovers a model turn that failed after partial output without replaying the failed prefix.
-     * The first subscription receives the user message; subsequent subscriptions pass an empty
-     * input so ReActAgent resumes from the already-added user message and any committed tool
-     * results. Only ModelStreamInterruptedException is eligible: tool, permission, validation and
-     * business errors must remain visible failures.
+     * Every subscription reuses the same user message ID. ReActAgent restores the latest durable
+     * checkpoint and de-duplicates that input before resuming from committed tool results. Only
+     * model failures are eligible: tool, permission, validation and business errors must remain
+     * visible failures.
      */
     private Flux<AguiEvent> recoverableAgentEvents(
             Msg userMsg,
@@ -497,10 +566,9 @@ public class SaasChatController {
             AssistantContentAccumulator accumulator,
             String threadId,
             String runId) {
-        SaasProperties.ModelStreamRecovery policy = modelStreamRecovery;
         AtomicInteger attempt = new AtomicInteger(1);
         return recoverableAgentEvents(
-                userMsg, context, converter, accumulator, threadId, runId, policy, attempt);
+                userMsg, context, converter, accumulator, threadId, runId, attempt);
     }
 
     private Flux<AguiEvent> recoverableAgentEvents(
@@ -510,10 +578,11 @@ public class SaasChatController {
             AssistantContentAccumulator accumulator,
             String threadId,
             String runId,
-            SaasProperties.ModelStreamRecovery policy,
             AtomicInteger attempt) {
         int currentAttempt = attempt.get();
-        List<Msg> input = currentAttempt == 1 ? List.of(userMsg) : List.of();
+        // The same message id is safe to replay because ReActAgent de-duplicates it after restoring
+        // the latest durable checkpoint. This also covers failures before the first checkpoint.
+        List<Msg> input = List.of(userMsg);
         return Flux.defer(
                         () ->
                                 agent.streamEvents(input, context)
@@ -521,18 +590,17 @@ public class SaasChatController {
                                         .concatMapIterable(converter::convert))
                 .onErrorResume(
                         error -> {
-                            int maxAttempts = Math.max(1, policy.getMaxAttempts());
-                            if (!policy.isEnabled()
-                                    || !isModelStreamInterrupted(error)
-                                    || currentAttempt >= maxAttempts) {
+                            RunRecoveryCoordinator.Decision decision =
+                                    recoveryCoordinator.decide(error, currentAttempt);
+                            if (!decision.recoverable()) {
                                 return Flux.error(error);
                             }
                             int nextAttempt = attempt.incrementAndGet();
-                            long delayMillis = recoveryDelayMillis(currentAttempt, policy);
+                            long delayMillis = decision.delayMillis();
                             converter.resetForRecovery();
                             Map<String, Object> payload = new HashMap<>();
                             payload.put("attempt", nextAttempt);
-                            payload.put("maxAttempts", maxAttempts);
+                            payload.put("maxAttempts", decision.maxAttempts());
                             payload.put("delayMillis", delayMillis);
                             payload.put("message", "模型连接中断，系统正在恢复当前任务");
                             AguiEvent recovering =
@@ -543,7 +611,7 @@ public class SaasChatController {
                                             + " ms",
                                     runId,
                                     nextAttempt,
-                                    maxAttempts,
+                                    decision.maxAttempts(),
                                     delayMillis,
                                     error.toString());
                             return Flux.concat(
@@ -557,35 +625,8 @@ public class SaasChatController {
                                                             accumulator,
                                                             threadId,
                                                             runId,
-                                                            policy,
                                                             attempt)));
                         });
-    }
-
-    private static long recoveryDelayMillis(
-            int failedAttempt, SaasProperties.ModelStreamRecovery policy) {
-        long initial = Math.max(0L, policy.getInitialBackoffMillis());
-        long maximum = Math.max(initial, policy.getMaxBackoffMillis());
-        long delay = initial;
-        for (int i = 1; i < failedAttempt && delay < maximum; i++) {
-            delay = delay > maximum / 2 ? maximum : Math.min(maximum, delay * 2);
-        }
-        return delay;
-    }
-
-    private static boolean isModelStreamInterrupted(Throwable error) {
-        Throwable current = error;
-        int depth = 0;
-        while (current != null && depth++ < 8) {
-            if (current instanceof ModelStreamInterruptedException) {
-                return true;
-            }
-            if (current.getCause() == current) {
-                break;
-            }
-            current = current.getCause();
-        }
-        return false;
     }
 
     private Flux<ServerSentEvent<String>> reusedRunStream(

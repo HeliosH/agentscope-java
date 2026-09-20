@@ -107,6 +107,12 @@ public @interface Tool {
     boolean readOnly() default false;
 
     /**
+     * Explicit automatic retry contract, independent of permissions and concurrency.
+     * @return retry safety; unknown side effects are never retried
+     */
+    ToolRetrySafety retrySafety() default ToolRetrySafety.NEVER;
+
+    /**
      * Whether the tool is safe to invoke concurrently with itself.
      *
      * <p>When false, the framework serialises invocations of this tool inside a parallel batch.

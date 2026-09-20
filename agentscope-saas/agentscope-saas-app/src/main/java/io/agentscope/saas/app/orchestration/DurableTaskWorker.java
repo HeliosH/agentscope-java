@@ -37,6 +37,7 @@ public class DurableTaskWorker {
     private final DurableTaskLeaseService leases;
     private final DurableTaskExecutor taskExecutor;
     private final SaasProperties properties;
+    private final RunRecoveryCoordinator recoveryCoordinator;
     private final Executor executor;
     private final String workerId;
     private final Set<UUID> reserved = ConcurrentHashMap.newKeySet();
@@ -46,11 +47,13 @@ public class DurableTaskWorker {
     public DurableTaskWorker(
             DurableTaskLeaseService leases,
             DurableTaskExecutor taskExecutor,
-            SaasProperties properties) {
+            SaasProperties properties,
+            RunRecoveryCoordinator recoveryCoordinator) {
         this(
                 leases,
                 taskExecutor,
                 properties,
+                recoveryCoordinator,
                 Executors.newFixedThreadPool(
                         Math.max(1, properties.getOrchestration().getWorkerConcurrency()),
                         runnable -> {
@@ -68,9 +71,26 @@ public class DurableTaskWorker {
             SaasProperties properties,
             Executor executor,
             String workerId) {
+        this(
+                leases,
+                taskExecutor,
+                properties,
+                new RunRecoveryCoordinator(properties),
+                executor,
+                workerId);
+    }
+
+    DurableTaskWorker(
+            DurableTaskLeaseService leases,
+            DurableTaskExecutor taskExecutor,
+            SaasProperties properties,
+            RunRecoveryCoordinator recoveryCoordinator,
+            Executor executor,
+            String workerId) {
         this.leases = leases;
         this.taskExecutor = taskExecutor;
         this.properties = properties;
+        this.recoveryCoordinator = recoveryCoordinator;
         this.executor = executor;
         this.workerId = workerId;
     }
@@ -160,7 +180,7 @@ public class DurableTaskWorker {
             Thread.currentThread().interrupt();
             recordFailure(lease, "WORKER_INTERRUPTED", "Worker execution was interrupted");
         } catch (Exception e) {
-            recordFailure(lease, "TASK_EXECUTION_FAILED", errorMessage(e));
+            recordExecutionFailure(lease, e);
         } finally {
             active.remove(lease.attemptId(), thread);
             reserved.remove(lease.attemptId());
@@ -170,6 +190,35 @@ public class DurableTaskWorker {
     private void recordFailure(TaskLease lease, String code, String message) {
         try {
             leases.fail(lease.attemptId(), workerId, code, message);
+        } catch (RuntimeException stateError) {
+            log.warn(
+                    "Unable to persist durable task failure attempt={}: {}",
+                    lease.attemptId(),
+                    errorMessage(stateError));
+        }
+    }
+
+    private void recordExecutionFailure(TaskLease lease, Exception error) {
+        RunRecoveryCoordinator.Decision decision =
+                recoveryCoordinator.decide(error, lease.attemptNo());
+        try {
+            if (decision.recoverable()) {
+                leases.recover(
+                        lease.attemptId(),
+                        workerId,
+                        decision.reasonCode(),
+                        errorMessage(error),
+                        decision.delayMillis());
+            } else if (decision.exhausted()) {
+                leases.failTerminal(
+                        lease.attemptId(),
+                        workerId,
+                        "MODEL_RECOVERY_EXHAUSTED",
+                        errorMessage(error));
+            } else {
+                leases.fail(
+                        lease.attemptId(), workerId, "TASK_EXECUTION_FAILED", errorMessage(error));
+            }
         } catch (RuntimeException stateError) {
             log.warn(
                     "Unable to persist durable task failure attempt={}: {}",

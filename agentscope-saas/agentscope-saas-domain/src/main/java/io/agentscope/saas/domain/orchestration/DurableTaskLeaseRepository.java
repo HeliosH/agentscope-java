@@ -43,6 +43,12 @@ public interface DurableTaskLeaseRepository {
             OffsetDateTime heartbeatAt,
             OffsetDateTime leaseExpiresAt);
 
+    int activateDirectAttempt(
+            UUID attemptId,
+            String leaseOwner,
+            OffsetDateTime heartbeatAt,
+            OffsetDateTime leaseExpiresAt);
+
     List<ExpiredAttempt> findExpiredAttempts(OffsetDateTime expiredBefore, int limit);
 
     int finishAttempt(
@@ -75,6 +81,16 @@ public interface DurableTaskLeaseRepository {
             OffsetDateTime nextAttemptAt,
             OffsetDateTime updatedAt,
             String errorCode,
+            String errorMessage);
+
+    int scheduleTaskRecovery(
+            UUID taskId,
+            UUID orgId,
+            UUID runId,
+            UUID agentRunId,
+            OffsetDateTime nextAttemptAt,
+            OffsetDateTime updatedAt,
+            String reasonCode,
             String errorMessage);
 
     int stopTask(

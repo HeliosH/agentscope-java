@@ -79,7 +79,7 @@ public class ModelRouteFactory {
                         Duration.ofSeconds(traffic.getRateLimitCooldownSeconds()),
                         traffic.getCircuitFailureThreshold(),
                         Duration.ofSeconds(traffic.getCircuitOpenSeconds()));
-        return new ResilientModel(routes, policy);
+        return EstimatedInputModel.failover(new ResilientModel(routes, policy), routes);
     }
 
     public ModelCatalog.Route route(
@@ -115,12 +115,15 @@ public class ModelRouteFactory {
         String type = configuredType == null ? "stub" : configuredType.toLowerCase(Locale.ROOT);
         return switch (type) {
             case "gateway" ->
-                    OpenAIChatModel.builder()
-                            .apiKey(apiKey)
-                            .baseUrl(baseUrl)
-                            .modelName(name)
-                            .stream(true)
-                            .build();
+                    EstimatedInputModel.openAi(
+                            OpenAIChatModel.builder()
+                                    .apiKey(apiKey)
+                                    .baseUrl(baseUrl)
+                                    .modelName(name)
+                                    .stream(true)
+                                    .build(),
+                            baseUrl,
+                            name);
             case "dashscope" ->
                     DashScopeChatModel.builder().apiKey(apiKey).modelName(name).stream(true)
                             .build();

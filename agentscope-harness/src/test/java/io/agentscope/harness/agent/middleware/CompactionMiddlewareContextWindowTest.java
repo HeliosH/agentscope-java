@@ -10,6 +10,8 @@
 package io.agentscope.harness.agent.middleware;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -23,11 +25,11 @@ import io.agentscope.core.middleware.ReasoningInput;
 import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.ContextWindowAwareModel;
 import io.agentscope.core.model.GenerateOptions;
-import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ModelContextProfile;
 import io.agentscope.core.model.ToolSchema;
 import io.agentscope.core.state.AgentState;
 import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
+import io.agentscope.harness.agent.memory.compaction.ContextWindowExceededException;
 import io.agentscope.harness.agent.memory.compaction.ConversationCompactor;
 import io.agentscope.harness.agent.memory.compaction.TokenCounterUtil;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
@@ -111,11 +113,170 @@ class CompactionMiddlewareContextWindowTest {
                 ConversationCompactor.SUMMARY_MSG_NAME, state.contextMutable().get(0).getName());
     }
 
+    @Test
+    void downstreamModelFailureIsNotRetriedAsCompactionFallback() {
+        ContextModel model = new ContextModel();
+        var calls = new AtomicInteger();
+        var failure = new IllegalStateException("model connection failed");
+        ReActAgent agent = mock(ReActAgent.class);
+        when(agent.getName()).thenReturn("assistant");
+        try (WorkspaceManager manager = new WorkspaceManager(workspace)) {
+            var middleware =
+                    new CompactionMiddleware(
+                            manager,
+                            model,
+                            CompactionConfig.builder()
+                                    .triggerMessages(0)
+                                    .triggerTokens(0)
+                                    .flushBeforeCompact(false)
+                                    .offloadBeforeCompact(false)
+                                    .build());
+            var actual =
+                    assertThrows(
+                            IllegalStateException.class,
+                            () ->
+                                    middleware
+                                            .onReasoning(
+                                                    agent,
+                                                    RuntimeContext.empty(),
+                                                    new ReasoningInput(
+                                                            List.of(
+                                                                    message(
+                                                                            MsgRole.USER,
+                                                                            "hello",
+                                                                            Map.of())),
+                                                            List.of(),
+                                                            null),
+                                                    input -> {
+                                                        calls.incrementAndGet();
+                                                        return Flux.error(failure);
+                                                    })
+                                            .blockLast());
+            assertSame(failure, actual);
+        }
+        assertEquals(1, calls.get());
+    }
+
+    @Test
+    void oversizedInputCannotEscapeBudgetThroughErrorFallback() {
+        ContextModel model = new ContextModel();
+        var calls = new AtomicInteger();
+        ReActAgent agent = mock(ReActAgent.class);
+        when(agent.getName()).thenReturn("assistant");
+        // A single oversized latest message cannot be discarded or usefully compacted.
+        var input =
+                new ReasoningInput(
+                        List.of(
+                                message(
+                                        MsgRole.USER,
+                                        "x".repeat(20000),
+                                        Map.of(ContextWindowAwareModel.MODEL_ID_KEY, "small"))),
+                        List.of(),
+                        null);
+        try (WorkspaceManager manager = new WorkspaceManager(workspace)) {
+            var middleware =
+                    new CompactionMiddleware(
+                            manager,
+                            model,
+                            CompactionConfig.builder()
+                                    .triggerMessages(0)
+                                    .triggerTokens(0)
+                                    .flushBeforeCompact(false)
+                                    .offloadBeforeCompact(false)
+                                    .build());
+            assertThrows(
+                    ContextWindowExceededException.class,
+                    () ->
+                            middleware
+                                    .onReasoning(
+                                            agent,
+                                            RuntimeContext.empty(),
+                                            input,
+                                            request -> {
+                                                calls.incrementAndGet();
+                                                return Flux.empty();
+                                            })
+                                    .blockLast());
+        }
+        assertEquals(0, calls.get());
+    }
+
+    @Test
+    void mediaBudgetUsesModelEstimatorBeforeForwarding() {
+        var image =
+                io.agentscope.core.message.ImageBlock.builder()
+                        .source(
+                                io.agentscope.core.message.URLSource.builder()
+                                        .url("https://example.invalid/image.png")
+                                        .build())
+                        .build();
+        var message =
+                Msg.builder()
+                        .role(MsgRole.USER)
+                        .content(image)
+                        .metadata(Map.of(ContextWindowAwareModel.MODEL_ID_KEY, "small"))
+                        .build();
+        ReActAgent agent = mock(ReActAgent.class);
+        when(agent.getName()).thenReturn("media-budget");
+        var calls = new AtomicInteger();
+        var config =
+                CompactionConfig.builder()
+                        .triggerMessages(0)
+                        .triggerTokens(0)
+                        .flushBeforeCompact(false)
+                        .offloadBeforeCompact(false)
+                        .build();
+        try (WorkspaceManager manager = new WorkspaceManager(workspace)) {
+            var oversized = new CompactionMiddleware(manager, new ContextModel(5000), config);
+            assertThrows(
+                    ContextWindowExceededException.class,
+                    () ->
+                            oversized
+                                    .onReasoning(
+                                            agent,
+                                            RuntimeContext.empty(),
+                                            new ReasoningInput(List.of(message), List.of(), null),
+                                            input -> {
+                                                calls.incrementAndGet();
+                                                return Flux.empty();
+                                            })
+                                    .blockLast());
+            assertEquals(0, calls.get());
+            new CompactionMiddleware(manager, new ContextModel(600), config)
+                    .onReasoning(
+                            agent,
+                            RuntimeContext.empty(),
+                            new ReasoningInput(List.of(message), List.of(), null),
+                            input -> {
+                                calls.incrementAndGet();
+                                return Flux.empty();
+                            })
+                    .blockLast();
+            assertEquals(1, calls.get());
+        }
+    }
+
     private static Msg message(MsgRole role, String text, Map<String, Object> metadata) {
         return Msg.builder().role(role).textContent(text).metadata(metadata).build();
     }
 
-    private static final class ContextModel implements Model, ContextWindowAwareModel {
+    private static final class ContextModel
+            implements io.agentscope.core.model.InputTokenAwareModel, ContextWindowAwareModel {
+        private final int mediaTokens;
+
+        ContextModel() {
+            this(1500);
+        }
+
+        ContextModel(int mediaTokens) {
+            this.mediaTokens = mediaTokens;
+        }
+
+        @Override
+        public long estimateInputTokens(List<Msg> messages, List<ToolSchema> tools) {
+            return TokenCounterUtil.calculateToken(messages, tools, block -> mediaTokens);
+        }
+
         private final ModelContextProfile small = new ModelContextProfile("small", 4_096, 512, 512);
         private final ModelContextProfile large =
                 new ModelContextProfile("large", 32_768, 4_096, 1_024);

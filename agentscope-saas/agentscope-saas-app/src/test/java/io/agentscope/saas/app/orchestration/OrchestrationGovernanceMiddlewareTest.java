@@ -30,6 +30,9 @@ import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.ModelCallInput;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ToolSchema;
+import io.agentscope.core.tool.ContextCheckpointStore;
+import io.agentscope.core.tool.ExecutionLeaseSnapshot;
+import io.agentscope.core.tool.ToolExecutionJournal;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
 import java.time.Duration;
@@ -85,6 +88,8 @@ class OrchestrationGovernanceMiddlewareTest {
     @Test
     void capturesOneImmutableRuntimeCapabilitySnapshotBeforeModelExecution() {
         OrchestrationGovernanceService governance = mock(OrchestrationGovernanceService.class);
+        when(governance.preflight(ORG_ID, RUN_ID, AGENT_RUN_ID))
+                .thenReturn(new OrchestrationGovernanceService.BudgetDecision(true, null, null));
         var middleware = new OrchestrationGovernanceMiddleware(governance, new ObjectMapper());
         RuntimeContext context = context();
         Model model = mock(Model.class);
@@ -121,6 +126,76 @@ class OrchestrationGovernanceMiddlewareTest {
                         hash.capture());
         assertThat(json.getValue()).contains("enterprise-model", "lookup", "toolSchemaHash");
         assertThat(hash.getValue()).hasSize(64);
+    }
+
+    @Test
+    void installsOrchestrationIdentityBeforeStartingAgent() {
+        var governance = mock(OrchestrationGovernanceService.class);
+        when(governance.preflight(ORG_ID, RUN_ID, AGENT_RUN_ID))
+                .thenReturn(new OrchestrationGovernanceService.BudgetDecision(true, null, null));
+        when(governance.remainingTime(ORG_ID, RUN_ID, AGENT_RUN_ID)).thenReturn(Optional.empty());
+        var ctx = context();
+        var journalFactory = mock(DurableToolExecutionJournalFactory.class);
+        var journal = mock(ToolExecutionJournal.class);
+        when(journalFactory.create(ORG_ID, RUN_ID)).thenReturn(journal);
+        var checkpointFactory = mock(DurableContextCheckpointFactory.class);
+        var checkpointStore = mock(ContextCheckpointStore.class);
+        when(checkpointFactory.create(ORG_ID, RUN_ID, AGENT_RUN_ID)).thenReturn(checkpointStore);
+        String taskId = UUID.randomUUID().toString();
+        String attemptId = UUID.randomUUID().toString();
+        String leaseOwner = "worker-" + UUID.randomUUID();
+        ctx.put(io.agentscope.saas.sandbox.SandboxRuntimeAttributes.ATTR_TASK_ID, taskId);
+        ctx.put(io.agentscope.saas.sandbox.SandboxRuntimeAttributes.ATTR_ATTEMPT_ID, attemptId);
+        ctx.put(io.agentscope.saas.sandbox.SandboxRuntimeAttributes.ATTR_LEASE_OWNER, leaseOwner);
+        new OrchestrationGovernanceMiddleware(
+                        governance, new ObjectMapper(), journalFactory, checkpointFactory)
+                .onAgent(
+                        mock(Agent.class),
+                        ctx,
+                        input(),
+                        ignored -> {
+                            var identity =
+                                    ctx.get(io.agentscope.core.tool.StepSnapshot.Identity.class);
+                            assertThat(identity.runId()).isEqualTo(RUN_ID.toString());
+                            assertThat(identity.agentRunId()).isEqualTo(AGENT_RUN_ID.toString());
+                            assertThat(identity.taskId()).isEqualTo(taskId);
+                            assertThat(identity.attemptId()).isEqualTo(attemptId);
+                            assertThat(ctx.get(ToolExecutionJournal.class)).isSameAs(journal);
+                            assertThat(ctx.get(ContextCheckpointStore.class))
+                                    .isSameAs(checkpointStore);
+                            assertThat(ctx.get(ExecutionLeaseSnapshot.class).owner())
+                                    .isEqualTo(leaseOwner);
+                            return Flux.empty();
+                        })
+                .blockLast();
+        verify(journalFactory).create(ORG_ID, RUN_ID);
+        verify(checkpointFactory).create(ORG_ID, RUN_ID, AGENT_RUN_ID);
+    }
+
+    @Test
+    void rejectedPreflightDoesNotEnterModelExecution() {
+        var governance = mock(OrchestrationGovernanceService.class);
+        when(governance.preflight(ORG_ID, RUN_ID, AGENT_RUN_ID))
+                .thenReturn(
+                        new OrchestrationGovernanceService.BudgetDecision(
+                                false, "TOKEN_LIMIT", "denied"));
+        var entered = new java.util.concurrent.atomic.AtomicBoolean();
+        var middleware = new OrchestrationGovernanceMiddleware(governance, new ObjectMapper());
+        org.junit.jupiter.api.Assertions.assertThrows(
+                OrchestrationGovernanceMiddleware.BudgetExceededException.class,
+                () ->
+                        middleware
+                                .onModelCall(
+                                        mock(Agent.class),
+                                        context(),
+                                        new ModelCallInput(
+                                                input().msgs(), List.of(), null, mock(Model.class)),
+                                        ignored -> {
+                                            entered.set(true);
+                                            return Flux.empty();
+                                        })
+                                .blockLast());
+        assertThat(entered.get()).isFalse();
     }
 
     private static RuntimeContext context() {

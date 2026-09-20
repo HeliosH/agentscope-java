@@ -40,6 +40,8 @@ import io.agentscope.saas.app.memory.MemoryLedger;
 import io.agentscope.saas.app.memory.SaasLongTermMemoryMiddleware;
 import io.agentscope.saas.app.observability.AgentRunMetrics;
 import io.agentscope.saas.app.observability.AgentTelemetryMiddleware;
+import io.agentscope.saas.app.orchestration.DurableContextCheckpointFactory;
+import io.agentscope.saas.app.orchestration.DurableToolExecutionJournalFactory;
 import io.agentscope.saas.app.orchestration.OrchestrationGovernanceMiddleware;
 import io.agentscope.saas.app.orchestration.OrchestrationGovernanceService;
 import io.agentscope.saas.app.orchestration.PgTaskRepository;
@@ -114,6 +116,8 @@ public class AgentConfig {
             ObjectProvider<MemoryConsolidator.ConsolidationSink> consolidationSinkProvider,
             ObjectProvider<AgentRunMetrics> agentRunMetricsProvider,
             OrchestrationGovernanceService orchestrationGovernance,
+            DurableToolExecutionJournalFactory toolJournalFactory,
+            DurableContextCheckpointFactory contextCheckpointFactory,
             ExecutionPlanService executionPlanService,
             ObjectProvider<PgTaskRepository> pgTaskRepositoryProvider,
             ClawSentryToolSecurityPolicy clawSentryPolicy) {
@@ -155,7 +159,10 @@ public class AgentConfig {
                                         rateLimiter, rl.getMaxRequests(), rl.getWindowSeconds()))
                         .middleware(
                                 new OrchestrationGovernanceMiddleware(
-                                        orchestrationGovernance, objectMapper))
+                                        orchestrationGovernance,
+                                        objectMapper,
+                                        toolJournalFactory,
+                                        contextCheckpointFactory))
                         .middleware(new UsageMeteringMiddleware(usageService));
 
         if (agentCfg.getLoopGuard().isEnabled()) {

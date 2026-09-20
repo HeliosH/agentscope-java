@@ -18,6 +18,7 @@ package io.agentscope.harness.agent.filesystem.sandbox;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.model.ExecuteResponse;
+import io.agentscope.harness.agent.filesystem.model.ShellExecutionRequest;
 
 /**
  * Filesystem abstraction that adds shell command execution (sandbox or remote host).
@@ -43,4 +44,12 @@ public interface AbstractSandboxFilesystem extends AbstractFilesystem {
      * @return ExecuteResponse with combined output, exit code, and truncation flag
      */
     ExecuteResponse execute(RuntimeContext runtimeContext, String command, Integer timeoutSeconds);
+
+    /**
+     * Structured execution. Existing providers retain a safely quoted POSIX-shell fallback;
+     * providers with a native cwd parameter should override this method.
+     */
+    default ExecuteResponse execute(RuntimeContext runtimeContext, ShellExecutionRequest request) {
+        return execute(runtimeContext, request.legacyShellCommand(), request.timeoutSeconds());
+    }
 }

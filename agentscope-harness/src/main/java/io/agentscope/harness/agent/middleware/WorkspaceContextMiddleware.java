@@ -26,6 +26,8 @@ import io.agentscope.harness.agent.filesystem.OverlayFilesystem;
 import io.agentscope.harness.agent.filesystem.ProjectAwareOverlay;
 import io.agentscope.harness.agent.filesystem.local.LocalFilesystemWithShell;
 import io.agentscope.harness.agent.filesystem.sandbox.AbstractSandboxFilesystem;
+import io.agentscope.harness.agent.memory.compaction.ContextWindowExceededException;
+import io.agentscope.harness.agent.memory.compaction.TokenCounterUtil;
 import io.agentscope.harness.agent.workspace.LocalFsMode;
 import io.agentscope.harness.agent.workspace.PathPolicy;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
@@ -34,6 +36,7 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import reactor.core.publisher.Mono;
 
@@ -133,16 +136,24 @@ public class WorkspaceContextMiddleware implements MiddlewareBase {
     @Override
     public Mono<String> onSystemPrompt(Agent agent, RuntimeContext ctx, String currentPrompt) {
         RuntimeContext rc = ctx != null ? ctx : RuntimeContext.empty();
-        String section = buildWorkspaceSection(rc);
+        String base = currentPrompt != null ? currentPrompt : "";
+        int budget = effectiveMaxContextTokens(rc);
+        if (model instanceof ContextWindowAwareModel awareModel) {
+            int remaining =
+                    awareModel.resolveContextProfile(rc).inputTokenBudget()
+                            - estimateTokens(base)
+                            - 32;
+            budget = Math.min(budget, Math.max(0, remaining));
+        }
+        String section = buildWorkspaceSection(rc, budget);
         if (section.isEmpty()) {
             return Mono.just(currentPrompt);
         }
-        String base = currentPrompt != null ? currentPrompt : "";
         String separator = base.isEmpty() || base.endsWith("\n") ? "" : "\n";
         return Mono.just(base + separator + section);
     }
 
-    private String buildWorkspaceSection(RuntimeContext rc) {
+    private String buildWorkspaceSection(RuntimeContext rc, int budget) {
         String agentsContent = workspaceManager.readAgentsMd(rc).strip();
         String memoryContent = workspaceManager.readMemoryMd(rc).strip();
         String knowledgeContent = workspaceManager.readKnowledgeMd(rc).strip();
@@ -152,30 +163,58 @@ public class WorkspaceContextMiddleware implements MiddlewareBase {
         String knowledgeBlock = buildKnowledgeBlock(rc, knowledgeContent, workspace);
         String additionalBlock = buildAdditionalContextBlock(rc);
 
-        int fixedTokens =
-                estimateTokens(sessionContext)
-                        + estimateTokens(agentsContent)
-                        + estimateTokens(knowledgeBlock)
-                        + estimateTokens(additionalBlock);
-        int memoryTokens = estimateTokens(memoryContent);
-        int available = effectiveMaxContextTokens(rc) - fixedTokens;
-        if (available > 0 && memoryTokens > available) {
-            memoryContent = truncateToTokenBudget(memoryContent, available);
-        }
-
         String workspaceParagraph =
                 buildWorkspaceParagraph(workspace, workspaceManager.getFilesystem());
-        String loadedContext =
-                buildLoadedContextSection(
-                        agentsContent, memoryContent, knowledgeBlock, additionalBlock, rc);
-        return assembleSection(
-                sessionContext, GUIDANCE_TEMPLATE, workspaceParagraph, loadedContext);
+        Function<String, String> knowledgeSection =
+                knowledge ->
+                        assembleSection(
+                                sessionContext,
+                                GUIDANCE_TEMPLATE,
+                                workspaceParagraph,
+                                buildLoadedContextSection(
+                                        agentsContent, "", knowledge, additionalBlock, rc));
+        // Never silently truncate instructions. Optional memory/knowledge may be reduced, but
+        // even an empty optional section must fit, including all wrappers and guidance.
+        int mandatoryTokens = estimateTokens(knowledgeSection.apply(""));
+        if (mandatoryTokens > budget) {
+            throw new ContextWindowExceededException(
+                    "Required workspace instructions need "
+                            + mandatoryTokens
+                            + " tokens but the available budget is "
+                            + budget);
+        }
+        String boundedKnowledge =
+                fitOptional(
+                        knowledgeBlock,
+                        knowledgeSection,
+                        budget,
+                        "\n"
+                            + "... (knowledge truncated — use read_file or glob_files for details)"
+                            + " ...\n");
+        Function<String, String> memorySection =
+                memory ->
+                        assembleSection(
+                                sessionContext,
+                                GUIDANCE_TEMPLATE,
+                                workspaceParagraph,
+                                buildLoadedContextSection(
+                                        agentsContent,
+                                        memory,
+                                        boundedKnowledge,
+                                        additionalBlock,
+                                        rc));
+        String boundedMemory = fitOptional(memoryContent, memorySection, budget, TRUNCATION_NOTICE);
+        String section = memorySection.apply(boundedMemory);
+        if (estimateTokens(section) > budget) {
+            throw new ContextWindowExceededException("Workspace context exceeds its final budget");
+        }
+        return section;
     }
 
     private int effectiveMaxContextTokens(RuntimeContext rc) {
         if (model instanceof ContextWindowAwareModel awareModel) {
             int inputBudget = awareModel.resolveContextProfile(rc).inputTokenBudget();
-            return Math.min(maxContextTokens, Math.max(512, inputBudget / 2));
+            return Math.min(maxContextTokens, inputBudget / 2);
         }
         return maxContextTokens;
     }
@@ -407,15 +446,31 @@ public class WorkspaceContextMiddleware implements MiddlewareBase {
     }
 
     private static int estimateTokens(String text) {
-        return text == null || text.isEmpty() ? 0 : text.length() / 4;
+        return TokenCounterUtil.calculateTextToken(text);
     }
 
-    private static String truncateToTokenBudget(String text, int maxTokens) {
-        int maxChars = maxTokens * 4;
-        if (text.length() <= maxChars) {
+    private static String fitOptional(
+            String text, Function<String, String> render, int budget, String notice) {
+        if (estimateTokens(render.apply(text)) <= budget) {
             return text;
         }
-        return text.substring(0, maxChars) + TRUNCATION_NOTICE;
+        if (estimateTokens(render.apply(notice)) > budget) {
+            return "";
+        }
+        int low = 0;
+        int high = text.length();
+        while (low < high) {
+            int mid = low + (high - low + 1) / 2;
+            if (estimateTokens(render.apply(text.substring(0, mid) + notice)) <= budget) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        if (low > 0 && Character.isHighSurrogate(text.charAt(low - 1))) {
+            low--;
+        }
+        return text.substring(0, low) + notice;
     }
 
     private String buildKnowledgeBlock(RuntimeContext rc, String knowledgeContent, Path workspace) {

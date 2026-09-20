@@ -293,6 +293,20 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
             },
           }
         : m));
+    } else if (evt.type === 'run_recovery_scheduled') {
+      if (evt.runId) {
+        setActiveRunId(evt.runId);
+        setInspectorOpen(true);
+      }
+      setMessages(prev => prev.map(m => m.id === replyId
+        ? {
+            ...m,
+            pending: false,
+            recovery: undefined,
+            text: m.text + (m.text ? '\n\n' : '')
+              + (evt.message ?? '模型连接中断，任务已转入后台恢复。'),
+          }
+        : m));
     } else if (evt.type === 'token') {
       const chunk = evt.data ?? '';
       setMessages(prev => prev.map(m => m.id === replyId

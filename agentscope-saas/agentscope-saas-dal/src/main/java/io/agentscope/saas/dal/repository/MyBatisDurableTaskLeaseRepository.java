@@ -134,6 +134,15 @@ public class MyBatisDurableTaskLeaseRepository implements DurableTaskLeaseReposi
     }
 
     @Override
+    public int activateDirectAttempt(
+            UUID attemptId,
+            String leaseOwner,
+            OffsetDateTime heartbeatAt,
+            OffsetDateTime leaseExpiresAt) {
+        return mapper.activateDirectAttempt(attemptId, leaseOwner, heartbeatAt, leaseExpiresAt);
+    }
+
+    @Override
     public List<ExpiredAttempt> findExpiredAttempts(OffsetDateTime expiredBefore, int limit) {
         return mapper.findExpiredAttempts(expiredBefore, limit).stream()
                 .map(data -> new ExpiredAttempt(data.attemptId(), data.workerId()))
@@ -207,6 +216,27 @@ public class MyBatisDurableTaskLeaseRepository implements DurableTaskLeaseReposi
             String errorCode,
             String errorMessage) {
         return mapper.scheduleTaskRetry(taskId, nextAttemptAt, updatedAt, errorCode, errorMessage);
+    }
+
+    @Override
+    public int scheduleTaskRecovery(
+            UUID taskId,
+            UUID orgId,
+            UUID runId,
+            UUID agentRunId,
+            OffsetDateTime nextAttemptAt,
+            OffsetDateTime updatedAt,
+            String reasonCode,
+            String errorMessage) {
+        return mapper.scheduleTaskRecovery(
+                taskId,
+                orgId,
+                runId,
+                agentRunId,
+                nextAttemptAt,
+                updatedAt,
+                reasonCode,
+                errorMessage);
     }
 
     @Override

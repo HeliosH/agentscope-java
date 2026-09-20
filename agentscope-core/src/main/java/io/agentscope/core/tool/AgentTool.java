@@ -50,6 +50,16 @@ public interface AgentTool {
     String getName();
 
     /**
+     * Declares automatic retry safety. The default prevents replay of unknown side effects.
+     * This is independent of concurrency safety and untrusted remote tool annotations.
+     *
+     * @return trusted retry contract
+     */
+    default ToolRetrySafety getRetrySafety() {
+        return ToolRetrySafety.NEVER;
+    }
+
+    /**
      * Gets the description of the tool.
      *
      * <p>The description should clearly explain what the tool does, when it should be used, and

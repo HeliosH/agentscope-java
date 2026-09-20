@@ -165,6 +165,56 @@ class DurableTaskLeaseServiceTest {
 
         assertThat(attemptStatus(lease.attemptId())).isEqualTo("ABANDONED");
         assertThat(taskStatus(taskId)).isEqualTo("READY");
+        assertThat(database.taskRecoveryPhase(taskId)).isEqualTo("SCHEDULED");
+        assertThat(database.taskRecoveryCount(taskId)).isEqualTo(1);
+        assertThat(eventTypes()).contains("RUN_RECOVERY_SCHEDULED");
+    }
+
+    @Test
+    void modelFailureSchedulesDurableRecovery() {
+        var lease = leases.claimReady("worker-a", 1).get(0);
+        assertThat(leases.start(lease.attemptId(), "worker-a")).isTrue();
+
+        assertThat(
+                        leases.recover(
+                                lease.attemptId(),
+                                "worker-a",
+                                "MODEL_STREAM_INTERRUPTED",
+                                "stream ended",
+                                25L))
+                .isTrue();
+
+        assertThat(taskStatus(taskId)).isEqualTo("READY");
+        assertThat(database.taskRecoveryPhase(taskId)).isEqualTo("SCHEDULED");
+        assertThat(database.taskRecoveryCount(taskId)).isEqualTo(1);
+        assertThat(eventTypes()).contains("RUN_RECOVERY_SCHEDULED");
+    }
+
+    @Test
+    void expiredDirectChatLeaseIsRecoveredByTheWorkerQueue() {
+        UUID attemptId = UUID.randomUUID();
+        String owner = "direct:" + runId;
+        database.markLeaseTaskRunning(taskId);
+        database.insertRunningAttempt(
+                attemptId,
+                database.taskOrgId(taskId),
+                runId,
+                taskId,
+                null,
+                1,
+                null,
+                null,
+                "direct:" + runId,
+                OffsetDateTime.now());
+
+        assertThat(leases.activateDirect(attemptId, owner)).isTrue();
+        assertThat(leases.heartbeat(attemptId, owner)).isTrue();
+        database.updateAttemptExpiry(attemptId, OffsetDateTime.now().minusSeconds(1));
+
+        assertThat(leases.recoverExpired(10)).isEqualTo(1);
+        assertThat(attemptStatus(attemptId)).isEqualTo("ABANDONED");
+        assertThat(taskStatus(taskId)).isEqualTo("READY");
+        assertThat(database.taskRecoveryPhase(taskId)).isEqualTo("SCHEDULED");
     }
 
     private void insertTask(UUID id, UUID orgId, String retryMode, int maxAttempts) {

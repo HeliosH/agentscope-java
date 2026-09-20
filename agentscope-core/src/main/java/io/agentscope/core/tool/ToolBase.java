@@ -64,6 +64,7 @@ public abstract class ToolBase implements AgentTool {
     private final Map<String, Object> inputSchema;
     private final boolean concurrencySafe;
     private final boolean readOnly;
+    private final ToolRetrySafety retrySafety;
     private final boolean externalTool;
     private final boolean stateInjected;
     private final boolean mcp;
@@ -87,7 +88,8 @@ public abstract class ToolBase implements AgentTool {
                 builder.mcp,
                 builder.mcpName,
                 builder.externalTool,
-                builder.stateInjected);
+                builder.stateInjected,
+                builder.retrySafety);
         if (builder.dangerousFiles != null) {
             this.dangerousFiles = List.copyOf(builder.dangerousFiles);
         }
@@ -110,6 +112,31 @@ public abstract class ToolBase implements AgentTool {
             String mcpName,
             boolean externalTool,
             boolean stateInjected) {
+        this(
+                name,
+                description,
+                inputSchema,
+                readOnly,
+                concurrencySafe,
+                mcp,
+                mcpName,
+                externalTool,
+                stateInjected,
+                ToolRetrySafety.NEVER);
+    }
+
+    private ToolBase(
+            String name,
+            String description,
+            Map<String, Object> inputSchema,
+            boolean readOnly,
+            boolean concurrencySafe,
+            boolean mcp,
+            String mcpName,
+            boolean externalTool,
+            boolean stateInjected,
+            ToolRetrySafety retrySafety) {
+        this.retrySafety = Objects.requireNonNull(retrySafety, "retrySafety must not be null");
         this.name = Objects.requireNonNull(name, "name must not be null");
         this.description = Objects.requireNonNull(description, "description must not be null");
         this.inputSchema = Objects.requireNonNull(inputSchema, "inputSchema must not be null");
@@ -141,6 +168,11 @@ public abstract class ToolBase implements AgentTool {
 
     public final boolean isConcurrencySafe() {
         return concurrencySafe;
+    }
+
+    @Override
+    public final ToolRetrySafety getRetrySafety() {
+        return retrySafety;
     }
 
     public final boolean isReadOnly() {
@@ -276,6 +308,7 @@ public abstract class ToolBase implements AgentTool {
         private String description;
         private Map<String, Object> inputSchema;
         private boolean readOnly = false;
+        private ToolRetrySafety retrySafety = ToolRetrySafety.NEVER;
         private boolean concurrencySafe = true;
         private boolean externalTool = false;
         private boolean stateInjected = false;
@@ -298,6 +331,12 @@ public abstract class ToolBase implements AgentTool {
 
         public Builder inputSchema(Map<String, Object> inputSchema) {
             this.inputSchema = inputSchema;
+            return this;
+        }
+
+        /** Sets a trusted local retry contract; remote annotations must not populate it. */
+        public Builder retrySafety(ToolRetrySafety retrySafety) {
+            this.retrySafety = Objects.requireNonNull(retrySafety, "retrySafety must not be null");
             return this;
         }
 

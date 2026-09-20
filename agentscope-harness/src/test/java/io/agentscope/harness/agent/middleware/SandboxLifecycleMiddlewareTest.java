@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.state.InMemoryAgentStateStore;
+import io.agentscope.core.tool.ExecutionEnvironmentSnapshot;
 import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.filesystem.sandbox.SandboxBackedFilesystem;
 import io.agentscope.harness.agent.sandbox.ExecResult;
@@ -77,6 +78,13 @@ class SandboxLifecycleMiddlewareTest {
 
         assertSame(sandbox, ctx.get(Sandbox.class));
         assertEquals("restored", restoredFile(sandbox.hydratedArchive, "generated/report.txt"));
+        ExecutionEnvironmentSnapshot environment = ctx.get(ExecutionEnvironmentSnapshot.class);
+        assertEquals("restore", environment.environmentId());
+        assertEquals("version-1", environment.workspaceVersion());
+        assertTrue(!environment.version().isBlank());
+
+        middleware.releaseForCall(ctx);
+        assertNull(ctx.get(ExecutionEnvironmentSnapshot.class));
     }
 
     @Test

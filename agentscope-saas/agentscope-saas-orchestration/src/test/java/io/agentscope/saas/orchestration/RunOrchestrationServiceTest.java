@@ -75,7 +75,11 @@ class RunOrchestrationServiceTest {
                         agentId,
                         sessionId,
                         UUID.randomUUID(),
-                        "Build a report");
+                        "Build a report",
+                        null,
+                        RunOrchestrationService.RunPolicy.unlimited(),
+                        "{\"prompt\":\"Build attached"
+                                + " report\",\"_runtime\":{\"directChat\":true}}");
 
         ArgumentCaptor<NewRun> runCaptor = ArgumentCaptor.forClass(NewRun.class);
         ArgumentCaptor<NewTask> taskCaptor = ArgumentCaptor.forClass(NewTask.class);
@@ -97,6 +101,7 @@ class RunOrchestrationServiceTest {
         assertThat(run.status()).isEqualTo(RunOrchestrationService.RUN_RUNNING);
         assertThat(task.runId()).isEqualTo(handle.runId());
         assertThat(task.status()).isEqualTo(RunOrchestrationService.TASK_RUNNING);
+        assertThat(task.inputJson()).contains("Build attached report", "directChat");
         assertThat(task.workspaceMode()).isEqualTo("NONE");
         assertThat(agentRunCaptor.getValue().taskId()).isEqualTo(task.id());
         assertThat(agentRunCaptor.getValue().status())

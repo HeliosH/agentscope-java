@@ -9,6 +9,7 @@
  */
 package io.agentscope.saas.app.chat;
 
+import io.agentscope.core.util.JsonUtils;
 import io.agentscope.saas.app.config.OrchestrationPolicyFactory;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.domain.model.AgentEntity;
@@ -49,7 +50,9 @@ public class ChatRunStartService {
             String requestedAgentId,
             String requestedSessionId,
             String message,
-            String requestId) {
+            String requestId,
+            String executionMessage,
+            String modelId) {
         AgentEntity resolved = persistence.resolveAgent(tenant, requestedAgentId);
         UUID orgId = UUID.fromString(tenant.orgId());
         UUID userId = UUID.fromString(tenant.userId());
@@ -88,7 +91,15 @@ public class ChatRunStartService {
                         userMessage.getId(),
                         message,
                         requestId,
-                        policyFactory.runPolicy());
+                        policyFactory.runPolicy(),
+                        JsonUtils.getJsonCodec()
+                                .toJson(
+                                        java.util.Map.of(
+                                                "prompt",
+                                                executionMessage,
+                                                "_runtime",
+                                                java.util.Map.of(
+                                                        "directChat", true, "modelId", modelId))));
         return new StartedRun(
                 locked.getId(),
                 session.getId(),

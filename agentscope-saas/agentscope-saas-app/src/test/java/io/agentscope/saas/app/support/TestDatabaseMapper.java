@@ -50,6 +50,9 @@ public interface TestDatabaseMapper {
                 retry_mode VARCHAR(32) NOT NULL, retry_base_seconds INTEGER NOT NULL,
                 next_attempt_at TIMESTAMP WITH TIME ZONE, last_error_code VARCHAR(128),
                 last_error_message VARCHAR(2000), output_json JSON DEFAULT '{}',
+                recovery_phase VARCHAR(32) NOT NULL DEFAULT 'NONE',
+                recovery_reason VARCHAR(128), recovery_count INTEGER NOT NULL DEFAULT 0,
+                next_recovery_at TIMESTAMP WITH TIME ZONE, recovery_checkpoint_id UUID,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL,
                 updated_at TIMESTAMP WITH TIME ZONE, completed_at TIMESTAMP WITH TIME ZONE)
             """)
@@ -75,6 +78,14 @@ public interface TestDatabaseMapper {
                 completed_at TIMESTAMP WITH TIME ZONE)
             """)
     void createAgentRuns();
+
+    @Update(
+            """
+            CREATE TABLE context_checkpoints (
+                id UUID PRIMARY KEY, org_id UUID NOT NULL, run_id UUID NOT NULL,
+                agent_run_id UUID NOT NULL, history_revision BIGINT NOT NULL)
+            """)
+    void createContextCheckpoints();
 
     @Update(
             """
@@ -118,6 +129,7 @@ public interface TestDatabaseMapper {
         createTaskEdges();
         createRunArtifacts();
         createAgentRuns();
+        createContextCheckpoints();
         createRunAttempts();
         createRunEvents();
         createLeaseOutbox();
@@ -170,6 +182,9 @@ public interface TestDatabaseMapper {
     @Update("UPDATE task_nodes SET retry_mode = #{retryMode} WHERE id = #{id}")
     int updateTaskRetryMode(@Param("id") UUID id, @Param("retryMode") String retryMode);
 
+    @Update("UPDATE task_nodes SET status = 'RUNNING' WHERE id = #{id}")
+    int markLeaseTaskRunning(UUID id);
+
     @Update(
             """
             UPDATE task_nodes
@@ -185,11 +200,55 @@ public interface TestDatabaseMapper {
     @Update("UPDATE run_attempts SET lease_expires_at = #{expiresAt} WHERE id = #{id}")
     int updateAttemptExpiry(@Param("id") UUID id, @Param("expiresAt") OffsetDateTime expiresAt);
 
+    @Update(
+            """
+            UPDATE run_attempts
+               SET status = 'RUNNING', lease_owner = #{leaseOwner},
+                   lease_expires_at = #{expiresAt}, heartbeat_at = #{now}, updated_at = #{now}
+             WHERE id = #{id}
+            """)
+    int activateAttemptLease(
+            @Param("id") UUID id,
+            @Param("leaseOwner") String leaseOwner,
+            @Param("expiresAt") OffsetDateTime expiresAt,
+            @Param("now") OffsetDateTime now);
+
+    @Insert(
+            """
+            INSERT INTO run_attempts
+                (id, org_id, run_id, task_id, agent_run_id, attempt_no, status,
+                 lease_owner, lease_expires_at, heartbeat_at, idempotency_key,
+                 started_at, updated_at)
+            VALUES
+                (#{id}, #{orgId}, #{runId}, #{taskId}, #{agentRunId}, #{attemptNo}, 'RUNNING',
+                 #{leaseOwner}, #{expiresAt}, #{now}, #{idempotencyKey}, #{now}, #{now})
+            """)
+    int insertRunningAttempt(
+            @Param("id") UUID id,
+            @Param("orgId") UUID orgId,
+            @Param("runId") UUID runId,
+            @Param("taskId") UUID taskId,
+            @Param("agentRunId") UUID agentRunId,
+            @Param("attemptNo") int attemptNo,
+            @Param("leaseOwner") String leaseOwner,
+            @Param("expiresAt") OffsetDateTime expiresAt,
+            @Param("idempotencyKey") String idempotencyKey,
+            @Param("now") OffsetDateTime now);
+
     @Select("SELECT status FROM task_nodes WHERE id = #{id}")
     String taskStatus(UUID id);
 
     @Select("SELECT status FROM run_attempts WHERE id = #{id}")
     String attemptStatus(UUID id);
+
+    @Select("SELECT recovery_phase FROM task_nodes WHERE id = #{id}")
+    String taskRecoveryPhase(UUID id);
+
+    @Select("SELECT recovery_count FROM task_nodes WHERE id = #{id}")
+    int taskRecoveryCount(UUID id);
+
+    @Select("SELECT org_id FROM task_nodes WHERE id = #{id}")
+    UUID taskOrgId(UUID id);
 
     @Select("SELECT event_type FROM run_events ORDER BY seq")
     List<String> allEventTypes();
@@ -573,6 +632,50 @@ public interface TestDatabaseMapper {
     @Select("SELECT COUNT(*) FROM orchestration_outbox WHERE aggregate_id = #{runId}")
     long countOutboxEvents(UUID runId);
 
+    @Select(
+            """
+            SELECT id, attempt_id AS attemptId, status, retry_safety AS retrySafety,
+                   CAST(result_json AS VARCHAR) AS resultJson,
+                   error_type AS errorType, error_message AS errorMessage
+              FROM tool_operations
+             WHERE run_id = #{runId} AND tool_call_id = #{toolCallId}
+            """)
+    ToolOperationState toolOperationState(
+            @Param("runId") UUID runId, @Param("toolCallId") String toolCallId);
+
+    @Select(
+            """
+            SELECT COUNT(*)
+              FROM orchestration_outbox outbox
+              JOIN tool_operations operation ON operation.id = outbox.aggregate_id
+             WHERE operation.run_id = #{runId}
+               AND operation.tool_call_id = #{toolCallId}
+            """)
+    long countToolOperationOutbox(
+            @Param("runId") UUID runId, @Param("toolCallId") String toolCallId);
+
+    @Select(
+            """
+            SELECT history_revision AS historyRevision, attempt_id AS attemptId,
+                   step_id AS stepId, history_hash AS historyHash, summary,
+                   CAST(retained_tail_json AS VARCHAR) AS retainedTailJson,
+                   CAST(pending_operations_json AS VARCHAR) AS pendingOperationsJson,
+                   workspace_version AS workspaceVersion
+              FROM context_checkpoints
+             WHERE run_id = #{runId} AND agent_run_id = #{agentRunId}
+             ORDER BY history_revision DESC
+             LIMIT 1
+            """)
+    ContextCheckpointState latestContextCheckpoint(
+            @Param("runId") UUID runId, @Param("agentRunId") UUID agentRunId);
+
+    @Select(
+            """
+            SELECT COUNT(*) FROM context_checkpoints
+             WHERE run_id = #{runId} AND agent_run_id = #{agentRunId}
+            """)
+    long countContextCheckpoints(@Param("runId") UUID runId, @Param("agentRunId") UUID agentRunId);
+
     @Select("SELECT COUNT(*) FROM chat_messages WHERE session_id = #{sessionId}")
     long countSessionMessages(UUID sessionId);
 
@@ -687,4 +790,23 @@ public interface TestDatabaseMapper {
 
     record RuntimeCapabilityState(
             String runtimeCapabilitySnapshotJson, String runtimeCapabilitySnapshotHash) {}
+
+    record ToolOperationState(
+            UUID id,
+            UUID attemptId,
+            String status,
+            String retrySafety,
+            String resultJson,
+            String errorType,
+            String errorMessage) {}
+
+    record ContextCheckpointState(
+            long historyRevision,
+            UUID attemptId,
+            String stepId,
+            String historyHash,
+            String summary,
+            String retainedTailJson,
+            String pendingOperationsJson,
+            String workspaceVersion) {}
 }

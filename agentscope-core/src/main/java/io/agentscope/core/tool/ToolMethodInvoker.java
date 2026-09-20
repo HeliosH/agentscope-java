@@ -57,6 +57,20 @@ class ToolMethodInvoker {
             Method method,
             ToolCallParam param,
             ToolResultConverter customConverter) {
+        return invokeAsync(toolObject, method, param, customConverter, false);
+    }
+
+    Mono<ToolResultBlock> invokeAsync(
+            Object toolObject,
+            Method method,
+            ToolCallParam param,
+            ToolResultConverter customConverter,
+            boolean propagateErrors) {
+        java.util.function.Function<Throwable, Mono<ToolResultBlock>> errorHandler =
+                error ->
+                        propagateErrors
+                                ? Mono.error(unwrapInvocationError(error))
+                                : handleError(error);
         // Use custom converter if provided, otherwise use default
         final ToolResultConverter converter =
                 customConverter != null ? customConverter : defaultConverter;
@@ -88,8 +102,8 @@ class ToolMethodInvoker {
                                                     r ->
                                                             converter.convert(
                                                                     r, extractGenericType(method)))
-                                            .onErrorResume(this::handleError))
-                    .onErrorResume(this::handleError);
+                                            .onErrorResume(errorHandler))
+                    .onErrorResume(errorHandler);
 
         } else if (returnType == Mono.class) {
             // Async method returning Mono: invoke and flatMap
@@ -106,8 +120,8 @@ class ToolMethodInvoker {
                     .flatMap(
                             mono ->
                                     mono.map(r -> converter.convert(r, extractGenericType(method)))
-                                            .onErrorResume(this::handleError))
-                    .onErrorResume(this::handleError);
+                                            .onErrorResume(errorHandler))
+                    .onErrorResume(errorHandler);
 
         } else {
             // Sync method: wrap in Mono.fromCallable
@@ -120,7 +134,7 @@ class ToolMethodInvoker {
                                 Object result = method.invoke(toolObject, args);
                                 return converter.convert(result, method.getGenericReturnType());
                             })
-                    .onErrorResume(this::handleError);
+                    .onErrorResume(errorHandler);
         }
     }
 
@@ -334,6 +348,17 @@ class ToolMethodInvoker {
             return Float.parseFloat(stringValue);
         }
         return stringValue;
+    }
+
+    private static Throwable unwrapInvocationError(Throwable error) {
+        while ((error instanceof java.lang.reflect.InvocationTargetException
+                        || error instanceof java.util.concurrent.CompletionException
+                        || error instanceof java.util.concurrent.ExecutionException)
+                && error.getCause() != null
+                && error.getCause() != error) {
+            error = error.getCause();
+        }
+        return error;
     }
 
     /**

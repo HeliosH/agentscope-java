@@ -16,6 +16,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import io.agentscope.core.model.ModelException;
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.orchestration.DurableTaskLeaseService.TaskLease;
 import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
@@ -77,6 +78,21 @@ class DurableTaskWorkerTest {
                         eq("worker-test"),
                         eq("TASK_EXECUTION_FAILED"),
                         eq("model unavailable"));
+    }
+
+    @Test
+    void modelFailureUsesDurableRecoveryPolicy() throws Exception {
+        when(executor.execute(any())).thenThrow(new ModelException("gateway interrupted"));
+
+        assertThat(worker.pollOnce()).isEqualTo(1);
+
+        verify(leases)
+                .recover(
+                        eq(lease.attemptId()),
+                        eq("worker-test"),
+                        eq("MODEL_REQUEST_FAILED"),
+                        eq("gateway interrupted"),
+                        eq(1_000L));
     }
 
     private static TaskLease lease() {

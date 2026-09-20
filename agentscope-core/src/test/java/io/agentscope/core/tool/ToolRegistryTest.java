@@ -77,6 +77,26 @@ class ToolRegistryTest {
     }
 
     @Test
+    void copiedRegistryPinsPresetsAndVersionWhileSourceCanAdvance() {
+        var source = new ToolRegistry();
+        var tool = mockTool1;
+        var registered = new RegisteredToolFunction(tool, null, null, Map.of("tenant", "alpha"));
+        source.registerTool("probe", tool, registered);
+        var copy = new ToolRegistry();
+        source.copyTo(copy);
+        String originalVersion = source.version();
+        assertEquals(originalVersion, copy.version());
+        source.updatePresetParameters("probe", Map.of("tenant", "beta"));
+        assertEquals(
+                Map.of("tenant", "alpha"), copy.getRegisteredTool("probe").getPresetParameters());
+        assertEquals(
+                Map.of("tenant", "beta"), source.getRegisteredTool("probe").getPresetParameters());
+        org.junit.jupiter.api.Assertions.assertNotEquals(originalVersion, source.version());
+        assertEquals(originalVersion, copy.version());
+        assertEquals(tool, copy.getTool("probe"));
+    }
+
+    @Test
     void testRegisterTool() {
         // Act
         registry.registerTool("tool1", mockTool1, registered1);

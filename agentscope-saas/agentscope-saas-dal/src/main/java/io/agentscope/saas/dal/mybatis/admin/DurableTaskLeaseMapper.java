@@ -179,7 +179,12 @@ public interface DurableTaskLeaseMapper {
     @Update(
             """
             UPDATE task_nodes
-               SET status = 'RUNNING', updated_at = #{updatedAt}
+               SET status = 'RUNNING',
+                   recovery_phase = CASE
+                       WHEN recovery_phase = 'SCHEDULED' THEN 'RUNNING'
+                       ELSE recovery_phase
+                   END,
+                   next_recovery_at = NULL, updated_at = #{updatedAt}
              WHERE id = #{taskId} AND status = 'CLAIMED'
             """)
     int markTaskRunning(@Param("taskId") UUID taskId, @Param("updatedAt") OffsetDateTime updatedAt);
@@ -206,6 +211,21 @@ public interface DurableTaskLeaseMapper {
     int heartbeat(
             @Param("attemptId") UUID attemptId,
             @Param("workerId") String workerId,
+            @Param("heartbeatAt") OffsetDateTime heartbeatAt,
+            @Param("leaseExpiresAt") OffsetDateTime leaseExpiresAt);
+
+    @Update(
+            """
+            UPDATE run_attempts
+               SET lease_owner = #{leaseOwner}, heartbeat_at = #{heartbeatAt},
+                   lease_expires_at = #{leaseExpiresAt}, updated_at = #{heartbeatAt}
+             WHERE id = #{attemptId}
+               AND status = 'RUNNING'
+               AND (lease_owner IS NULL OR lease_owner = #{leaseOwner})
+            """)
+    int activateDirectAttempt(
+            @Param("attemptId") UUID attemptId,
+            @Param("leaseOwner") String leaseOwner,
             @Param("heartbeatAt") OffsetDateTime heartbeatAt,
             @Param("leaseExpiresAt") OffsetDateTime leaseExpiresAt);
 
@@ -254,7 +274,12 @@ public interface DurableTaskLeaseMapper {
             UPDATE task_nodes
                SET status = 'SUCCEEDED', completed_at = #{completedAt}, updated_at = #{updatedAt},
                    output_json = CAST(#{outputJson} AS JSON), last_error_code = NULL,
-                   last_error_message = NULL
+                   last_error_message = NULL,
+                   recovery_phase = CASE
+                       WHEN recovery_count > 0 THEN 'COMPLETED'
+                       ELSE recovery_phase
+                   END,
+                   next_recovery_at = NULL
              WHERE id = #{taskId} AND status IN ('CLAIMED', 'RUNNING')
             """)
     int completeTask(
@@ -329,7 +354,10 @@ public interface DurableTaskLeaseMapper {
                            WHEN max_attempts < #{minimumMaxAttempts} THEN #{minimumMaxAttempts}
                            ELSE max_attempts
                        END,
-                   next_attempt_at = NULL, completed_at = NULL, updated_at = #{updatedAt}
+                   next_attempt_at = NULL, completed_at = NULL,
+                   recovery_phase = 'NONE', recovery_reason = NULL,
+                   next_recovery_at = NULL, recovery_checkpoint_id = NULL,
+                   updated_at = #{updatedAt}
              WHERE id = #{taskId} AND status = 'SUCCEEDED'
             """)
     int scheduleCoordinatorContinuation(
@@ -364,8 +392,43 @@ public interface DurableTaskLeaseMapper {
     @Update(
             """
             UPDATE task_nodes
+               SET status = 'READY', next_attempt_at = #{nextAttemptAt},
+                   recovery_phase = 'SCHEDULED', recovery_reason = #{reasonCode},
+                   recovery_count = recovery_count + 1,
+                   next_recovery_at = #{nextAttemptAt},
+                   recovery_checkpoint_id = (
+                       SELECT checkpoint.id
+                         FROM context_checkpoints checkpoint
+                        WHERE checkpoint.org_id = #{orgId}
+                          AND checkpoint.run_id = #{runId}
+                          AND checkpoint.agent_run_id = #{agentRunId}
+                        ORDER BY checkpoint.history_revision DESC
+                        LIMIT 1
+                   ),
+                   updated_at = #{updatedAt}, last_error_code = #{reasonCode},
+                   last_error_message = #{errorMessage}
+             WHERE id = #{taskId} AND status IN ('CLAIMED', 'RUNNING')
+            """)
+    int scheduleTaskRecovery(
+            @Param("taskId") UUID taskId,
+            @Param("orgId") UUID orgId,
+            @Param("runId") UUID runId,
+            @Param("agentRunId") UUID agentRunId,
+            @Param("nextAttemptAt") OffsetDateTime nextAttemptAt,
+            @Param("updatedAt") OffsetDateTime updatedAt,
+            @Param("reasonCode") String reasonCode,
+            @Param("errorMessage") String errorMessage);
+
+    @Update(
+            """
+            UPDATE task_nodes
                SET status = #{status}, completed_at = #{completedAt}, updated_at = #{completedAt},
-                   last_error_code = #{errorCode}, last_error_message = #{errorMessage}
+                   last_error_code = #{errorCode}, last_error_message = #{errorMessage},
+                   recovery_phase = CASE
+                       WHEN recovery_count > 0 THEN 'TERMINAL'
+                       ELSE recovery_phase
+                   END,
+                   next_recovery_at = NULL
              WHERE id = #{taskId} AND status IN ('CLAIMED', 'RUNNING')
             """)
     int stopTask(
@@ -392,7 +455,12 @@ public interface DurableTaskLeaseMapper {
     @Update(
             """
             UPDATE task_nodes
-               SET status = 'CANCELLED', completed_at = #{completedAt}, updated_at = #{completedAt}
+               SET status = 'CANCELLED', completed_at = #{completedAt},
+                   recovery_phase = CASE
+                       WHEN recovery_count > 0 THEN 'TERMINAL'
+                       ELSE recovery_phase
+                   END,
+                   next_recovery_at = NULL, updated_at = #{completedAt}
              WHERE run_id = #{runId}
                AND id <> #{taskId}
                AND status IN ('PENDING', 'READY', 'CLAIMED', 'RUNNING')

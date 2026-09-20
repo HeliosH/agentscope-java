@@ -38,7 +38,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import reactor.core.publisher.Flux;
 
 /** Deployment catalog plus organization-managed hot-reload routes. */
-public final class ModelCatalog implements Model, ContextWindowAwareModel {
+public final class ModelCatalog
+        implements io.agentscope.core.model.StepBindableModel,
+                ContextWindowAwareModel,
+                io.agentscope.core.model.InputTokenAwareModel {
 
     public static final String ORG_ID_KEY = "agentscope.org.id";
 
@@ -50,16 +53,32 @@ public final class ModelCatalog implements Model, ContextWindowAwareModel {
             int maxOutputTokens,
             boolean defaultModel) {}
 
-    public record Route(ModelOption option, ModelContextProfile contextProfile, Model model) {
+    public record Route(
+            ModelOption option,
+            ModelContextProfile contextProfile,
+            Model model,
+            io.agentscope.core.model.InputTokenEstimator estimator) {
+        public Route(ModelOption option, ModelContextProfile contextProfile, Model model) {
+            this(
+                    option,
+                    contextProfile,
+                    model,
+                    (messages, tools) -> TokenCounterUtil.calculateToken(messages, tools, model));
+        }
+
         public Route {
             Objects.requireNonNull(option, "option");
             Objects.requireNonNull(contextProfile, "contextProfile");
             Objects.requireNonNull(model, "model");
+            Objects.requireNonNull(estimator, "estimator");
         }
     }
 
     private record CatalogSnapshot(
-            String defaultId, Map<String, Route> routes, List<ModelOption> options) {}
+            String defaultId,
+            Map<String, Route> routes,
+            List<ModelOption> options,
+            String version) {}
 
     /** A fully validated catalog snapshot that can be activated after its DB transaction commits. */
     public final class PreparedRefresh {
@@ -167,7 +186,66 @@ public final class ModelCatalog implements Model, ContextWindowAwareModel {
     public Flux<ChatResponse> stream(
             List<Msg> messages, List<ToolSchema> tools, GenerateOptions options) {
         Route route = resolveRoute(catalog(selectedOrgId(messages)), selectedId(messages));
-        int estimatedInputTokens = TokenCounterUtil.calculateToken(messages, tools);
+        return executeRoute(route, messages, tools, options);
+    }
+
+    @Override
+    public Model bindToStep(RuntimeContext context, List<Msg> messages) {
+        // Keep routing identical to stream(messages,...). Runtime context is not a second,
+        // potentially conflicting source of tenant identity at this final request boundary.
+        CatalogSnapshot selected = catalog(selectedOrgId(messages));
+        return new BoundRoute(resolveRoute(selected, selectedId(messages)), selected.version());
+    }
+
+    private record BoundRoute(Route route, String routeVersion)
+            implements io.agentscope.core.model.StepBindableModel.BoundModel,
+                    ContextWindowAwareModel,
+                    io.agentscope.core.model.InputTokenAwareModel {
+        @Override
+        public long estimateInputTokens(List<Msg> messages, List<ToolSchema> tools) {
+            return route.estimator().estimate(messages, tools);
+        }
+
+        @Override
+        public Flux<ChatResponse> stream(
+                List<Msg> messages, List<ToolSchema> tools, GenerateOptions options) {
+            return executeRoute(route, messages, tools, options);
+        }
+
+        @Override
+        public String getModelName() {
+            return route.model().getModelName();
+        }
+
+        @Override
+        public boolean supportsNativeStructuredOutput() {
+            return route.model().supportsNativeStructuredOutput();
+        }
+
+        @Override
+        public ModelContextProfile resolveContextProfile(List<Msg> messages) {
+            return route.contextProfile();
+        }
+
+        @Override
+        public ModelContextProfile resolveContextProfile(RuntimeContext context) {
+            return route.contextProfile();
+        }
+    }
+
+    @Override
+    public long estimateInputTokens(List<Msg> messages, List<ToolSchema> tools) {
+        return resolveRoute(catalog(selectedOrgId(messages)), selectedId(messages))
+                .estimator()
+                .estimate(messages, tools);
+    }
+
+    private static Flux<ChatResponse> executeRoute(
+            Route route, List<Msg> messages, List<ToolSchema> tools, GenerateOptions options) {
+        long estimatedInputTokens = route.estimator().estimate(messages, tools);
+        if (estimatedInputTokens < 0)
+            return Flux.error(
+                    new IllegalArgumentException("Input token estimate must not be negative"));
         if (estimatedInputTokens > route.contextProfile().inputTokenBudget()) {
             return Flux.error(
                     new ContextWindowExceededException(
@@ -254,12 +332,15 @@ public final class ModelCatalog implements Model, ContextWindowAwareModel {
                             option.contextWindowTokens(),
                             option.maxOutputTokens(),
                             option.id().equals(defaultId));
-            normalized.put(option.id(), new Route(marked, route.contextProfile(), route.model()));
+            normalized.put(
+                    option.id(),
+                    new Route(marked, route.contextProfile(), route.model(), route.estimator()));
         }
         return new CatalogSnapshot(
                 defaultId,
                 Map.copyOf(normalized),
-                normalized.values().stream().map(Route::option).toList());
+                normalized.values().stream().map(Route::option).toList(),
+                UUID.randomUUID().toString());
     }
 
     private static Route resolveRoute(CatalogSnapshot catalog, String requestedId) {

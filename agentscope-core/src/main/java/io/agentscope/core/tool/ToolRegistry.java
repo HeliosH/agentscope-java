@@ -39,6 +39,12 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 class ToolRegistry {
 
+    private String version = java.util.UUID.randomUUID().toString();
+
+    synchronized String version() {
+        return version;
+    }
+
     private final Map<String, AgentTool> tools = new ConcurrentHashMap<>();
     private final Map<String, RegisteredToolFunction> registeredTools = new ConcurrentHashMap<>();
 
@@ -49,12 +55,23 @@ class ToolRegistry {
      * @param tool AgentTool implementation
      * @param registered RegisteredToolFunction wrapper with metadata
      */
-    void registerTool(String toolName, AgentTool tool, RegisteredToolFunction registered) {
+    synchronized void registerTool(
+            String toolName, AgentTool tool, RegisteredToolFunction registered) {
         if (toolName == null || toolName.isBlank()) {
             throw new IllegalArgumentException("Tool name cannot be null or blank");
         }
         tools.put(toolName, tool);
         registeredTools.put(toolName, registered);
+        version = java.util.UUID.randomUUID().toString();
+    }
+
+    synchronized void updatePresetParameters(String name, Map<String, Object> parameters) {
+        RegisteredToolFunction registered = registeredTools.get(name);
+        if (registered == null) {
+            throw new IllegalArgumentException("Tool not found: " + name);
+        }
+        registered.updatePresetParameters(parameters);
+        version = java.util.UUID.randomUUID().toString();
     }
 
     /**
@@ -63,7 +80,7 @@ class ToolRegistry {
      * @param name Tool name
      * @return AgentTool or null if not found
      */
-    AgentTool getTool(String name) {
+    synchronized AgentTool getTool(String name) {
         if (name == null || name.isBlank()) {
             return null;
         }
@@ -76,7 +93,7 @@ class ToolRegistry {
      * @param name Tool name
      * @return RegisteredToolFunction or null if not found
      */
-    RegisteredToolFunction getRegisteredTool(String name) {
+    synchronized RegisteredToolFunction getRegisteredTool(String name) {
         if (name == null || name.isBlank()) {
             return null;
         }
@@ -88,7 +105,7 @@ class ToolRegistry {
      *
      * @return Set of tool names
      */
-    Set<String> getToolNames() {
+    synchronized Set<String> getToolNames() {
         return new HashSet<>(tools.keySet());
     }
 
@@ -97,7 +114,7 @@ class ToolRegistry {
      *
      * @return Map of tool name to RegisteredToolFunction
      */
-    Map<String, RegisteredToolFunction> getAllRegisteredTools() {
+    synchronized Map<String, RegisteredToolFunction> getAllRegisteredTools() {
         return new ConcurrentHashMap<>(registeredTools);
     }
 
@@ -106,12 +123,13 @@ class ToolRegistry {
      *
      * @param toolName Tool name to remove
      */
-    void removeTool(String toolName) {
+    synchronized void removeTool(String toolName) {
         if (toolName == null || toolName.isBlank()) {
             throw new IllegalArgumentException("Tool name cannot be null or blank");
         }
         tools.remove(toolName);
         registeredTools.remove(toolName);
+        version = java.util.UUID.randomUUID().toString();
     }
 
     /**
@@ -122,10 +140,11 @@ class ToolRegistry {
      * @param expected The expected AgentTool instance (identity comparison)
      * @return true if the tool was removed, false if it was already replaced or absent
      */
-    boolean removeToolIfSame(String toolName, AgentTool expected) {
+    synchronized boolean removeToolIfSame(String toolName, AgentTool expected) {
         boolean removed = tools.remove(toolName, expected);
         if (removed) {
             registeredTools.remove(toolName);
+            version = java.util.UUID.randomUUID().toString();
         }
         return removed;
     }
@@ -135,7 +154,7 @@ class ToolRegistry {
      *
      * @param toolNames Set of tool names to remove
      */
-    void removeTools(Set<String> toolNames) {
+    synchronized void removeTools(Set<String> toolNames) {
         toolNames.forEach(this::removeTool);
     }
 
@@ -144,12 +163,20 @@ class ToolRegistry {
      *
      * @param target The target registry to copy tools to
      */
-    void copyTo(ToolRegistry target) {
+    synchronized void copyTo(ToolRegistry target) {
         for (Map.Entry<String, AgentTool> entry : tools.entrySet()) {
             String toolName = entry.getKey();
             AgentTool tool = entry.getValue();
             RegisteredToolFunction registered = registeredTools.get(toolName);
-            target.registerTool(toolName, tool, registered);
+            target.registerTool(
+                    toolName,
+                    tool,
+                    new RegisteredToolFunction(
+                            tool,
+                            registered.getExtendedModel(),
+                            registered.getMcpClientName(),
+                            registered.getPresetParameters()));
         }
+        target.version = version;
     }
 }

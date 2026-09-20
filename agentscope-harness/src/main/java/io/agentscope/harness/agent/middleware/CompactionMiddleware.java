@@ -35,10 +35,12 @@ import io.agentscope.harness.agent.memory.compaction.TokenCounterUtil;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 /**
  * Middleware that performs conversation compaction before each LLM reasoning call.
@@ -100,21 +102,42 @@ public class CompactionMiddleware implements MiddlewareBase {
                     String sessionId =
                             rc != null && rc.getSessionId() != null ? rc.getSessionId() : "default";
 
+                    Model estimationModel =
+                            model instanceof io.agentscope.core.model.StepBindableModel router
+                                    ? router.bindToStep(rc, messages)
+                                    : model;
                     MemoryFlushManager flushManager =
-                            new MemoryFlushManager(workspaceManager, model);
+                            new MemoryFlushManager(workspaceManager, estimationModel);
                     ConversationCompactor compactor =
-                            new ConversationCompactor(model, flushManager);
+                            new ConversationCompactor(estimationModel, flushManager);
                     final Msg sys = systemMsg;
-                    ModelContextProfile profile = resolveProfile(rc, messages);
+                    ModelContextProfile profile = resolveProfile(rc, messages, estimationModel);
                     CompactionConfig effectiveConfig =
-                            profile != null ? effectiveConfig(profile, sys, input.tools()) : config;
+                            profile != null
+                                    ? effectiveConfig(profile, sys, input.tools(), estimationModel)
+                                    : config;
 
                     return compactor
                             .compactIfNeeded(rc, conversation, effectiveConfig, agentId, sessionId)
+                            .onErrorResume(
+                                    e -> {
+                                        if (e instanceof ContextWindowExceededException) {
+                                            return Mono.error(e);
+                                        }
+                                        log.warn(
+                                                "Compaction failed; checking original input budget:"
+                                                        + " {}",
+                                                e.getMessage());
+                                        return Mono.just(Optional.empty());
+                                    })
                             .flatMapMany(
                                     optResult -> {
                                         if (optResult.isEmpty()) {
-                                            verifyFits(profile, input.messages(), input.tools());
+                                            verifyFits(
+                                                    profile,
+                                                    input.messages(),
+                                                    input.tools(),
+                                                    estimationModel);
                                             return next.apply(input);
                                         }
                                         List<Msg> compacted = optResult.get();
@@ -129,26 +152,22 @@ public class CompactionMiddleware implements MiddlewareBase {
                                             newMessages.add(sys);
                                         }
                                         newMessages.addAll(compacted);
-                                        verifyFits(profile, newMessages, input.tools());
+                                        verifyFits(
+                                                profile,
+                                                newMessages,
+                                                input.tools(),
+                                                estimationModel);
                                         return next.apply(
                                                 new ReasoningInput(
                                                         newMessages,
                                                         input.tools(),
                                                         input.options()));
-                                    })
-                            .onErrorResume(ContextWindowExceededException.class, Flux::error)
-                            .onErrorResume(
-                                    e -> {
-                                        log.warn(
-                                                "Compaction failed, continuing without compaction:"
-                                                        + " {}",
-                                                e.getMessage());
-                                        return next.apply(input);
                                     });
                 });
     }
 
-    private ModelContextProfile resolveProfile(RuntimeContext context, List<Msg> messages) {
+    private ModelContextProfile resolveProfile(
+            RuntimeContext context, List<Msg> messages, Model model) {
         if (model instanceof ContextWindowAwareModel awareModel) {
             if (context != null && context.get(ContextWindowAwareModel.MODEL_ID_KEY) != null) {
                 return awareModel.resolveContextProfile(context);
@@ -161,10 +180,11 @@ public class CompactionMiddleware implements MiddlewareBase {
     private CompactionConfig effectiveConfig(
             ModelContextProfile profile,
             Msg systemMsg,
-            List<io.agentscope.core.model.ToolSchema> tools) {
+            List<io.agentscope.core.model.ToolSchema> tools,
+            Model model) {
         int fixedTokens =
                 TokenCounterUtil.calculateToken(
-                        systemMsg != null ? List.of(systemMsg) : List.of(), tools);
+                        systemMsg != null ? List.of(systemMsg) : List.of(), tools, model);
         int conversationBudget = profile.inputTokenBudget() - fixedTokens;
         if (conversationBudget < 256) {
             throw exceeded(profile, fixedTokens, profile.inputTokenBudget());
@@ -194,14 +214,15 @@ public class CompactionMiddleware implements MiddlewareBase {
                 .build();
     }
 
-    private static void verifyFits(
+    private void verifyFits(
             ModelContextProfile profile,
             List<Msg> messages,
-            List<io.agentscope.core.model.ToolSchema> tools) {
+            List<io.agentscope.core.model.ToolSchema> tools,
+            Model model) {
         if (profile == null) {
             return;
         }
-        int estimatedTokens = TokenCounterUtil.calculateToken(messages, tools);
+        int estimatedTokens = TokenCounterUtil.calculateToken(messages, tools, model);
         if (estimatedTokens > profile.inputTokenBudget()) {
             throw exceeded(profile, estimatedTokens, profile.inputTokenBudget());
         }

@@ -17,18 +17,21 @@ package io.agentscope.harness.agent.filesystem.local;
 
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.filesystem.model.ExecuteResponse;
+import io.agentscope.harness.agent.filesystem.model.ShellExecutionRequest;
 import io.agentscope.harness.agent.filesystem.remote.store.NamespaceFactory;
 import io.agentscope.harness.agent.filesystem.sandbox.AbstractSandboxFilesystem;
+import io.agentscope.harness.agent.sandbox.process.BoundedOutputBuffer;
+import io.agentscope.harness.agent.sandbox.process.LocalProcessRunner;
 import io.agentscope.harness.agent.workspace.LocalFsMode;
 import io.agentscope.harness.agent.workspace.PathPolicy;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -250,6 +253,9 @@ public class LocalFilesystemWithShell extends LocalFilesystem implements Abstrac
         if (timeout <= 0) {
             throw new IllegalArgumentException("timeout must be positive, got " + timeout);
         }
+        if (maxOutputBytes <= 0) {
+            throw new IllegalArgumentException("maxOutputBytes must be positive");
+        }
 
         this.defaultTimeout = timeout;
         this.maxOutputBytes = maxOutputBytes;
@@ -304,9 +310,25 @@ public class LocalFilesystemWithShell extends LocalFilesystem implements Abstrac
         return shellCwd;
     }
 
+    private static String boundedText(byte[] bytes, int budget) {
+        if (budget == 0) {
+            return "";
+        }
+        BoundedOutputBuffer buffer = new BoundedOutputBuffer(budget);
+        buffer.append(bytes, 0, bytes.length);
+        return buffer.text();
+    }
+
     @Override
     public ExecuteResponse execute(
             RuntimeContext runtimeContext, String command, Integer timeoutSeconds) {
+        return execute(runtimeContext, new ShellExecutionRequest(command, null, timeoutSeconds));
+    }
+
+    @Override
+    public ExecuteResponse execute(RuntimeContext runtimeContext, ShellExecutionRequest request) {
+        String command = request.command();
+        Integer timeoutSeconds = request.timeoutSeconds();
         if (command == null || command.isBlank()) {
             return new ExecuteResponse("Error: Command must be a non-empty string.", 1, false);
         }
@@ -318,6 +340,14 @@ public class LocalFilesystemWithShell extends LocalFilesystem implements Abstrac
 
         try {
             Path workDir = resolveExecuteCwd(runtimeContext);
+            if (request.workingDirectory() != null) {
+                Path root = workDir.toRealPath();
+                Path requested = root.resolve(request.workingDirectory()).normalize().toRealPath();
+                if (!requested.startsWith(root)) {
+                    throw new SecurityException("working_directory escapes the workspace");
+                }
+                workDir = requested;
+            }
             ProcessBuilder pb =
                     new ProcessBuilder("sh", "-c", command)
                             .directory(workDir.toFile())
@@ -328,17 +358,25 @@ public class LocalFilesystemWithShell extends LocalFilesystem implements Abstrac
                 pb.environment().putAll(env);
             }
 
-            Process proc = pb.start();
+            LocalProcessRunner.Result result =
+                    LocalProcessRunner.run(
+                            pb,
+                            Duration.ofSeconds(effectiveTimeout),
+                            maxOutputBytes,
+                            () ->
+                                    runtimeContext != null
+                                            && runtimeContext.getAgentState() != null
+                                            && runtimeContext
+                                                    .getAgentState()
+                                                    .interruptControl()
+                                                    .isInterrupted());
+            String stdout = result.stdout();
+            String stderr = result.stderr();
 
-            boolean finished = proc.waitFor(effectiveTimeout, TimeUnit.SECONDS);
-
-            String stdout =
-                    new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            String stderr =
-                    new String(proc.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
-
-            if (!finished) {
-                proc.destroyForcibly();
+            if (result.cancelled()) {
+                return new ExecuteResponse("Command execution cancelled", 130, result.truncated());
+            }
+            if (result.timedOut()) {
                 String msg;
                 if (timeoutSeconds != null) {
                     msg =
@@ -353,36 +391,35 @@ public class LocalFilesystemWithShell extends LocalFilesystem implements Abstrac
                                     + " seconds. For long-running commands, re-run using the"
                                     + " timeout parameter.";
                 }
-                return new ExecuteResponse(msg, 124, false);
+                return new ExecuteResponse(msg, 124, result.truncated());
             }
 
-            StringBuilder output = new StringBuilder();
-            if (stdout != null && !stdout.isEmpty()) {
-                output.append(stdout);
-            }
+            StringBuilder errorOutput = new StringBuilder();
             if (stderr != null && !stderr.isBlank()) {
-                String[] stderrLines = stderr.strip().split("\n");
-                for (String line : stderrLines) {
-                    if (!output.isEmpty()) {
-                        output.append('\n');
-                    }
-                    output.append("[stderr] ").append(line);
+                for (String line : stderr.strip().split("\n")) {
+                    errorOutput.append("[stderr] ").append(line).append('\n');
                 }
             }
-
-            String outputStr = output.isEmpty() ? "<no output>" : output.toString();
-
-            boolean truncated = false;
-            if (outputStr.length() > maxOutputBytes) {
-                outputStr =
-                        outputStr.substring(0, maxOutputBytes)
-                                + "\n\n... Output truncated at "
-                                + maxOutputBytes
-                                + " bytes.";
-                truncated = true;
+            byte[] outBytes = stdout.getBytes(StandardCharsets.UTF_8);
+            byte[] errBytes = errorOutput.toString().getBytes(StandardCharsets.UTF_8);
+            // Reserve space for both streams before combining: a single head/tail truncation
+            // of stdout+stderr would discard the stdout tail and the stderr beginning.
+            int outBudget = Math.min(outBytes.length, maxOutputBytes / 2 + maxOutputBytes % 2);
+            int errBudget = Math.min(errBytes.length, maxOutputBytes - outBudget);
+            outBudget = Math.min(outBytes.length, maxOutputBytes - errBudget);
+            String outputStr =
+                    boundedText(outBytes, outBudget)
+                            + (outBudget > 0 && errBudget > 0 ? "\n" : "")
+                            + boundedText(errBytes, errBudget);
+            if (outputStr.isEmpty()) {
+                outputStr = "<no output>";
             }
+            boolean truncated =
+                    result.truncated()
+                            || outBytes.length > outBudget
+                            || errBytes.length > errBudget;
 
-            int exitCode = proc.exitValue();
+            int exitCode = result.exitCode();
             if (exitCode != 0) {
                 outputStr = outputStr.stripTrailing() + "\n\nExit code: " + exitCode;
             }

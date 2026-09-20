@@ -20,6 +20,7 @@ import io.agentscope.harness.agent.filesystem.local.LocalFilesystem;
 import io.agentscope.harness.agent.filesystem.model.EditResult;
 import io.agentscope.harness.agent.filesystem.model.ExecuteResponse;
 import io.agentscope.harness.agent.filesystem.model.FileUploadResponse;
+import io.agentscope.harness.agent.filesystem.model.ShellExecutionRequest;
 import io.agentscope.harness.agent.filesystem.model.WriteResult;
 import io.agentscope.harness.agent.filesystem.sandbox.AbstractSandboxFilesystem;
 import java.nio.file.Path;
@@ -87,6 +88,11 @@ public class ProjectAwareOverlay extends OverlayFilesystem implements AbstractSa
     public ExecuteResponse execute(
             RuntimeContext runtimeContext, String command, Integer timeoutSeconds) {
         return shellBackend.execute(runtimeContext, command, timeoutSeconds);
+    }
+
+    @Override
+    public ExecuteResponse execute(RuntimeContext runtimeContext, ShellExecutionRequest request) {
+        return shellBackend.execute(runtimeContext, request);
     }
 
     // ==================== Write routing ====================

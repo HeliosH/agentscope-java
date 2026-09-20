@@ -17,6 +17,8 @@ package io.agentscope.harness.agent.middleware;
 
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.middleware.MiddlewareBase;
+import io.agentscope.core.tool.ExecutionEnvironmentSnapshot;
+import io.agentscope.core.tool.StepSnapshot;
 import io.agentscope.harness.agent.filesystem.sandbox.SandboxBackedFilesystem;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxAcquireResult;
@@ -26,6 +28,7 @@ import io.agentscope.harness.agent.sandbox.SandboxManager;
 import io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import org.apache.commons.compress.archivers.ArchiveOutputStream;
@@ -102,6 +105,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
         Sandbox inherited = ctx.get(Sandbox.class);
         if (inherited != null && inherited.isRunning()) {
             ctx.put(SandboxCallState.class, SandboxCallState.borrowed(inherited));
+            bindEnvironmentSnapshot(ctx, inherited);
             filesystemProxy.setSandbox(inherited);
             log.debug(
                     "[sandbox-mw] Borrowed active parent sandbox {}",
@@ -127,6 +131,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
                 restoreWorkspace(ctx, sandbox);
                 long durationNanos = System.nanoTime() - acquireStartNanos;
                 ctx.put(Sandbox.class, sandbox);
+                bindEnvironmentSnapshot(ctx, sandbox);
                 ctx.put(SandboxCallState.class, SandboxCallState.owned(result));
                 filesystemProxy.setSandbox(sandbox);
                 legacyAcquireResult.set(result);
@@ -155,6 +160,28 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             log.error("[sandbox-mw] Failed to acquire/start sandbox", e);
             throw new RuntimeException(e);
         }
+    }
+
+    private static void bindEnvironmentSnapshot(RuntimeContext ctx, Sandbox sandbox) {
+        String environmentId =
+                sandbox.getState() != null ? sandbox.getState().getSessionId() : null;
+        if (environmentId == null || environmentId.isBlank()) {
+            throw new IllegalStateException("Active sandbox has no stable session identity");
+        }
+        WorkspaceRestorePlan restore = ctx.get(WorkspaceRestorePlan.class);
+        String workspaceVersion = restore == null ? null : restore.workspaceVersion();
+        String provider = sandbox.getClass().getName();
+        String version =
+                StepSnapshot.fingerprint(
+                        Map.of(
+                                "environmentId", environmentId,
+                                "providerId", provider,
+                                "workspaceVersion",
+                                        workspaceVersion == null ? "" : workspaceVersion));
+        ctx.put(
+                ExecutionEnvironmentSnapshot.class,
+                new ExecutionEnvironmentSnapshot(
+                        environmentId, provider, workspaceVersion, version));
     }
 
     private void restoreWorkspace(RuntimeContext ctx, Sandbox sandbox) throws Exception {
@@ -215,6 +242,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             if (ctx != null) {
                 ctx.put(Sandbox.class, (Sandbox) null);
                 ctx.put(SandboxCallState.class, (SandboxCallState) null);
+                ctx.put(ExecutionEnvironmentSnapshot.class, (ExecutionEnvironmentSnapshot) null);
             }
             if (filesystemProxy.getSandbox() == callState.sandbox()) {
                 filesystemProxy.setSandbox(null);
@@ -262,6 +290,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
         if (ctx != null) {
             ctx.put(Sandbox.class, (Sandbox) null);
             ctx.put(SandboxCallState.class, (SandboxCallState) null);
+            ctx.put(ExecutionEnvironmentSnapshot.class, (ExecutionEnvironmentSnapshot) null);
         }
         if (sandbox != null && filesystemProxy.getSandbox() == sandbox) {
             filesystemProxy.setSandbox(null);

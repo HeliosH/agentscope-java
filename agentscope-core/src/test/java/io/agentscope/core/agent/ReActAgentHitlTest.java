@@ -63,6 +63,84 @@ import reactor.core.publisher.Mono;
  */
 class ReActAgentHitlTest {
 
+    @Test
+    void confirmationCannotOverrideDenyPolicyInstalledWhileWaiting() {
+        assertConfirmedDenial(false);
+    }
+
+    @Test
+    void confirmationCannotOverrideToolDenialInstalledWhileWaiting() {
+        assertConfirmedDenial(true);
+    }
+
+    private void assertConfirmedDenial(boolean toolDenial) {
+        var calls = new AtomicInteger();
+        var revoked = new java.util.concurrent.atomic.AtomicBoolean();
+        var tool =
+                new AllowingTool("guarded") {
+                    @Override
+                    public Mono<PermissionDecision> checkPermissions(
+                            Map<String, Object> input, PermissionContextState context) {
+                        return Mono.just(
+                                revoked.get()
+                                        ? PermissionDecision.deny("Revoked by tool")
+                                        : PermissionDecision.ask("Confirm operation"));
+                    }
+
+                    @Override
+                    public Mono<ToolResultBlock> callAsync(ToolCallParam param) {
+                        calls.incrementAndGet();
+                        return Mono.just(ToolResultBlock.text("executed"));
+                    }
+                };
+        var agent =
+                ReActAgent.builder()
+                        .name("approval-revalidation")
+                        .model(
+                                new ScriptedModel(
+                                        List.of(
+                                                () ->
+                                                        Flux.just(
+                                                                toolUseResponse(
+                                                                        "guarded-1",
+                                                                        "guarded",
+                                                                        "value")),
+                                                () -> Flux.just(textResponse("done")))))
+                        .toolkit(toolkitWith(tool))
+                        .stateStore(new io.agentscope.core.state.InMemoryAgentStateStore())
+                        .build();
+        var first = agent.call(List.of()).block();
+        assertEquals(GenerateReason.PERMISSION_ASKING, first.getGenerateReason());
+        ToolUseBlock pending =
+                agent.getAgentState().getContext().stream()
+                        .flatMap(msg -> msg.getContentBlocks(ToolUseBlock.class).stream())
+                        .filter(use -> "guarded-1".equals(use.getId()))
+                        .findFirst()
+                        .orElseThrow();
+        if (toolDenial) {
+            revoked.set(true);
+        } else {
+            agent.setPermissionContext(
+                    null,
+                    PermissionContextState.builder()
+                            .addDenyRule(
+                                    "guarded",
+                                    new io.agentscope.core.permission.PermissionRule(
+                                            "guarded",
+                                            null,
+                                            io.agentscope.core.permission.PermissionBehavior.DENY,
+                                            "Revoked while awaiting confirmation"))
+                            .build());
+        }
+        var events = agent.streamEvents(List.of(confirmMsg(true, pending))).collectList().block();
+        assertEquals(0, calls.get(), "an approval cannot override an explicit denial");
+        assertTrue(
+                events.stream()
+                        .filter(ToolResultEndEvent.class::isInstance)
+                        .map(ToolResultEndEvent.class::cast)
+                        .anyMatch(event -> event.getState() == ToolResultState.DENIED));
+    }
+
     private static AgentState newState() {
         return AgentState.builder().sessionId("session-hitl").build();
     }

@@ -195,6 +195,69 @@ class HarnessDurableTaskExecutorTest {
     }
 
     @Test
+    void restoresDirectChatFromPersistedPromptAndSavesItsFinalReply() throws Exception {
+        HarnessAgent parent = mock(HarnessAgent.class);
+        Msg finalReply =
+                Msg.builder().role(MsgRole.ASSISTANT).textContent("recovered answer").build();
+        when(parent.call(any(Msg.class), any(RuntimeContext.class)))
+                .thenReturn(Mono.just(finalReply));
+        ChatPersistenceService chatPersistence = mock(ChatPersistenceService.class);
+        RunOrchestrationService orchestration = mock(RunOrchestrationService.class);
+        when(orchestration.hasUnsettledChildren(any())).thenReturn(false);
+        SaasProperties properties = new SaasProperties();
+        properties.getOrchestration().setWorkerExecutionTimeoutSeconds(5);
+        HarnessDurableTaskExecutor executor =
+                new HarnessDurableTaskExecutor(
+                        parent,
+                        new ObjectMapper(),
+                        properties,
+                        chatPersistence,
+                        orchestration,
+                        mock(WorkspaceArtifactService.class),
+                        mock(WorkspaceCheckpointRestoreService.class),
+                        Optional.empty());
+        UUID taskId = UUID.randomUUID();
+        UUID runId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        UUID agentId = UUID.randomUUID();
+        ExecutionRequest request =
+                new ExecutionRequest(
+                        UUID.randomUUID(),
+                        "worker-test",
+                        UUID.randomUUID(),
+                        runId,
+                        taskId,
+                        UUID.randomUUID(),
+                        agentId,
+                        sessionId,
+                        UUID.randomUUID(),
+                        "assistant",
+                        null,
+                        "member",
+                        "standard",
+                        2,
+                        100_000,
+                        "Original title",
+                        "{\"prompt\":\"Process inputs/report.xlsx\","
+                                + "\"_runtime\":{\"directChat\":true,\"modelId\":\"qwen-long\"}}",
+                        WorkspaceIsolationMode.NONE);
+
+        executor.execute(request);
+
+        ArgumentCaptor<Msg> input = ArgumentCaptor.forClass(Msg.class);
+        verify(parent).call(input.capture(), any(RuntimeContext.class));
+        assertThat(input.getValue().getId()).isEqualTo("task-" + taskId);
+        assertThat(input.getValue().getTextContent()).isEqualTo("Process inputs/report.xlsx");
+        verify(chatPersistence)
+                .saveAssistantMessageForRun(
+                        any(TenantContext.class),
+                        eq(sessionId),
+                        eq(agentId),
+                        eq(runId),
+                        eq(finalReply.getContent()));
+    }
+
+    @Test
     void publishesCheckpointWhenAgentExecutionFailsSoRetryCanRestoreIt() {
         HarnessAgent parent = mock(HarnessAgent.class);
         when(parent.call(any(Msg.class), any(RuntimeContext.class)))

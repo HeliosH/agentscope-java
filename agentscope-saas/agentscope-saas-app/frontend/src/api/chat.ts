@@ -46,7 +46,7 @@ export async function getModelCatalog(): Promise<ModelCatalog> {
  * simpler {token, tool_call, tool_result, done, error} shape that ChatPanel renders.
  */
 export interface ChatEvent {
-  type: 'run_started' | 'run_recovering' | 'token' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'confirm_required' | string;
+  type: 'run_started' | 'run_recovering' | 'run_recovery_scheduled' | 'token' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'confirm_required' | string;
   data?: string;
   toolName?: string;
   toolInput?: string;
@@ -58,6 +58,7 @@ export interface ChatEvent {
   attempt?: number;
   maxAttempts?: number;
   message?: string;
+  scheduled?: boolean;
 }
 
 export interface CurrentSession {
@@ -134,6 +135,18 @@ export async function* stream(agentId: string, req: ChatRequest): AsyncGenerator
           attempt: value?.attempt,
           maxAttempts: value?.maxAttempts,
           message: value?.message,
+        };
+      } else if (type === 'CUSTOM' && payload.name === 'run_recovery_scheduled') {
+        const value = payload.value as {
+          message?: string;
+          runId?: string;
+          scheduled?: boolean;
+        } | undefined;
+        yield {
+          type: 'run_recovery_scheduled',
+          message: value?.message,
+          runId: value?.runId,
+          scheduled: value?.scheduled,
         };
       } else if (type === 'TEXT_MESSAGE_CONTENT') {
         const delta = (payload.delta as string) ?? '';

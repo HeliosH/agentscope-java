@@ -105,6 +105,20 @@ public final class PermissionEngine {
         }
     }
 
+    /** Captures the effective local policy, including rules remembered from approvals. */
+    public PermissionContextState snapshotContext() {
+        PermissionContextState.Builder builder =
+                PermissionContextState.builder().mode(context.getMode());
+        context.getWorkingDirectories().forEach(builder::addWorkingDirectory);
+        getAllowRules()
+                .forEach((name, rules) -> rules.forEach(rule -> builder.addAllowRule(name, rule)));
+        getDenyRules()
+                .forEach((name, rules) -> rules.forEach(rule -> builder.addDenyRule(name, rule)));
+        getAskRules()
+                .forEach((name, rules) -> rules.forEach(rule -> builder.addAskRule(name, rule)));
+        return builder.build();
+    }
+
     /** Read-only view of the engine's current allow-rule table. */
     public Map<String, List<PermissionRule>> getAllowRules() {
         return unmodifiableSnapshot(allowRules);
@@ -184,6 +198,29 @@ public final class PermissionEngine {
                             return continueAfterToolCheck(tool, input);
                         })
                 .switchIfEmpty(Mono.defer(() -> continueAfterToolCheck(tool, input)));
+    }
+
+    /**
+     * Revalidates an already confirmed invocation. Confirmation satisfies ASK, but does not
+     * override explicit deny rules, input safety denials, or a tool's own denial.
+     * Ordinary mode defaults are intentionally not applied again, avoiding an approval loop.
+     */
+    public Mono<PermissionDecision> checkConfirmedPermission(
+            ToolBase tool, Map<String, Object> toolInput) {
+        Objects.requireNonNull(tool, "tool must not be null");
+        Map<String, Object> input = toolInput == null ? Map.of() : toolInput;
+        return Mono.defer(
+                () -> {
+                    PermissionDecision security = ToolInputSecurityGuard.inspect(tool, input);
+                    if (security.getBehavior() == PermissionBehavior.DENY)
+                        return Mono.just(security);
+                    PermissionDecision denied = checkDenyRules(tool, input);
+                    if (denied != null) return Mono.just(denied);
+                    return tool.checkPermissions(input, context)
+                            .filter(decision -> decision.getBehavior() == PermissionBehavior.DENY)
+                            .defaultIfEmpty(
+                                    PermissionDecision.allow("User confirmed this invocation"));
+                });
     }
 
     private Mono<PermissionDecision> continueAfterToolCheck(

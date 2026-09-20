@@ -223,7 +223,7 @@ public class Toolkit {
     /**
      * Internal method to register AgentTool with full metadata including preset parameters.
      */
-    private void registerAgentTool(
+    private synchronized void registerAgentTool(
             AgentTool tool,
             String groupName,
             ExtendedModel extendedModel,
@@ -256,6 +256,11 @@ public class Toolkit {
                 "Registered tool '{}' in group '{}'",
                 toolName,
                 groupName != null ? groupName : "ungrouped");
+    }
+
+    /** Opaque version of the registered executable handles; preserved by copy(). */
+    public String getRegistrationVersion() {
+        return toolRegistry.version();
     }
 
     /**
@@ -575,7 +580,7 @@ public class Toolkit {
      * @param active Whether the group should be active by default
      * @throws IllegalArgumentException if group already exists
      */
-    public void createToolGroup(String groupName, String description, boolean active) {
+    public synchronized void createToolGroup(String groupName, String description, boolean active) {
         groupManager.createToolGroup(groupName, description, active);
     }
 
@@ -589,7 +594,7 @@ public class Toolkit {
      *              or by developer code ({@link ToolGroupScope#EXTERNAL})
      * @throws IllegalArgumentException if group already exists
      */
-    public void createToolGroup(
+    public synchronized void createToolGroup(
             String groupName, String description, boolean active, ToolGroupScope scope) {
         groupManager.createToolGroup(groupName, description, active, scope);
     }
@@ -601,7 +606,7 @@ public class Toolkit {
      * @param description Description of the tool group
      * @throws IllegalArgumentException if group already exists
      */
-    public void createToolGroup(String groupName, String description) {
+    public synchronized void createToolGroup(String groupName, String description) {
         groupManager.createToolGroup(groupName, description);
     }
 
@@ -618,7 +623,7 @@ public class Toolkit {
      * @param activateOnSkill The skill name that this group is bound to
      * @throws IllegalArgumentException if group already exists
      */
-    public void createSkillToolGroup(
+    public synchronized void createSkillToolGroup(
             String groupName, String description, boolean active, String activateOnSkill) {
         groupManager.createSkillToolGroup(groupName, description, active, activateOnSkill);
     }
@@ -632,7 +637,7 @@ public class Toolkit {
      * @param group The tool group to register
      * @throws IllegalArgumentException if a group with the same name already exists
      */
-    public void registerToolGroup(ToolGroup group) {
+    public synchronized void registerToolGroup(ToolGroup group) {
         groupManager.registerToolGroup(group);
     }
 
@@ -646,7 +651,7 @@ public class Toolkit {
      * @param active Whether to activate (true) or deactivate (false) the groups
      * @throws IllegalArgumentException if any group doesn't exist
      */
-    public void updateToolGroups(List<String> groupNames, boolean active) {
+    public synchronized void updateToolGroups(List<String> groupNames, boolean active) {
         if (!active && !config.isAllowToolDeletion()) {
             logger.warn(
                     "Tool deletion is disabled - ignoring deactivation of tool groups: {}",
@@ -661,7 +666,7 @@ public class Toolkit {
      *
      * @param toolName Name of the tool to remove
      */
-    public void removeTool(String toolName) {
+    public synchronized void removeTool(String toolName) {
         if (!config.isAllowToolDeletion()) {
             logger.warn("Tool deletion is disabled - ignoring removal of tool: {}", toolName);
             return;
@@ -676,7 +681,7 @@ public class Toolkit {
      * @param expected The expected AgentTool instance (identity comparison)
      * @return true if the tool was removed, false if it was already replaced or absent
      */
-    public boolean removeToolIfSame(String toolName, AgentTool expected) {
+    public synchronized boolean removeToolIfSame(String toolName, AgentTool expected) {
         if (!config.isAllowToolDeletion()) {
             logger.warn("Tool deletion is disabled - ignoring removal of tool: {}", toolName);
             return false;
@@ -692,7 +697,7 @@ public class Toolkit {
      *
      * @param groupNames List of tool group names to remove
      */
-    public void removeToolGroups(List<String> groupNames) {
+    public synchronized void removeToolGroups(List<String> groupNames) {
         if (!config.isAllowToolDeletion()) {
             logger.warn(
                     "Tool deletion is disabled - ignoring removal of tool groups: {}", groupNames);
@@ -723,7 +728,7 @@ public class Toolkit {
      *
      * @param groups List of group names to set as active
      */
-    public void setActiveGroups(List<String> groups) {
+    public synchronized void setActiveGroups(List<String> groups) {
         groupManager.setActiveGroups(groups);
     }
 
@@ -765,13 +770,9 @@ public class Toolkit {
      * @param newPresetParameters The new preset parameters (null will be treated as empty map)
      * @throws IllegalArgumentException if the tool is not found
      */
-    public void updateToolPresetParameters(
+    public synchronized void updateToolPresetParameters(
             String toolName, Map<String, Object> newPresetParameters) {
-        RegisteredToolFunction registered = toolRegistry.getRegisteredTool(toolName);
-        if (registered == null) {
-            throw new IllegalArgumentException("Tool not found: " + toolName);
-        }
-        registered.updatePresetParameters(newPresetParameters);
+        toolRegistry.updatePresetParameters(toolName, newPresetParameters);
         logger.debug("Updated preset parameters for tool '{}'", toolName);
     }
 
@@ -785,7 +786,7 @@ public class Toolkit {
      *
      * @return A new Toolkit instance with copied state
      */
-    public Toolkit copy() {
+    public synchronized Toolkit copy() {
         Toolkit copy = new Toolkit(this.config);
 
         // Copy all registered tools
