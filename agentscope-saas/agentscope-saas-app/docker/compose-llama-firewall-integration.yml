@@ -1,0 +1,34 @@
+services:
+  llama-firewall:
+    build:
+      context: ../../..
+      dockerfile: agentscope-saas/agentscope-saas-app/docker/llama-firewall-integration/Dockerfile
+      args:
+        LLAMA_FIREWALL_VERSION: ${LLAMA_FIREWALL_VERSION:-1.0.3}
+        TORCH_VERSION: ${TORCH_VERSION:-2.4.1}
+        TRANSFORMERS_VERSION: ${TRANSFORMERS_VERSION:-4.57.3}
+    image: agentscope/llama-firewall-integration:local
+    environment:
+      LF_HTTP_HOST: 0.0.0.0
+      LF_HTTP_PORT: 8080
+      LF_AUTH_TOKEN: ${LF_AUTH_TOKEN:?LF_AUTH_TOKEN is required}
+      LF_MAX_CONCURRENT_REQUESTS: ${LF_MAX_CONCURRENT_REQUESTS:-4}
+      LF_USER_INPUT_SCANNERS: ${LF_USER_INPUT_SCANNERS:-hidden_ascii,regex}
+      LF_TOOL_REQUEST_SCANNERS: ${LF_TOOL_REQUEST_SCANNERS:-code_shield,hidden_ascii,regex}
+      LF_TOOL_RESULT_SCANNERS: ${LF_TOOL_RESULT_SCANNERS:-hidden_ascii,regex}
+      LF_ASSISTANT_OUTPUT_SCANNERS: ${LF_ASSISTANT_OUTPUT_SCANNERS:-code_shield,regex}
+    ports:
+      - "${LLAMA_FIREWALL_HTTP_PORT:-18082}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3

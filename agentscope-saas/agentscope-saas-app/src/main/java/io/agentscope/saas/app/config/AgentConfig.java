@@ -47,7 +47,9 @@ import io.agentscope.saas.app.orchestration.OrchestrationGovernanceService;
 import io.agentscope.saas.app.orchestration.PgTaskRepository;
 import io.agentscope.saas.app.orchestration.PlanPublishTool;
 import io.agentscope.saas.app.org.OrgToolsConfigService;
-import io.agentscope.saas.app.security.ClawSentryToolSecurityPolicy;
+import io.agentscope.saas.app.security.LlamaFirewallClient;
+import io.agentscope.saas.app.security.LlamaFirewallSecurityMiddleware;
+import io.agentscope.saas.app.security.LlamaFirewallToolSecurityPolicy;
 import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
 import io.agentscope.saas.core.middleware.RateLimitMiddleware;
 import io.agentscope.saas.core.middleware.TenantContextMiddleware;
@@ -81,7 +83,7 @@ import org.springframework.context.annotation.Configuration;
  * framework appends its built-in sandbox-lifecycle, permission, and trace middlewares.
  */
 @Configuration
-@EnableConfigurationProperties(ClawSentryProperties.class)
+@EnableConfigurationProperties(LlamaFirewallProperties.class)
 public class AgentConfig {
 
     private static final String WORKSPACE_FILE_POLICY =
@@ -120,7 +122,8 @@ public class AgentConfig {
             DurableContextCheckpointFactory contextCheckpointFactory,
             ExecutionPlanService executionPlanService,
             ObjectProvider<PgTaskRepository> pgTaskRepositoryProvider,
-            ClawSentryToolSecurityPolicy clawSentryPolicy) {
+            LlamaFirewallClient llamaFirewallClient,
+            LlamaFirewallToolSecurityPolicy llamaFirewallPolicy) {
 
         SaasProperties.Agent agentCfg = properties.getAgent();
         SaasProperties.RateLimit rl = properties.getRateLimit();
@@ -163,6 +166,7 @@ public class AgentConfig {
                                         objectMapper,
                                         toolJournalFactory,
                                         contextCheckpointFactory))
+                        .middleware(new LlamaFirewallSecurityMiddleware(llamaFirewallClient))
                         .middleware(new UsageMeteringMiddleware(usageService));
 
         if (agentCfg.getLoopGuard().isEnabled()) {
@@ -297,7 +301,7 @@ public class AgentConfig {
         // ASK; DONT_ASK demotes ASK to DENY for unattended runs. Unset tool names are no-ops.
         PermissionContextState permissionContext = buildPermissionContext(agentCfg);
         builder.permissionContext(permissionContext);
-        builder.toolSecurityPolicy(clawSentryPolicy);
+        builder.toolSecurityPolicy(llamaFirewallPolicy);
         log.info(
                 "Permission tool_guard mode={} allow={} ask={} deny={}",
                 agentCfg.getPermission().getMode(),

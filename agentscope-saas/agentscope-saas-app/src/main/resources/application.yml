@@ -298,18 +298,20 @@ saas:
       # Set issuer-uri or jwk-set-uri to validate tokens from an enterprise IdP (SSO).
       issuer-uri: ${SAAS_OIDC_ISSUER_URI:}
       jwk-set-uri: ${SAAS_OIDC_JWK_SET_URI:}
-    # Optional internal AHP gateway. Disabled by default; enable per deployment environment.
-    clawsentry:
-      enabled: ${SAAS_SECURITY_CLAWSENTRY_ENABLED:false}
-      base-url: ${SAAS_SECURITY_CLAWSENTRY_BASE_URL:http://localhost:18081}
-      api-path: ${SAAS_SECURITY_CLAWSENTRY_API_PATH:/ahp}
-      api-token: ${SAAS_SECURITY_CLAWSENTRY_API_TOKEN:}
-      connect-timeout-millis: ${SAAS_SECURITY_CLAWSENTRY_CONNECT_TIMEOUT_MS:250}
-      decision-timeout-millis: ${SAAS_SECURITY_CLAWSENTRY_DECISION_TIMEOUT_MS:1500}
-      source-framework: ${SAAS_SECURITY_CLAWSENTRY_SOURCE_FRAMEWORK:agentscope-java}
-      decision-tier: ${SAAS_SECURITY_CLAWSENTRY_DECISION_TIER:L1}
-      failure-mode: ${SAAS_SECURITY_CLAWSENTRY_FAILURE_MODE:ASK}
-      audit-enabled: ${SAAS_SECURITY_CLAWSENTRY_AUDIT_ENABLED:true}
+    # Optional private LlamaFirewall service. Disabled by default and selected at deployment time.
+    llama-firewall:
+      enabled: ${SAAS_SECURITY_LLAMA_FIREWALL_ENABLED:false}
+      base-url: ${SAAS_SECURITY_LLAMA_FIREWALL_BASE_URL:http://localhost:18082}
+      scan-path: ${SAAS_SECURITY_LLAMA_FIREWALL_SCAN_PATH:/v1/scan}
+      api-token: ${SAAS_SECURITY_LLAMA_FIREWALL_API_TOKEN:}
+      connect-timeout-millis: ${SAAS_SECURITY_LLAMA_FIREWALL_CONNECT_TIMEOUT_MS:250}
+      decision-timeout-millis: ${SAAS_SECURITY_LLAMA_FIREWALL_DECISION_TIMEOUT_MS:2000}
+      max-content-chars: ${SAAS_SECURITY_LLAMA_FIREWALL_MAX_CONTENT_CHARS:100000}
+      # LOCAL_GUARD_ONLY preserves availability while retaining local permission, input and sandbox controls.
+      failure-mode: ${SAAS_SECURITY_LLAMA_FIREWALL_FAILURE_MODE:LOCAL_GUARD_ONLY}
+      circuit-failure-threshold: ${SAAS_SECURITY_LLAMA_FIREWALL_CIRCUIT_FAILURE_THRESHOLD:3}
+      circuit-open-duration-millis: ${SAAS_SECURITY_LLAMA_FIREWALL_CIRCUIT_OPEN_DURATION_MS:30000}
+      audit-enabled: ${SAAS_SECURITY_LLAMA_FIREWALL_AUDIT_ENABLED:true}
 
 management:
   endpoints:

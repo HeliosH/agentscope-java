@@ -4,3 +4,6 @@ dist/
 
 # Node install from frontend-maven-plugin
 /target/node/
+
+# Local LlamaFirewall integration credentials
+/docker/.env.llama-firewall-integration

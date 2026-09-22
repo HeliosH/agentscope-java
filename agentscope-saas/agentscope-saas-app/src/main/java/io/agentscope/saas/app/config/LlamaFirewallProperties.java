@@ -6,27 +6,35 @@
  * You may obtain a copy of the License at
  *
  *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package io.agentscope.saas.app.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-/** Deployment-time configuration for the optional internal ClawSentry security gateway. */
-@ConfigurationProperties(prefix = "saas.security.clawsentry")
-public class ClawSentryProperties {
+/** Deployment-time configuration for the optional internal LlamaFirewall service. */
+@ConfigurationProperties(prefix = "saas.security.llama-firewall")
+public class LlamaFirewallProperties {
 
     private boolean enabled;
-    private String baseUrl = "http://localhost:8080";
-    private String apiPath = "/ahp";
+    private String baseUrl = "http://localhost:18082";
+    private String scanPath = "/v1/scan";
     private String apiToken;
     private int connectTimeoutMillis = 250;
-    private int decisionTimeoutMillis = 1500;
-    private String sourceFramework = "agentscope-java";
-    private String decisionTier = "L1";
-    private FailureMode failureMode = FailureMode.ASK;
+    private int decisionTimeoutMillis = 2000;
+    private int maxContentChars = 100_000;
+    private FailureMode failureMode = FailureMode.LOCAL_GUARD_ONLY;
+    private int circuitFailureThreshold = 3;
+    private long circuitOpenDurationMillis = 30_000;
     private boolean auditEnabled = true;
 
     public enum FailureMode {
+        LOCAL_GUARD_ONLY,
         ASK,
         DENY,
         ALLOW_READ_ONLY
@@ -48,12 +56,12 @@ public class ClawSentryProperties {
         this.baseUrl = baseUrl;
     }
 
-    public String getApiPath() {
-        return apiPath;
+    public String getScanPath() {
+        return scanPath;
     }
 
-    public void setApiPath(String apiPath) {
-        this.apiPath = apiPath;
+    public void setScanPath(String scanPath) {
+        this.scanPath = scanPath;
     }
 
     public String getApiToken() {
@@ -80,20 +88,12 @@ public class ClawSentryProperties {
         this.decisionTimeoutMillis = decisionTimeoutMillis;
     }
 
-    public String getSourceFramework() {
-        return sourceFramework;
+    public int getMaxContentChars() {
+        return maxContentChars;
     }
 
-    public void setSourceFramework(String sourceFramework) {
-        this.sourceFramework = sourceFramework;
-    }
-
-    public String getDecisionTier() {
-        return decisionTier;
-    }
-
-    public void setDecisionTier(String decisionTier) {
-        this.decisionTier = decisionTier;
+    public void setMaxContentChars(int maxContentChars) {
+        this.maxContentChars = maxContentChars;
     }
 
     public FailureMode getFailureMode() {
@@ -102,6 +102,22 @@ public class ClawSentryProperties {
 
     public void setFailureMode(FailureMode failureMode) {
         this.failureMode = failureMode;
+    }
+
+    public int getCircuitFailureThreshold() {
+        return circuitFailureThreshold;
+    }
+
+    public void setCircuitFailureThreshold(int circuitFailureThreshold) {
+        this.circuitFailureThreshold = circuitFailureThreshold;
+    }
+
+    public long getCircuitOpenDurationMillis() {
+        return circuitOpenDurationMillis;
+    }
+
+    public void setCircuitOpenDurationMillis(long circuitOpenDurationMillis) {
+        this.circuitOpenDurationMillis = circuitOpenDurationMillis;
     }
 
     public boolean isAuditEnabled() {
