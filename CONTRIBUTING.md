@@ -1,144 +1,179 @@
-[**中文贡献者指南**](CONTRIBUTING_zh.md)
-# Contributing to AgentScope-Java
+[中文贡献指南](CONTRIBUTING_zh.md)
 
-## Welcome! 🎉
+# Contributing to Chugou
 
-Thank you for your interest in contributing to AgentScope-Java! As an open-source project, we warmly welcome and encourage
-contributions from the community. Whether you're fixing bugs, adding new features, improving documentation, or sharing
-ideas, your contributions help make AgentScope-Java better for everyone.
+Thank you for contributing to Chugou, the enterprise private-deployment AI assistant platform built on AgentScope Java.
 
-## How to Contribute
+This repository contains both the upstream AgentScope Java foundation and the Chugou enterprise platform. Contributions must preserve the boundary between reusable framework capabilities and product-specific behavior.
 
-To ensure smooth collaboration and maintain the quality of the project, please follow these guidelines when contributing:
+## Before You Start
 
-### 1. Check Existing Plans and Issues
+1. Search the [agentscope-saas-harness issues](https://github.com/HeliosH/agentscope-saas-harness/issues) for related work.
+2. Open an issue before implementing a large feature, schema redesign, public API break, or runtime architecture change.
+3. Keep each change focused. Do not combine unrelated refactoring, generated files, or formatting churn with a feature or fix.
+4. Never commit credentials, access tokens, private model endpoints, customer data, or local environment files.
 
-Before starting your contribution, please review our development roadmap:
+## Development Environment
 
-- **Check the [Issue](https://github.com/agentscope-ai/agentscope-java/issues) page**
-    - **If a related issue exists** and is marked as unassigned or open:
-    - Please comment on the issue to express your interest in working on it
-    - This helps avoid duplicate efforts and allows us to coordinate development
+Required tools:
 
-  - **If no related issue exists**:
-    - Please create a new issue describing your proposed changes or feature
-    - Our team will respond promptly to provide feedback and guidance
-    - This helps us maintain the project roadmap and coordinate community efforts
+- JDK 17 or newer
+- Maven 3.9 or newer
+- Node.js 20 and npm 10 for frontend work
+- Docker Desktop or Docker Engine for middleware and sandbox integration tests
 
-### 2. Commit Message Format
+Start the recommended local environment with OpenSandbox:
 
-We follow the [Conventional Commits](https://www.conventionalcommits.org/) specification. This leads to more readable
-commit history and enables automatic changelog generation.
-
-**Format:**
-```
-<type>(<scope>): <subject>
-```
-
-**Types:**
-- `feat:` A new feature
-- `fix:` A bug fix
-- `docs:` Documentation only changes
-- `style:` Changes that do not affect the meaning of the code (white-space, formatting, etc)
-- `refactor:` A code change that neither fixes a bug nor adds a feature
-- `perf:` A code change that improves performance
-- `ci:` Adding missing tests or correcting existing tests
-- `chore:` Changes to the build process or auxiliary tools and libraries
-
-**Examples:**
 ```bash
-feat(models): add support for Claude-3 model
-fix(agent): resolve memory leak in ReActAgent
-docs(readme): update installation instructions
-refactor(formatter): simplify message formatting logic
-ci(models): add unit tests for OpenAI integration
+./agentscope-saas/agentscope-saas-app/scripts/start-opensandbox-local.sh
 ```
 
-### 3. Code Development Guidelines
+Stop the application and its local dependencies with:
 
-#### a. Code Formatting
+```bash
+./agentscope-saas/agentscope-saas-app/scripts/stop-opensandbox-local.sh
+```
 
-Before submitting code, you must ensure code is properly formatted using Spotless:
+See [README.md](README.md) for architecture, deployment, and configuration details.
 
-**Check code format:**
+## Repository Boundaries
+
+Use the existing module ownership when placing code:
+
+| Area | Responsibility |
+| --- | --- |
+| `agentscope-core` and `agentscope-extensions` | Reusable AgentScope framework and integration capabilities |
+| `agentscope-harness` | General-purpose agent planning and execution runtime |
+| `agentscope-saas-domain` | Domain models and repository contracts without infrastructure dependencies |
+| `agentscope-saas-core` | Enterprise application services and use cases |
+| `agentscope-saas-orchestration` | Task planning, recovery, context, and multi-agent orchestration |
+| `agentscope-saas-dal` | MyBatis persistence implementations and database mappings |
+| `agentscope-saas-storage` | Object storage and file persistence |
+| `agentscope-saas-sandbox` | Provider-neutral sandbox lifecycle and provider adapters |
+| `agentscope-saas-app` | Spring Boot assembly, HTTP APIs, configuration, and React frontend |
+
+The following architecture rules are mandatory:
+
+- Keep controllers thin; business behavior belongs in application or domain services.
+- Keep domain modules independent from Spring, MyBatis, storage SDKs, and sandbox vendors.
+- Use repository interfaces at domain boundaries and MyBatis in the DAL. Do not introduce direct JDBC access into application services.
+- Keep sandbox behavior provider-neutral. Provider selection is a deployment setting, not a user-facing runtime choice.
+- Preserve tenant and user isolation in every query, cache key, object key, task, and sandbox workspace.
+- Parent and child agents participating in one task must use the task's shared sandbox unless an explicit isolation requirement is documented.
+- PostgreSQL is the source of truth for business records; Redis is ephemeral runtime state; MinIO/S3 stores object bytes; Mem0 is an optional memory projection.
+
+## Implementing Changes
+
+### Backend
+
+- Add tests for changed behavior, including failure and recovery paths where applicable.
+- Keep reactive flows non-blocking. Do not call blocking APIs on request or event-loop threads.
+- Preserve idempotency for task execution, retries, event delivery, and artifact publication.
+- Update configuration metadata and examples when adding environment variables or feature flags.
+
+### Database
+
+- Add append-only Flyway migrations; never edit a migration that may already have been applied.
+- Keep PostgreSQL and H2 development schemas behaviorally aligned where both are supported.
+- Include tenant predicates and suitable indexes for tenant-scoped reads.
+- Do not store file contents, complete conversations, or unbounded event histories in a single database field.
+
+### Frontend
+
+- Follow the existing Chugou visual system and component patterns.
+- Cover loading, empty, error, permission-denied, and long-content states.
+- Do not expose provider-specific sandbox controls to end users.
+- Update API types and user-facing documentation with contract changes.
+
+### Security and Integrations
+
+- External security services such as LlamaFirewall must remain optional and fail according to the documented fallback and circuit-breaker policy.
+- Validate file paths, tool arguments, outbound destinations, and tenant ownership at trust boundaries.
+- Redact credentials and sensitive request data from logs, audit details, and test fixtures.
+- Mock external model, MCP, storage, and sandbox services in unit tests. Live tests must be explicitly enabled.
+
+## Verification
+
+Run the smallest relevant test set while developing, then the broader gate required by the change.
+
+Java formatting:
+
 ```bash
 mvn spotless:check
 ```
 
-**Auto-fix format issues:**
+Enterprise platform tests:
+
 ```bash
-mvn spotless:apply
+mvn -pl agentscope-saas/agentscope-saas-app -am test
 ```
 
-> **Tip**: Configure your IDE (IntelliJ IDEA / Eclipse) to format code on save using the project's code style.
+Full repository tests when shared AgentScope or Harness code changes:
 
-#### b. Unit Tests
+```bash
+mvn test
+```
 
-- All new features must include appropriate unit tests
-- Ensure existing tests pass before submitting your PR
-- Run tests using:
-  ```bash
-  # Run all tests
-  mvn test
+Frontend validation:
 
-  # Run a specific test class
-  mvn test -Dtest=YourTestClassName
+```bash
+cd agentscope-saas/agentscope-saas-app/frontend
+npm ci
+npm run lint
+npm run build
+```
 
-  # Run tests with coverage report
-  mvn verify
-  ```
+OpenSandbox end-to-end gate for runtime, sandbox, file, or artifact changes:
 
-#### c. Documentation
+```bash
+./agentscope-saas/agentscope-saas-app/scripts/start-opensandbox-local.sh --smoke
+```
 
-- Update relevant documentation for new features
-- Include code examples where appropriate
-- Update the README.md if your changes affect user-facing functionality
+If an external dependency prevents a required test, state exactly what was not run and why in the pull request.
 
-## Types of Contributions
+## Documentation
 
-We welcome all kinds of contributions! Here's how to find something to work on:
+Update documentation in the same change when behavior, configuration, architecture, or operations change:
 
-### Finding Issues to Work On
+- Update [README.md](README.md) for user-visible setup or capability changes.
+- Update `docs/enterprise-platform-java/` for architecture and operating decisions.
+- Keep examples free of real credentials and environment-specific internal addresses.
+- Document defaults, fallback behavior, and rollout or rollback considerations for new integrations.
 
-- **New contributors**: Check out issues labeled [good first issue](https://github.com/agentscope-ai/agentscope-java/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22good%20first%20issue%22) - these are great starting points for getting familiar with the codebase.
+## Commit Messages
 
-- **Looking for more challenges**: Browse issues labeled [help wanted](https://github.com/agentscope-ai/agentscope-java/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22help%20wanted%22) - these are tasks where we'd especially appreciate community help.
+Use [Conventional Commits](https://www.conventionalcommits.org/):
 
-### Have a New Idea?
+```text
+<type>(<scope>): <subject>
+```
 
-If you have ideas for new features, improvements, or find bugs that aren't already tracked, please [create a new issue](https://github.com/agentscope-ai/agentscope-java/issues/new) to discuss with the community and maintainers.
+Common types are `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `ci`, and `chore`.
 
+Examples:
 
-## Do's and Don'ts
+```text
+feat(models): add tenant model availability policy
+fix(sandbox): preserve workspace ownership for subagents
+docs(readme): document private deployment topology
+refactor(dal): move task persistence to MyBatis mapper
+```
 
-### ✅ DO:
+## Pull Requests
 
-- **Start small**: Begin with small, manageable contributions
-- **Communicate early**: Discuss major changes before implementing them
-- **Write tests**: Ensure your code is well-tested
-- **Document your code**: Help others understand your contributions
-- **Follow commit conventions**: Use conventional commit messages
-- **Be respectful**: Follow our Code of Conduct
-- **Ask questions**: If you're unsure about something, just ask!
+A pull request should include:
 
-### ❌ DON'T:
+- The problem and intended outcome
+- The architectural impact and important tradeoffs
+- Database, configuration, compatibility, and security impact
+- Tests run and their results
+- Screenshots for visible UI changes
+- Rollout and rollback notes for operationally significant changes
 
-- **Don't surprise us with big pull requests**: Large, unexpected PRs are difficult to review and may not align with project goals. Always open an issue first to discuss major changes
-- **Don't ignore CI failures**: Fix any issues flagged by continuous integration
-- **Don't mix concerns**: Keep PRs focused on a single feature or fix
-- **Don't forget to update tests**: Changes in functionality should be reflected in tests
-- **Don't break existing APIs**: Maintain backward compatibility when possible, or clearly document breaking changes
-- **Don't add unnecessary dependencies**: Keep the core library lightweight
+Before requesting review, ensure the diff contains only intended files, generated artifacts are excluded, documentation is current, and all applicable checks pass.
 
-## Getting Help
+## Upstream AgentScope Changes
 
-If you need assistance or have questions:
+Changes under the reusable AgentScope modules should remain generally useful and backward compatible. Keep Chugou tenant policy, product UI, enterprise persistence, and deployment-specific behavior in `agentscope-saas` unless the capability is genuinely framework-level.
 
-- 💬 Open a [Discussion](https://github.com/agentscope-ai/agentscope-java/discussions)
-- 🐛 Report bugs via [Issues](https://github.com/agentscope-ai/agentscope-java/issues)
-- 📧 Contact the maintainers at DingTalk or Discord (links in the README.md)
-
-
----
-
-Thank you for contributing to AgentScope-Java! Your efforts help build a better tool for the entire community. 🚀
+For upstream AgentScope usage and contribution rules, refer to the [AgentScope Java project](https://github.com/agentscope-ai/agentscope-java).

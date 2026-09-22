@@ -1,17 +1,35 @@
-## AgentScope-Java Version
+## 变更目的 / Purpose
 
-[The version of AgentScope-Java you are working on, e.g. 1.0.12, check your pom.xml dependency version or run `mvn dependency:tree | grep agentscope-parent:pom`(only mac/linux)]
+<!-- 说明要解决的问题、使用场景和预期结果。 -->
 
-## Description
+## 主要变更 / Changes
 
-[Please describe the background, purpose, changes made, and how to test this PR]
+<!-- 列出关键实现以及未包含在本 PR 中的范围。 -->
 
-## Checklist
+## 影响评估 / Impact
 
-Please check the following items before code is ready to be reviewed.
+- 架构与模块边界：
+- 数据库与迁移：
+- 配置与兼容性：
+- 租户隔离与安全：
+- 发布与回滚：
 
-- [ ]  Code has been formatted with `mvn spotless:apply`
-- [ ]  All tests are passing (`mvn test`)
-- [ ]  Javadoc comments are complete and follow project conventions
-- [ ]  Related documentation has been updated (e.g. links, examples, etc.)
-- [ ]  Code is ready for review
+## 验证结果 / Verification
+
+<!-- 列出实际执行的命令、测试结果；未执行的检查需要说明原因。 -->
+
+## 界面变化 / UI Changes
+
+<!-- 有可见界面变化时附截图；没有则填写 N/A。 -->
+
+## 提交检查 / Checklist
+
+- [ ] 变更只包含一个明确主题，没有混入无关文件或生成产物
+- [ ] Java 代码已通过 `mvn spotless:check`
+- [ ] 相关单元测试和集成测试已通过
+- [ ] 前端变更已通过 `npm run lint` 和 `npm run build`
+- [ ] 数据库变更使用新增 Flyway 迁移，并验证租户隔离
+- [ ] 沙箱或文件链路变更已执行 OpenSandbox 冒烟验证
+- [ ] 新增外部集成具备超时、降级和恢复机制
+- [ ] 未提交凭证、内部地址、客户数据或本地环境配置
+- [ ] README、架构文档和配置示例已同步更新
