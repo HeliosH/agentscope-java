@@ -22,6 +22,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.domain.model.AuditLogEntity;
 import io.agentscope.saas.domain.repository.AuditLogRepository;
 import java.util.Map;
@@ -34,10 +35,15 @@ class AuditServiceTest {
     @Test
     void recordRedactsNestedSecretsBeforePersisting() {
         AuditLogRepository repository = mock(AuditLogRepository.class);
-        when(repository.save(any(AuditLogEntity.class))).thenAnswer(inv -> inv.getArgument(0));
         AuditService service = new AuditService(repository, new ObjectMapper());
         UUID orgId = UUID.randomUUID();
         UUID actorId = UUID.randomUUID();
+        when(repository.save(any(AuditLogEntity.class)))
+                .thenAnswer(
+                        inv -> {
+                            assertThat(TenantContextHolder.getOrgId()).isEqualTo(orgId.toString());
+                            return inv.getArgument(0);
+                        });
 
         service.record(
                 orgId,
@@ -59,5 +65,6 @@ class AuditServiceTest {
         assertThat(saved.getDetail()).doesNotContain("plain-api-key");
         assertThat(saved.getDetail()).doesNotContain("plain-password");
         assertThat(saved.getDetail()).contains("visible");
+        assertThat(TenantContextHolder.getOrgId()).isNull();
     }
 }

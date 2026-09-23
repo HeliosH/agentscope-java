@@ -69,6 +69,14 @@ public class MyBatisWorkspaceCatalogRepository implements FileRepository, FileAt
     }
 
     @Override
+    public List<FileAttachmentEntity> findByOrgIdAndUserIdAndMessageIds(
+            UUID orgId, UUID userId, List<UUID> messageIds) {
+        return messageIds.isEmpty()
+                ? List.of()
+                : mapper.findAttachmentsByMessageIds(orgId, userId, messageIds);
+    }
+
+    @Override
     public FileAttachmentEntity save(FileAttachmentEntity attachment) {
         requireOne(
                 mapper.insertAttachment(attachment), "insert FileAttachment " + attachment.getId());

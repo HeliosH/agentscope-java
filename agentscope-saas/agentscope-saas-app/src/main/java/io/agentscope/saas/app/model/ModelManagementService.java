@@ -59,7 +59,7 @@ public class ModelManagementService {
             String providerType,
             String baseUrl,
             String apiKey,
-            boolean clearApiKey,
+            Boolean clearApiKey,
             String modelName,
             Integer contextWindowTokens,
             Integer maxOutputTokens,
@@ -324,7 +324,8 @@ public class ModelManagementService {
                     "context window must be larger than output plus safety margin");
         }
         String apiKey = trim(command.apiKey());
-        if (apiKey != null && command.clearApiKey()) {
+        boolean clearApiKey = Boolean.TRUE.equals(command.clearApiKey());
+        if (apiKey != null && clearApiKey) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST, "apiKey and clearApiKey cannot both be set");
         }
@@ -334,7 +335,7 @@ public class ModelManagementService {
                 provider,
                 baseUrl,
                 apiKey,
-                command.clearApiKey(),
+                clearApiKey,
                 modelName,
                 context,
                 output,

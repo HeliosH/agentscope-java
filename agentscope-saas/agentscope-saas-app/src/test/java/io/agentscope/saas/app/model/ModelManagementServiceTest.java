@@ -8,6 +8,7 @@ package io.agentscope.saas.app.model;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.saas.app.admin.AuditService;
 import io.agentscope.saas.app.config.SaasProperties;
@@ -23,6 +24,82 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class ModelManagementServiceTest {
+
+    @Test
+    void updateKeepsExistingKeyWhenOptionalClearFlagIsOmitted() throws Exception {
+        UUID orgId = UUID.randomUUID();
+        ModelDefinitionEntity definition = definition(orgId);
+        SaasProperties properties = new SaasProperties();
+        properties
+                .getModel()
+                .getManagement()
+                .setEncryptionKey("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+        ModelCredentialCipher cipher = new ModelCredentialCipher(properties);
+        definition.setApiKeyCiphertext(
+                cipher.encrypt("existing-secret", orgId, definition.getModelId()));
+        ModelDefinitionRepository definitions = new SingleModelRepository(definition);
+        ModelRouteFactory routeFactory =
+                new ModelRouteFactory() {
+                    @Override
+                    public ModelCatalog.Route managedRoute(
+                            ModelDefinitionEntity model,
+                            String apiKey,
+                            SaasProperties.ModelTraffic traffic) {
+                        assertThat(apiKey).isEqualTo("existing-secret");
+                        return route(
+                                model.getModelId(),
+                                model.getDisplayName(),
+                                model.getModelName(),
+                                model.getContextWindowTokens(),
+                                model.getMaxOutputTokens(),
+                                model.getSafetyMarginTokens(),
+                                false,
+                                new StubChatModel());
+                    }
+                };
+        ModelCatalog catalog =
+                new ModelCatalog(
+                        "default",
+                        List.of(
+                                routeFactory.route(
+                                        "default",
+                                        "Default",
+                                        "stub",
+                                        8_192,
+                                        512,
+                                        512,
+                                        true,
+                                        new StubChatModel())),
+                        definitions,
+                        cipher,
+                        routeFactory,
+                        properties.getModel().getTraffic());
+        ModelManagementService service =
+                new ModelManagementService(
+                        definitions,
+                        cipher,
+                        routeFactory,
+                        catalog,
+                        properties,
+                        new AuditService(new CapturingAuditRepository(), new ObjectMapper()));
+        ObjectMapper mapper =
+                new ObjectMapper().enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES);
+        ModelManagementService.ModelCommand command =
+                mapper.readValue(
+                        """
+                        {"id":"probe-model","displayName":"Updated Model","providerType":"gateway",
+                         "baseUrl":"http://models.test/v1","modelName":"probe-model",
+                         "contextWindowTokens":8192,"maxOutputTokens":512,
+                         "safetyMarginTokens":512,"enabled":true,"defaultModel":false}
+                        """,
+                        ModelManagementService.ModelCommand.class);
+
+        assertThat(command.clearApiKey()).isNull();
+        assertThat(service.update(orgId, UUID.randomUUID(), "probe-model", command).displayName())
+                .isEqualTo("Updated Model");
+        assertThat(cipher.decrypt(definition.getApiKeyCiphertext(), orgId, definition.getModelId()))
+                .isEqualTo("existing-secret");
+    }
 
     @Test
     void testsConfiguredModelAndRecordsSafeAuditResult() {

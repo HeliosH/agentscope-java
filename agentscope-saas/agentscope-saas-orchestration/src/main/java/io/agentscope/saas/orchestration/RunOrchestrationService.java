@@ -283,6 +283,61 @@ public class RunOrchestrationService {
                 .map(this::toView);
     }
 
+    /** Resolves the durable coordinator identities needed to continue a paused direct Run. */
+    @Transactional
+    public Optional<RunHandle> resumeDirectRun(
+            TenantContext tenant, UUID agentId, UUID sessionId, UUID runId) {
+        Optional<AssistantRun> candidate =
+                repository.lockOwnedRun(
+                        runId,
+                        uuid(tenant.orgId(), "orgId"),
+                        uuid(tenant.userId(), "userId"),
+                        agentId);
+        if (candidate.isEmpty()) {
+            return Optional.empty();
+        }
+        AssistantRun run = candidate.get();
+        if (!RUN_RUNNING.equals(run.status())
+                || !"DIRECT".equals(run.mode())
+                || !sessionId.equals(run.sessionId())) {
+            return Optional.empty();
+        }
+        TaskNode rootTask =
+                repository.findTasks(run.id(), run.orgId()).stream()
+                        .filter(task -> task.parentId() == null)
+                        .findFirst()
+                        .orElseThrow(
+                                () -> new IllegalStateException("Direct Run has no root task"));
+        AgentRun rootAgentRun =
+                repository.findAgentRuns(run.id(), run.orgId()).stream()
+                        .filter(agentRun -> agentRun.parentAgentRunId() == null)
+                        .filter(agentRun -> rootTask.id().equals(agentRun.taskId()))
+                        .findFirst()
+                        .orElseThrow(
+                                () -> new IllegalStateException("Direct Run has no coordinator"));
+        RunAttempt rootAttempt =
+                repository.findAttempts(run.id(), run.orgId()).stream()
+                        .filter(attempt -> rootTask.id().equals(attempt.taskId()))
+                        .filter(attempt -> rootAgentRun.id().equals(attempt.agentRunId()))
+                        .filter(attempt -> !isTerminalAttemptStatus(attempt.status()))
+                        .max(java.util.Comparator.comparingInt(RunAttempt::attemptNo))
+                        .orElseThrow(
+                                () ->
+                                        new IllegalStateException(
+                                                "Direct Run has no active coordinator attempt"));
+        repository.touchRun(run.id(), run.orgId(), OffsetDateTime.now());
+        appendEvent(run, rootTask.id(), "RUN_RESUMED", "{\"reason\":\"USER_CONFIRMATION\"}");
+        return Optional.of(
+                new RunHandle(
+                        run.id(),
+                        rootTask.id(),
+                        rootAgentRun.id(),
+                        rootAttempt.id(),
+                        run.agentId(),
+                        run.sessionId(),
+                        false));
+    }
+
     /**
      * Marks the coordinator task successful. A Run with durable children remains RUNNING until the
      * scheduler reaches a terminal state for every child.

@@ -320,7 +320,10 @@ class ToolExecutor {
             AgentTool tool,
             Map<String, Object> input,
             String invocationId) {
-        StepSnapshot.Identity identity = step == null ? null : step.identity();
+        StepSnapshot.Identity identity =
+                step != null && step.identity() != null
+                        ? step.identity()
+                        : runtimeContext.get(StepSnapshot.Identity.class);
         String scope = identity != null ? identity.runId() : null;
         if (scope == null || scope.isBlank()) scope = runtimeContext.getSessionId();
         if (scope == null || scope.isBlank()) scope = "local";

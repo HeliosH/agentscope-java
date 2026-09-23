@@ -19,6 +19,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.saas.app.chat.ChatPersistenceService;
+import io.agentscope.saas.app.workspace.FileCatalogService;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantResolver;
 import io.agentscope.saas.domain.model.ChatMessageEntity;
@@ -72,6 +73,7 @@ public class SessionController {
     private final ChatSessionRepository sessionRepository;
     private final ChatMessageRepository messageRepository;
     private final RunArtifactRepository artifactRepository;
+    private final FileCatalogService fileCatalogService;
     private final ChatPersistenceService persistenceService;
     private final ObjectMapper objectMapper;
     private final TenantResolver tenantResolver;
@@ -80,12 +82,14 @@ public class SessionController {
             ChatSessionRepository sessionRepository,
             ChatMessageRepository messageRepository,
             RunArtifactRepository artifactRepository,
+            FileCatalogService fileCatalogService,
             ChatPersistenceService persistenceService,
             ObjectMapper objectMapper,
             TenantResolver tenantResolver) {
         this.sessionRepository = sessionRepository;
         this.messageRepository = messageRepository;
         this.artifactRepository = artifactRepository;
+        this.fileCatalogService = fileCatalogService;
         this.persistenceService = persistenceService;
         this.objectMapper = objectMapper;
         this.tenantResolver = tenantResolver;
@@ -226,7 +230,9 @@ public class SessionController {
                             ChatSessionEntity session =
                                     requireSession(orgId, userId, agentUuid, sessionUuid);
                             return toTurns(
-                                    messagePage(session.getId(), afterSeq, limit).items(), orgId);
+                                    messagePage(session.getId(), afterSeq, limit).items(),
+                                    orgId,
+                                    userId);
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -248,7 +254,7 @@ public class SessionController {
                                     requireSession(orgId, userId, agentUuid, sessionUuid);
                             EntityPage page = messagePage(session.getId(), afterSeq, limit);
                             return new TurnPage(
-                                    toTurns(page.items(), orgId),
+                                    toTurns(page.items(), orgId, userId),
                                     page.nextAfterSeq(),
                                     page.hasMore());
                         })
@@ -273,7 +279,7 @@ public class SessionController {
                                     requireSession(orgId, userId, agentUuid, sessionUuid);
                             EntityWindow window = messageWindow(session.getId(), beforeSeq, limit);
                             return new TurnWindow(
-                                    toTurns(window.items(), orgId),
+                                    toTurns(window.items(), orgId, userId),
                                     window.nextBeforeSeq(),
                                     window.hasMore());
                         })
@@ -436,7 +442,10 @@ public class SessionController {
      * block (if present) populates {@code toolName}/{@code toolInput}. The role is upper-cased to
      * match paw's {@code USER}/{@code ASSISTANT}/{@code TOOL} convention.
      */
-    private List<TurnEntry> toTurns(List<ChatMessageEntity> messages, UUID orgId) {
+    private List<TurnEntry> toTurns(List<ChatMessageEntity> messages, UUID orgId, UUID userId) {
+        Map<UUID, List<FileCatalogService.MessageFile>> uploadsByMessage =
+                fileCatalogService.messageFiles(
+                        orgId, userId, messages.stream().map(ChatMessageEntity::getId).toList());
         List<UUID> runIds =
                 messages.stream()
                         .map(ChatMessageEntity::getSourceRunId)
@@ -447,7 +456,8 @@ public class SessionController {
         List<RunArtifact> storedArtifacts =
                 runIds.isEmpty() ? List.of() : artifactRepository.findByRunIds(runIds, orgId);
         for (RunArtifact artifact : storedArtifacts) {
-            if (!isUserFacingArtifact(artifact.logicalPath())) {
+            if (!isUserFacingArtifact(artifact.logicalPath())
+                    || !isProducedInRun(artifact.evidenceJson())) {
                 continue;
             }
             TurnArtifact view =
@@ -468,14 +478,23 @@ public class SessionController {
                     sourceRunId == null || !artifactsByRun.containsKey(sourceRunId)
                             ? List.of()
                             : List.copyOf(artifactsByRun.get(sourceRunId).values());
-            TurnEntry turn = toTurn(message, prevId, artifacts);
+            TurnEntry turn =
+                    toTurn(
+                            message,
+                            prevId,
+                            artifacts,
+                            uploadsByMessage.getOrDefault(message.getId(), List.of()));
             turns.add(turn);
             prevId = turn.id();
         }
         return turns;
     }
 
-    private TurnEntry toTurn(ChatMessageEntity m, String parentId, List<TurnArtifact> artifacts) {
+    private TurnEntry toTurn(
+            ChatMessageEntity m,
+            String parentId,
+            List<TurnArtifact> artifacts,
+            List<FileCatalogService.MessageFile> uploads) {
         String text = null;
         String toolName = m.getToolName();
         String toolInput = m.getToolInput();
@@ -516,7 +535,17 @@ public class SessionController {
                 toolInput,
                 m.getToolResult(),
                 m.getSourceRunId() == null ? null : m.getSourceRunId().toString(),
-                artifacts.isEmpty() ? null : artifacts);
+                artifacts.isEmpty() ? null : artifacts,
+                uploads.isEmpty()
+                        ? null
+                        : uploads.stream()
+                                .map(
+                                        file ->
+                                                new TurnArtifact(
+                                                        file.path(),
+                                                        file.versionId(),
+                                                        file.sizeBytes()))
+                                .toList());
     }
 
     private Long artifactSize(String evidenceJson) {
@@ -528,6 +557,18 @@ public class SessionController {
             return size == null || !size.canConvertToLong() ? null : size.longValue();
         } catch (Exception ignored) {
             return null;
+        }
+    }
+
+    private boolean isProducedInRun(String evidenceJson) {
+        if (evidenceJson == null || evidenceJson.isBlank()) {
+            return true;
+        }
+        try {
+            JsonNode produced = objectMapper.readTree(evidenceJson).path("producedInRun");
+            return !produced.isBoolean() || produced.asBoolean();
+        } catch (Exception ignored) {
+            return true;
         }
     }
 
@@ -565,7 +606,8 @@ public class SessionController {
             String toolInput,
             String toolResult,
             String sourceRunId,
-            List<TurnArtifact> artifacts) {}
+            List<TurnArtifact> artifacts,
+            List<TurnArtifact> uploads) {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record TurnArtifact(String path, String versionId, Long sizeBytes) {}

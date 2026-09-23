@@ -21,6 +21,7 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.saas.app.chat.ChatPersistenceService;
+import io.agentscope.saas.app.workspace.FileCatalogService;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.domain.model.ChatMessageEntity;
 import io.agentscope.saas.domain.model.ChatSessionEntity;
@@ -31,8 +32,10 @@ import io.agentscope.saas.domain.repository.ChatSessionRepository;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.oauth2.jwt.Jwt;
 
@@ -41,11 +44,13 @@ class SessionControllerWindowTest {
     private final ChatSessionRepository sessions = mock(ChatSessionRepository.class);
     private final ChatMessageRepository messages = mock(ChatMessageRepository.class);
     private final RunArtifactRepository artifacts = mock(RunArtifactRepository.class);
+    private final FileCatalogService files = mock(FileCatalogService.class);
     private final SessionController controller =
             new SessionController(
                     sessions,
                     messages,
                     artifacts,
+                    files,
                     mock(ChatPersistenceService.class),
                     new ObjectMapper(),
                     claims ->
@@ -56,6 +61,15 @@ class SessionControllerWindowTest {
                                     "standard",
                                     1,
                                     Long.MAX_VALUE));
+
+    @BeforeEach
+    void noUploadsByDefault() {
+        when(files.messageFiles(
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.anyList()))
+                .thenReturn(Map.of());
+    }
 
     @Test
     void returnsNewestWindowInChronologicalOrderAndWalksBackwards() {
@@ -136,6 +150,18 @@ class SessionControllerWindowTest {
                                         "outputs/report.pdf",
                                         "result",
                                         "{\"sizeBytes\":2048}",
+                                        OffsetDateTime.now()),
+                                new RunArtifact(
+                                        UUID.randomUUID(),
+                                        orgId,
+                                        runId,
+                                        UUID.randomUUID(),
+                                        UUID.randomUUID(),
+                                        UUID.randomUUID(),
+                                        UUID.randomUUID(),
+                                        "outputs/previous.pdf",
+                                        "WORKSPACE_FILE",
+                                        "{\"producedInRun\":false}",
                                         OffsetDateTime.now())));
 
         SessionController.TurnWindow window =
@@ -155,6 +181,44 @@ class SessionControllerWindowTest {
                 .containsExactly(
                         new SessionController.TurnArtifact(
                                 "outputs/report.pdf", versionId.toString(), 2048L));
+    }
+
+    @Test
+    void restoresVersionedUploadsOnTheirUserTurn() {
+        UUID orgId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID agentId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        UUID versionId = UUID.randomUUID();
+        ChatSessionEntity session = new ChatSessionEntity();
+        session.setId(sessionId);
+        ChatMessageEntity user = message(1);
+        when(sessions.findByIdAndOrgIdAndUserIdAndAgentId(sessionId, orgId, userId, agentId))
+                .thenReturn(Optional.of(session));
+        when(messages.pageBeforeSeq(sessionId, null, 2)).thenReturn(List.of(user));
+        when(files.messageFiles(orgId, userId, List.of(user.getId())))
+                .thenReturn(
+                        Map.of(
+                                user.getId(),
+                                List.of(
+                                        new FileCatalogService.MessageFile(
+                                                "inputs/source.txt", versionId.toString(), 32L))));
+
+        SessionController.TurnWindow window =
+                controller
+                        .turnsWindow(
+                                jwt(orgId, userId),
+                                agentId.toString(),
+                                sessionId.toString(),
+                                null,
+                                1)
+                        .block();
+
+        assertThat(window).isNotNull();
+        assertThat(window.items().get(0).uploads())
+                .containsExactly(
+                        new SessionController.TurnArtifact(
+                                "inputs/source.txt", versionId.toString(), 32L));
     }
 
     private static ChatMessageEntity message(long seq) {

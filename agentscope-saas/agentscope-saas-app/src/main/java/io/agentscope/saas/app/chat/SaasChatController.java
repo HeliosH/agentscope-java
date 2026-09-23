@@ -21,6 +21,7 @@ import io.agentscope.core.agui.event.AguiEvent;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
 import io.agentscope.core.event.ConfirmResult;
+import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
@@ -29,6 +30,7 @@ import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.model.ContextWindowAwareModel;
 import io.agentscope.core.util.JsonUtils;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.harness.agent.filesystem.remote.store.BaseStore;
 import io.agentscope.harness.agent.tool.PlanModeTools;
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.degradation.DegradationManager;
@@ -38,6 +40,8 @@ import io.agentscope.saas.app.orchestration.DirectRunLeaseTracker;
 import io.agentscope.saas.app.orchestration.DurableTaskLeaseService;
 import io.agentscope.saas.app.orchestration.RunRecoveryCoordinator;
 import io.agentscope.saas.app.orchestration.WorkspaceArtifactService;
+import io.agentscope.saas.app.workspace.FileCatalogService;
+import io.agentscope.saas.app.workspace.WorkspaceCheckpointContext;
 import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantResolver;
@@ -51,7 +55,9 @@ import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
@@ -94,13 +100,19 @@ public class SaasChatController {
     public record ChatRequest(
             String sessionId,
             String requestId,
+            String runId,
             String modelId,
             String message,
             List<AttachedFileInput> attachments,
             List<ConfirmResultInput> confirmResults) {
 
         /** A user-uploaded workspace file made available to this request. */
-        public record AttachedFileInput(String path, String name, Long sizeBytes) {}
+        public record AttachedFileInput(
+                String path, String name, Long sizeBytes, String versionId) {
+            public AttachedFileInput(String path, String name, Long sizeBytes) {
+                this(path, name, sizeBytes, null);
+            }
+        }
 
         /** A single user confirmation decision for a pending tool call (HITL resume). */
         public record ConfirmResultInput(
@@ -116,6 +128,7 @@ public class SaasChatController {
     private final AgentRunMetrics metrics;
     private final RunOrchestrationService orchestration;
     private final WorkspaceArtifactService workspaceArtifactService;
+    private final FileCatalogService fileCatalogService;
     private final ModelCatalog modelCatalog;
     private final boolean orchestrationEnabled;
     private final boolean plannerEnabled;
@@ -124,6 +137,7 @@ public class SaasChatController {
     private final DirectRunLeaseTracker directRunLeases;
     private final TaskComplexityRouter complexityRouter = new TaskComplexityRouter();
     private final String sandboxType;
+    private final boolean catalogedSandboxArtifacts;
     private final AguiEventEncoder encoder = new AguiEventEncoder();
 
     public SaasChatController(
@@ -136,11 +150,13 @@ public class SaasChatController {
             AgentRunMetrics metrics,
             RunOrchestrationService orchestration,
             WorkspaceArtifactService workspaceArtifactService,
+            FileCatalogService fileCatalogService,
             ModelCatalog modelCatalog,
             RunRecoveryCoordinator recoveryCoordinator,
             DurableTaskLeaseService durableLeases,
             DirectRunLeaseTracker directRunLeases,
-            SaasProperties properties) {
+            SaasProperties properties,
+            Optional<BaseStore> workspaceStore) {
         this.agent = agent;
         this.tenantResolver = tenantResolver;
         this.persistence = persistence;
@@ -150,6 +166,7 @@ public class SaasChatController {
         this.metrics = metrics != null ? metrics : AgentRunMetrics.noop();
         this.orchestration = orchestration;
         this.workspaceArtifactService = workspaceArtifactService;
+        this.fileCatalogService = fileCatalogService;
         this.modelCatalog = modelCatalog;
         this.recoveryCoordinator = recoveryCoordinator;
         this.durableLeases = durableLeases;
@@ -164,6 +181,13 @@ public class SaasChatController {
                 properties != null && properties.getSandbox() != null
                         ? properties.getSandbox().getType()
                         : "unknown";
+        this.catalogedSandboxArtifacts =
+                properties != null
+                        && properties.getSandbox() != null
+                        && properties.getSandbox().isEnabled()
+                        && properties.getFileStore() != null
+                        && properties.getFileStore().isEnabled()
+                        && workspaceStore.isPresent();
     }
 
     /**
@@ -267,18 +291,26 @@ public class SaasChatController {
                                             : "[tool confirmation]";
                             if (orchestrationEnabled) {
                                 ChatRunStartService.StartedRun started =
-                                        runStarter.start(
-                                                tenant,
-                                                agentId,
-                                                request.sessionId(),
-                                                message,
-                                                request.requestId(),
-                                                agentMessage(request),
-                                                modelCatalog
-                                                        .requireOption(
-                                                                UUID.fromString(tenant.orgId()),
-                                                                request.modelId())
-                                                        .id());
+                                        hasConfirmResults(request)
+                                                ? runStarter.resume(
+                                                        tenant,
+                                                        agentId,
+                                                        request.sessionId(),
+                                                        request.runId())
+                                                : runStarter.start(
+                                                        tenant,
+                                                        agentId,
+                                                        request.sessionId(),
+                                                        message,
+                                                        request.requestId(),
+                                                        agentMessage(request),
+                                                        modelCatalog
+                                                                .requireOption(
+                                                                        UUID.fromString(
+                                                                                tenant.orgId()),
+                                                                        request.modelId())
+                                                                .id(),
+                                                        attachmentInputs(request));
                                 return new ResolvedRun(
                                         started.agentId(),
                                         started.sessionId(),
@@ -299,7 +331,11 @@ public class SaasChatController {
                                             message);
                             var userMessage =
                                     persistence.saveUserMessage(
-                                            tenant, session.getId(), agentEntity.getId(), message);
+                                            tenant,
+                                            session.getId(),
+                                            agentEntity.getId(),
+                                            message,
+                                            attachmentInputs(request));
                             return new ResolvedRun(
                                     agentEntity.getId(),
                                     session.getId(),
@@ -354,6 +390,7 @@ public class SaasChatController {
             directRunLeases.register(resolved.rootAttemptId(), directLeaseOwner);
         }
         AssistantContentAccumulator accumulator = new AssistantContentAccumulator();
+        AtomicBoolean awaitingConfirmation = new AtomicBoolean();
         long startedNanos = System.nanoTime();
         AtomicReference<String> streamOutcome = new AtomicReference<>("success");
         Route route =
@@ -362,7 +399,15 @@ public class SaasChatController {
                         : Route.DIRECT;
         boolean structuredPlanning = route == Route.PLANNED || route == Route.APPROVAL_REQUIRED;
 
-        RuntimeContext ctx =
+        WorkspaceCheckpointContext workspaceCheckpoint =
+                persist && orchestrationEnabled && catalogedSandboxArtifacts
+                        ? new WorkspaceCheckpointContext(true)
+                        : null;
+        Map<String, UUID> baselineVersions =
+                workspaceCheckpoint != null
+                        ? fileCatalogService.activeFileVersions(tenant)
+                        : Map.of();
+        RuntimeContext.Builder contextBuilder =
                 RuntimeContext.builder()
                         .userId(tenant.userId())
                         .sessionId(sessionId)
@@ -399,8 +444,11 @@ public class SaasChatController {
                                         .ATTR_LEASE_OWNER,
                                 resolved.rootAttemptId() != null ? "direct:" + durableRunId : null)
                         .put(TenantContext.class, tenant)
-                        .put(TenantContext.ATTR_KEY, tenant)
-                        .build();
+                        .put(TenantContext.ATTR_KEY, tenant);
+        if (workspaceCheckpoint != null) {
+            contextBuilder.put(WorkspaceCheckpointContext.class, workspaceCheckpoint);
+        }
+        RuntimeContext ctx = contextBuilder.build();
         if (persist && plannerEnabled) {
             if (structuredPlanning) {
                 agent.enterPlanMode(ctx);
@@ -425,7 +473,14 @@ public class SaasChatController {
                 resolved.agentId());
 
         Flux<AguiEvent> agentEvents =
-                recoverableAgentEvents(userMsg, ctx, converter, accumulator, threadId, runId)
+                recoverableAgentEvents(
+                                userMsg,
+                                ctx,
+                                converter,
+                                accumulator,
+                                awaitingConfirmation,
+                                threadId,
+                                runId)
                         .subscribeOn(Schedulers.boundedElastic());
 
         Flux<AguiEvent> withPersistence =
@@ -435,7 +490,24 @@ public class SaasChatController {
                                 agentEvents,
                                 Mono.fromCallable(
                                                 () -> {
+                                                    if (awaitingConfirmation.get()) {
+                                                        return (Object) null;
+                                                    }
                                                     if (orchestrationEnabled) {
+                                                        if (workspaceCheckpoint != null) {
+                                                            workspaceArtifactService.publish(
+                                                                    UUID.fromString(tenant.orgId()),
+                                                                    durableRunId,
+                                                                    resolved.rootTaskId(),
+                                                                    resolved.rootAttemptId(),
+                                                                    ctx.get(
+                                                                            io.agentscope.saas
+                                                                                    .sandbox
+                                                                                    .SandboxLeaseContext
+                                                                                    .class),
+                                                                    workspaceCheckpoint,
+                                                                    baselineVersions);
+                                                        }
                                                         persistence.saveAssistantMessageForRun(
                                                                 tenant,
                                                                 resolved.sessionId(),
@@ -564,11 +636,19 @@ public class SaasChatController {
             RuntimeContext context,
             AguiEventConverter converter,
             AssistantContentAccumulator accumulator,
+            AtomicBoolean awaitingConfirmation,
             String threadId,
             String runId) {
         AtomicInteger attempt = new AtomicInteger(1);
         return recoverableAgentEvents(
-                userMsg, context, converter, accumulator, threadId, runId, attempt);
+                userMsg,
+                context,
+                converter,
+                accumulator,
+                awaitingConfirmation,
+                threadId,
+                runId,
+                attempt);
     }
 
     private Flux<AguiEvent> recoverableAgentEvents(
@@ -576,6 +656,7 @@ public class SaasChatController {
             RuntimeContext context,
             AguiEventConverter converter,
             AssistantContentAccumulator accumulator,
+            AtomicBoolean awaitingConfirmation,
             String threadId,
             String runId,
             AtomicInteger attempt) {
@@ -586,7 +667,13 @@ public class SaasChatController {
         return Flux.defer(
                         () ->
                                 agent.streamEvents(input, context)
-                                        .doOnNext(accumulator::onEvent)
+                                        .doOnNext(
+                                                event -> {
+                                                    accumulator.onEvent(event);
+                                                    if (event instanceof RequireUserConfirmEvent) {
+                                                        awaitingConfirmation.set(true);
+                                                    }
+                                                })
                                         .concatMapIterable(converter::convert))
                 .onErrorResume(
                         error -> {
@@ -623,6 +710,7 @@ public class SaasChatController {
                                                             context,
                                                             converter,
                                                             accumulator,
+                                                            awaitingConfirmation,
                                                             threadId,
                                                             runId,
                                                             attempt)));
@@ -859,6 +947,25 @@ public class SaasChatController {
         return request != null
                 && request.confirmResults() != null
                 && !request.confirmResults().isEmpty();
+    }
+
+    private static List<ChatPersistenceService.AttachmentInput> attachmentInputs(
+            ChatRequest request) {
+        if (request.attachments() == null) {
+            return List.of();
+        }
+        return request.attachments().stream()
+                .filter(attachment -> attachment.versionId() != null)
+                .map(
+                        attachment -> {
+                            String path = safeInputPath(attachment.path());
+                            if (path == null) {
+                                throw new IllegalArgumentException("Attachment path is invalid");
+                            }
+                            return new ChatPersistenceService.AttachmentInput(
+                                    path, UUID.fromString(attachment.versionId()));
+                        })
+                .toList();
     }
 
     static String agentMessage(ChatRequest request) {

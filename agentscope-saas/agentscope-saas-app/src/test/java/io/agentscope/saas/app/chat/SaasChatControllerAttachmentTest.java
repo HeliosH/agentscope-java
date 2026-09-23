@@ -31,6 +31,7 @@ class SaasChatControllerAttachmentTest {
                         null,
                         null,
                         null,
+                        null,
                         "总结文件",
                         List.of(
                                 new AttachedFileInput("inputs/report.pdf", "report.pdf", 12L),

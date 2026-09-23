@@ -114,6 +114,74 @@ class CompactionMiddlewareContextWindowTest {
     }
 
     @Test
+    void modelSwitchDynamicallyUsesOneMillionTokenProfileInsteadOfFixedThreshold() {
+        ContextModel model = new ContextModel();
+        List<Msg> conversation =
+                List.of(
+                        message(MsgRole.USER, "a".repeat(3_000), Map.of()),
+                        message(MsgRole.ASSISTANT, "b".repeat(3_000), Map.of()),
+                        message(MsgRole.USER, "c".repeat(3_000), Map.of()));
+        List<Msg> inputMessages = new ArrayList<>();
+        inputMessages.add(message(MsgRole.SYSTEM, "system", Map.of()));
+        inputMessages.addAll(conversation);
+        ReActAgent agent = mock(ReActAgent.class);
+        when(agent.getName()).thenReturn("assistant");
+        CompactionConfig config =
+                CompactionConfig.builder()
+                        .triggerMessages(0)
+                        .triggerTokens(0)
+                        .keepTokens(1_000)
+                        .flushBeforeCompact(false)
+                        .offloadBeforeCompact(false)
+                        .build();
+
+        try (WorkspaceManager manager = new WorkspaceManager(workspace)) {
+            CompactionMiddleware middleware = new CompactionMiddleware(manager, model, config);
+            AtomicReference<ReasoningInput> largeForwarded = new AtomicReference<>();
+            middleware
+                    .onReasoning(
+                            agent,
+                            RuntimeContext.builder()
+                                    .sessionId("large-session")
+                                    .agentState(
+                                            AgentState.builder()
+                                                    .context(new ArrayList<>(conversation))
+                                                    .build())
+                                    .put(ContextWindowAwareModel.MODEL_ID_KEY, "large")
+                                    .build(),
+                            new ReasoningInput(inputMessages, List.of(), null),
+                            next -> {
+                                largeForwarded.set(next);
+                                return Flux.empty();
+                            })
+                    .blockLast();
+
+            assertSame(inputMessages, largeForwarded.get().messages());
+            assertEquals(0, model.summaryCalls.get());
+
+            middleware
+                    .onReasoning(
+                            agent,
+                            RuntimeContext.builder()
+                                    .sessionId("small-session")
+                                    .agentState(
+                                            AgentState.builder()
+                                                    .context(new ArrayList<>(conversation))
+                                                    .build())
+                                    .put(ContextWindowAwareModel.MODEL_ID_KEY, "small")
+                                    .build(),
+                            new ReasoningInput(inputMessages, List.of(), null),
+                            next -> Flux.empty())
+                    .blockLast();
+        }
+
+        assertEquals(1, model.summaryCalls.get());
+        assertEquals(1_000_000, model.large.contextWindowTokens());
+        assertEquals(131_072, model.large.maxOutputTokens());
+        assertEquals(852_544, model.large.inputTokenBudget());
+    }
+
+    @Test
     void downstreamModelFailureIsNotRetriedAsCompactionFallback() {
         ContextModel model = new ContextModel();
         var calls = new AtomicInteger();
@@ -279,7 +347,7 @@ class CompactionMiddlewareContextWindowTest {
 
         private final ModelContextProfile small = new ModelContextProfile("small", 4_096, 512, 512);
         private final ModelContextProfile large =
-                new ModelContextProfile("large", 32_768, 4_096, 1_024);
+                new ModelContextProfile("large", 1_000_000, 131_072, 16_384);
         private final AtomicInteger summaryCalls = new AtomicInteger();
 
         @Override

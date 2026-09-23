@@ -196,6 +196,65 @@ class FileCatalogServiceTest {
     }
 
     @Test
+    void attachesOnlyCurrentOwnedInputVersionToUserMessage() {
+        UUID orgId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID versionId = UUID.randomUUID();
+        UUID agentId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        UUID messageId = UUID.randomUUID();
+        FileEntity file = file(orgId, userId, "inputs/source.txt", versionId, "active");
+        FileVersionEntity version = version(file, versionId, 1L, "objects/v1", "digest", 32);
+        when(fileRepository.findByOrgIdAndUserIdAndLogicalPath(orgId, userId, "inputs/source.txt"))
+                .thenReturn(Optional.of(file));
+        when(fileVersionRepository.findByIdAndOrgIdAndUserId(versionId, orgId, userId))
+                .thenReturn(Optional.of(version));
+        when(fileAttachmentRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        FileCatalogService.AttachmentRecord attached =
+                service.attachExistingVersion(
+                        tenant(orgId, userId),
+                        agentId,
+                        sessionId,
+                        messageId,
+                        "inputs/source.txt",
+                        versionId);
+
+        assertThat(attached.fileVersionId()).isEqualTo(versionId);
+        ArgumentCaptor<io.agentscope.saas.domain.model.FileAttachmentEntity> captured =
+                ArgumentCaptor.forClass(io.agentscope.saas.domain.model.FileAttachmentEntity.class);
+        verify(fileAttachmentRepository).save(captured.capture());
+        assertThat(captured.getValue().getMessageId()).isEqualTo(messageId);
+        assertThat(captured.getValue().getKind()).isEqualTo("user_upload");
+    }
+
+    @Test
+    void rejectsStaleUploadVersion() {
+        UUID orgId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID versionId = UUID.randomUUID();
+        FileEntity file = file(orgId, userId, "inputs/source.txt", UUID.randomUUID(), "active");
+        FileVersionEntity version = version(file, versionId, 1L, "objects/v1", "digest", 32);
+        when(fileRepository.findByOrgIdAndUserIdAndLogicalPath(orgId, userId, "inputs/source.txt"))
+                .thenReturn(Optional.of(file));
+        when(fileVersionRepository.findByIdAndOrgIdAndUserId(versionId, orgId, userId))
+                .thenReturn(Optional.of(version));
+
+        assertThatThrownBy(
+                        () ->
+                                service.attachExistingVersion(
+                                        tenant(orgId, userId),
+                                        UUID.randomUUID(),
+                                        UUID.randomUUID(),
+                                        UUID.randomUUID(),
+                                        "inputs/source.txt",
+                                        versionId))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("no longer current");
+        verify(fileAttachmentRepository, never()).save(any());
+    }
+
+    @Test
     void rejectsWriteThatWouldExceedUserQuota() throws Exception {
         UUID orgId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();

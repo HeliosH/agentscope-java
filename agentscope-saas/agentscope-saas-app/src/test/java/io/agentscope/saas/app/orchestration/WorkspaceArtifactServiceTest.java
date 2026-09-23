@@ -20,6 +20,7 @@ import io.agentscope.saas.domain.orchestration.RunArtifactRepository;
 import io.agentscope.saas.domain.orchestration.RunArtifactRepository.NewRunArtifact;
 import io.agentscope.saas.sandbox.SandboxLeaseContext;
 import io.agentscope.saas.sandbox.SandboxLeaseService;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -94,6 +95,61 @@ class WorkspaceArtifactServiceTest {
                                         checkpoint))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("projected 1 files but cataloged 0");
+    }
+
+    @Test
+    void marksOnlyChangedVersionsAsProducedInInteractiveRun() {
+        RunArtifactRepository repository = mock(RunArtifactRepository.class);
+        when(repository.insert(any())).thenReturn(1);
+        WorkspaceArtifactService service =
+                new WorkspaceArtifactService(
+                        repository, mock(SandboxLeaseService.class), new ObjectMapper());
+        WorkspaceCheckpointContext checkpoint = new WorkspaceCheckpointContext(true);
+        UUID oldVersion = UUID.randomUUID();
+        FileRecord oldFile =
+                new FileRecord(
+                        UUID.randomUUID(),
+                        oldVersion,
+                        "outputs/previous.txt",
+                        1,
+                        "old",
+                        "minio",
+                        4,
+                        "oldhash");
+        FileRecord newFile =
+                new FileRecord(
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        "outputs/new.txt",
+                        1,
+                        "new",
+                        "minio",
+                        4,
+                        "newhash");
+        checkpoint.recordFile(oldFile);
+        checkpoint.recordFile(newFile);
+        checkpoint.projectionSucceeded(2);
+
+        service.publish(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                null,
+                checkpoint,
+                Map.of(oldFile.logicalPath(), oldVersion));
+
+        ArgumentCaptor<NewRunArtifact> captured = ArgumentCaptor.forClass(NewRunArtifact.class);
+        org.mockito.Mockito.verify(repository, org.mockito.Mockito.times(2))
+                .insert(captured.capture());
+        assertThat(captured.getAllValues())
+                .filteredOn(a -> a.logicalPath().equals(oldFile.logicalPath()))
+                .singleElement()
+                .satisfies(a -> assertThat(a.evidenceJson()).contains("\"producedInRun\":false"));
+        assertThat(captured.getAllValues())
+                .filteredOn(a -> a.logicalPath().equals(newFile.logicalPath()))
+                .singleElement()
+                .satisfies(a -> assertThat(a.evidenceJson()).contains("\"producedInRun\":true"));
     }
 
     @Test

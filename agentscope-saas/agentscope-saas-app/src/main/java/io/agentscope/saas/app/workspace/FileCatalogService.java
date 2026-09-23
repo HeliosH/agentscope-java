@@ -399,6 +399,27 @@ public class FileCatalogService {
     }
 
     @Transactional(readOnly = true)
+    public Map<String, UUID> activeFileVersions(TenantContext tenant) {
+        Optional<UUID> orgId = parseUuid(tenant != null ? tenant.orgId() : null);
+        Optional<UUID> userId = parseUuid(tenant != null ? tenant.userId() : null);
+        if (orgId.isEmpty() || userId.isEmpty()) {
+            return Map.of();
+        }
+        return withTenantOrg(
+                orgId.get().toString(),
+                () ->
+                        fileRepository
+                                .findByOrgIdAndUserIdAndStatusOrderByLogicalPathAsc(
+                                        orgId.get(), userId.get(), STATUS_ACTIVE)
+                                .stream()
+                                .filter(file -> file.getCurrentVersionId() != null)
+                                .collect(
+                                        Collectors.toMap(
+                                                FileEntity::getLogicalPath,
+                                                FileEntity::getCurrentVersionId)));
+    }
+
+    @Transactional(readOnly = true)
     public List<FileVersionSummary> listVersions(TenantContext tenant, String logicalPath) {
         if (!properties.getFileStore().isEnabled()) {
             return List.of();
@@ -535,6 +556,129 @@ public class FileCatalogService {
                                     record.versionId(),
                                     record.logicalPath(),
                                     attachment.getKind()));
+                });
+    }
+
+    @Transactional
+    public AttachmentRecord attachExistingVersion(
+            TenantContext tenant,
+            UUID agentId,
+            UUID sessionId,
+            UUID messageId,
+            String logicalPath,
+            UUID versionId) {
+        UUID orgId =
+                parseUuid(tenant != null ? tenant.orgId() : null)
+                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN));
+        UUID userId =
+                parseUuid(tenant.userId())
+                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN));
+        String path = normalizePath(logicalPath);
+        if (!path.startsWith("inputs/")) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "Attachment is not an uploaded input");
+        }
+        return withTenantOrg(
+                orgId.toString(),
+                () -> {
+                    FileEntity file =
+                            fileRepository
+                                    .findByOrgIdAndUserIdAndLogicalPath(orgId, userId, path)
+                                    .orElseThrow(
+                                            () ->
+                                                    new ResponseStatusException(
+                                                            HttpStatus.NOT_FOUND,
+                                                            "Attachment file not found"));
+                    FileVersionEntity version =
+                            fileVersionRepository
+                                    .findByIdAndOrgIdAndUserId(versionId, orgId, userId)
+                                    .orElseThrow(
+                                            () ->
+                                                    new ResponseStatusException(
+                                                            HttpStatus.NOT_FOUND,
+                                                            "Attachment version not found"));
+                    if (!STATUS_ACTIVE.equals(file.getStatus())
+                            || !versionId.equals(file.getCurrentVersionId())
+                            || !file.getId().equals(version.getFileId())) {
+                        throw new ResponseStatusException(
+                                HttpStatus.CONFLICT, "Attachment version is no longer current");
+                    }
+                    FileRecord record =
+                            new FileRecord(
+                                    file.getId(),
+                                    versionId,
+                                    path,
+                                    version.getVersionNo(),
+                                    version.getObjectKey(),
+                                    version.getStorageBackend(),
+                                    version.getSizeBytes(),
+                                    version.getSha256());
+                    return attachFile(
+                                    tenant,
+                                    agentId,
+                                    sessionId,
+                                    messageId,
+                                    null,
+                                    record,
+                                    "user_upload",
+                                    Map.of())
+                            .orElseThrow();
+                });
+    }
+
+    @Transactional(readOnly = true)
+    public Map<UUID, List<MessageFile>> messageFiles(
+            UUID orgId, UUID userId, List<UUID> messageIds) {
+        if (messageIds.isEmpty()) {
+            return Map.of();
+        }
+        return withTenantOrg(
+                orgId.toString(),
+                () -> {
+                    List<FileAttachmentEntity> attachments =
+                            fileAttachmentRepository.findByOrgIdAndUserIdAndMessageIds(
+                                    orgId, userId, messageIds);
+                    if (attachments.isEmpty()) {
+                        return Map.of();
+                    }
+                    Map<UUID, FileVersionEntity> versions =
+                            fileVersionRepository
+                                    .findAllById(
+                                            attachments.stream()
+                                                    .map(FileAttachmentEntity::getFileVersionId)
+                                                    .distinct()
+                                                    .toList())
+                                    .stream()
+                                    .collect(Collectors.toMap(FileVersionEntity::getId, v -> v));
+                    Map<UUID, List<MessageFile>> result = new LinkedHashMap<>();
+                    Map<UUID, FileEntity> files = new LinkedHashMap<>();
+                    for (FileAttachmentEntity attachment : attachments) {
+                        FileEntity file =
+                                files.computeIfAbsent(
+                                        attachment.getFileId(),
+                                        id ->
+                                                fileRepository
+                                                        .findByIdAndOrgIdAndUserId(
+                                                                id, orgId, userId)
+                                                        .orElse(null));
+                        FileVersionEntity version = versions.get(attachment.getFileVersionId());
+                        if (file == null
+                                || version == null
+                                || !orgId.equals(version.getOrgId())
+                                || !userId.equals(version.getUserId())
+                                || !file.getId().equals(version.getFileId())) {
+                            continue;
+                        }
+                        result.computeIfAbsent(
+                                        attachment.getMessageId(),
+                                        id -> new java.util.ArrayList<>())
+                                .add(
+                                        new MessageFile(
+                                                file.getLogicalPath(),
+                                                version.getId().toString(),
+                                                version.getSizeBytes()));
+                    }
+                    return result;
                 });
     }
 
@@ -869,4 +1013,6 @@ public class FileCatalogService {
 
     public record AttachmentRecord(
             UUID id, UUID fileId, UUID fileVersionId, String logicalPath, String kind) {}
+
+    public record MessageFile(String path, String versionId, Long sizeBytes) {}
 }

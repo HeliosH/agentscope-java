@@ -50,15 +50,21 @@ public class ShellExecuteTool {
             @ToolParam(
                             name = "working_directory",
                             description =
-                                    "Working directory (relative to workspace root, optional)")
+                                    "Working directory (relative to workspace root, optional)",
+                            required = false)
                     String workingDirectory,
-            @ToolParam(name = "timeout", description = "Timeout in seconds (default: 30)")
-                    int timeout) {
+            @ToolParam(
+                            name = "timeout",
+                            description = "Timeout in seconds (default: 30)",
+                            required = false)
+                    Integer timeout) {
         ExecuteResponse result =
                 sandbox.execute(
                         runtimeContext,
                         new ShellExecutionRequest(
-                                command, workingDirectory, timeout > 0 ? timeout : 30));
+                                command,
+                                workingDirectory,
+                                timeout != null && timeout > 0 ? timeout : 30));
 
         StringBuilder sb = new StringBuilder();
         sb.append("Exit code: ").append(result.exitCode()).append("\n");

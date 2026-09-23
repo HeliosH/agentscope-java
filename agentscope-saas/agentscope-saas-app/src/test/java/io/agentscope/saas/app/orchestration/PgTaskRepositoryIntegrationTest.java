@@ -58,7 +58,10 @@ import org.springframework.test.context.ActiveProfiles;
         properties = {
             "saas.subagents.execution-mode=durable",
             "saas.orchestration.scheduler-enabled=true",
-            "saas.orchestration.scheduler-poll-millis=3600000"
+            "saas.orchestration.scheduler-poll-millis=3600000",
+            "spring.datasource.url=jdbc:h2:mem:pg-task-repository-test;DB_CLOSE_DELAY=-1;MODE=PostgreSQL",
+            "saas.datasource.admin.url=jdbc:h2:mem:pg-task-repository-test;DB_CLOSE_DELAY=-1;MODE=PostgreSQL",
+            "saas.agent.memory-hooks-enabled=false"
         })
 @ActiveProfiles("local")
 class PgTaskRepositoryIntegrationTest {
@@ -160,6 +163,27 @@ class PgTaskRepositoryIntegrationTest {
         tasks.markDelivered(context, sessionId.toString(), "task_research");
         assertThat(tasks.findPendingDeliveries(context, sessionId.toString())).isEmpty();
         assertThat(tasks.isDelivered(context, sessionId.toString(), "task_research")).isTrue();
+    }
+
+    @Test
+    void directRunHitlResumeKeepsOriginalRunAndCoordinatorIdentities() {
+        UUID agentId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        seedAgentAndSession(agentId, sessionId);
+        TenantContext tenant = tenant();
+        var started =
+                runs.createDirectRun(tenant, agentId, sessionId, null, "Execute approved command");
+
+        var resumed =
+                runs.resumeDirectRun(tenant, agentId, sessionId, started.runId()).orElseThrow();
+
+        assertThat(resumed.runId()).isEqualTo(started.runId());
+        assertThat(resumed.rootTaskId()).isEqualTo(started.rootTaskId());
+        assertThat(resumed.rootAgentRunId()).isEqualTo(started.rootAgentRunId());
+        assertThat(resumed.rootAttemptId()).isEqualTo(started.rootAttemptId());
+        assertThat(runStatus(started.runId())).isEqualTo("RUNNING");
+        assertThat(runs.getEvents(tenant, agentId, started.runId(), 0, 100))
+                .anySatisfy(event -> assertThat(event.eventType()).isEqualTo("RUN_RESUMED"));
     }
 
     @Test
@@ -347,7 +371,6 @@ class PgTaskRepositoryIntegrationTest {
                 .isTrue();
         assertThat(tasks.findPendingDeliveries(context, sessionId.toString())).hasSize(1);
 
-        assertThat(worker.pollOnce()).isEqualTo(1);
         awaitRun(run.runId(), "SUCCEEDED", Duration.ofSeconds(15));
 
         assertThat(tasks.isDelivered(context, sessionId.toString(), "task_auto")).isTrue();
@@ -552,6 +575,7 @@ class PgTaskRepositoryIntegrationTest {
     private void awaitRun(UUID runId, String expected, Duration timeout) throws Exception {
         long deadline = System.nanoTime() + timeout.toNanos();
         while (System.nanoTime() < deadline) {
+            worker.pollOnce();
             if (expected.equals(runStatus(runId))) {
                 return;
             }

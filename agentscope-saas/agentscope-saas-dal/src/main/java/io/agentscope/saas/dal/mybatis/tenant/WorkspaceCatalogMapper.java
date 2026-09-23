@@ -185,6 +185,22 @@ public interface WorkspaceCatalogMapper {
             @Param("userId") UUID userId,
             @Param("messageId") UUID messageId);
 
+    @Select(
+            """
+            <script>
+            """
+                    + ATTACHMENT_COLUMNS
+                    + """
+                     WHERE org_id = #{orgId} AND user_id = #{userId} AND message_id IN
+                     <foreach collection="messageIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+                     ORDER BY created_at ASC, id ASC
+                    </script>
+                    """)
+    List<FileAttachmentEntity> findAttachmentsByMessageIds(
+            @Param("orgId") UUID orgId,
+            @Param("userId") UUID userId,
+            @Param("messageIds") List<UUID> messageIds);
+
     @Insert(
             """
             INSERT INTO file_attachments

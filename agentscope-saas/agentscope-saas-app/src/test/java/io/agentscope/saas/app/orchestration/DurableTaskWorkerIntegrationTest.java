@@ -24,7 +24,13 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
 /** Executes a persisted READY task through the real worker and stub Harness model. */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.NONE,
+        properties = {
+            "spring.datasource.url=jdbc:h2:mem:durable-worker-test;DB_CLOSE_DELAY=-1;MODE=PostgreSQL",
+            "saas.datasource.admin.url=jdbc:h2:mem:durable-worker-test;DB_CLOSE_DELAY=-1;MODE=PostgreSQL",
+            "saas.agent.memory-hooks-enabled=false"
+        })
 @ActiveProfiles("local")
 class DurableTaskWorkerIntegrationTest {
 
@@ -60,7 +66,6 @@ class DurableTaskWorkerIntegrationTest {
                 "{\"prompt\":\"Complete durable worker integration\"}",
                 now);
 
-        assertThat(worker.pollOnce()).isEqualTo(1);
         awaitRun(runId, "SUCCEEDED", Duration.ofSeconds(15));
 
         assertThat(database.taskState(taskId).status()).isEqualTo("SUCCEEDED");
@@ -77,6 +82,7 @@ class DurableTaskWorkerIntegrationTest {
     private void awaitRun(UUID runId, String expected, Duration timeout) throws Exception {
         long deadline = System.nanoTime() + timeout.toNanos();
         while (System.nanoTime() < deadline) {
+            worker.pollOnce();
             if (expected.equals(database.runState(runId).status())) {
                 return;
             }

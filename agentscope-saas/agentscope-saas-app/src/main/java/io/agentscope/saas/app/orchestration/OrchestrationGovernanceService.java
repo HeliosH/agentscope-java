@@ -133,7 +133,7 @@ public class OrchestrationGovernanceService {
         return new PermissionSnapshot(canonical.json(), canonical.hash());
     }
 
-    /** Persists an immutable model/tool capability snapshot for audit and deterministic replay. */
+    /** Persists the immutable model profile; tool schemas are bound separately at each step. */
     public void saveRuntimeCapabilitySnapshot(
             UUID orgId, UUID runId, UUID agentRunId, String snapshotJson, String snapshotHash) {
         if (snapshotJson == null

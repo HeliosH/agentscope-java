@@ -43,6 +43,7 @@ interface Message {
   text: string;
   tools: ToolEntry[];
   confirmTools?: ConfirmToolCall[];
+  confirmRunId?: string;
   pending?: boolean;
   recovery?: { attempt?: number; maxAttempts?: number; message?: string };
   files?: MessageFile[];
@@ -68,7 +69,15 @@ function turnsToMessages(turns: TurnEntry[]): Message[] {
   for (const t of turns) {
     const role = String(t.role).toUpperCase();
     if (role === 'USER') {
-      out.push({ id: t.id, role: 'user', text: t.content ?? '', tools: [] });
+      const files = t.uploads?.map(upload => ({
+        path: upload.path,
+        name: fileName(upload.path),
+        sizeBytes: upload.sizeBytes ?? undefined,
+        versionId: upload.versionId,
+        kind: 'upload' as const,
+      }));
+      out.push({ id: t.id, role: 'user', text: t.content ?? '', tools: [],
+        files: files?.length ? files : undefined });
     } else if (role === 'ASSISTANT') {
       const files = t.artifacts?.map(artifact => ({
         path: artifact.path,
@@ -338,7 +347,12 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
       }));
     } else if (evt.type === 'confirm_required') {
       setMessages(prev => prev.map(m => m.id === replyId
-        ? { ...m, pending: false, confirmTools: evt.confirmTools ?? [] }
+        ? {
+            ...m,
+            pending: false,
+            confirmTools: evt.confirmTools ?? [],
+            confirmRunId: evt.runId,
+          }
         : m));
     } else if (evt.type === 'done') {
       if (evt.sessionKey) {
@@ -376,7 +390,8 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
     if (runId) {
       try {
         const artifacts = await getArtifacts(agentId, runId);
-        artifacts.filter(artifact => isUserFacingArtifact(artifact.logicalPath)).forEach(artifact => {
+        artifacts.filter(artifact => isUserFacingArtifact(artifact.logicalPath)
+          && artifactProducedInRun(artifact.evidenceJson)).forEach(artifact => {
           generated.set(artifact.logicalPath, {
             path: artifact.logicalPath,
             name: fileName(artifact.logicalPath),
@@ -466,6 +481,7 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
           path: file.path,
           name: file.name,
           sizeBytes: file.sizeBytes ?? 0,
+          versionId: file.versionId,
         })),
       }, replyMsg.id, outputsBefore);
     } catch (e: unknown) {
@@ -487,13 +503,16 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
     const replyMsg: Message = { id: nextId(), role: 'assistant', text: '', tools: [], pending: true };
     setBusy(true);
     setMessages(prev => [
-      ...prev.map(m => m.id === source.id ? { ...m, confirmTools: undefined } : m),
+      ...prev.map(m => m.id === source.id
+        ? { ...m, confirmTools: undefined, confirmRunId: undefined }
+        : m),
       replyMsg,
     ]);
     try {
       await runChatStream({
         message: '',
         sessionId: sessionKey ?? undefined,
+        runId: source.confirmRunId,
         modelId: selectedModelId || undefined,
         confirmResults,
       }, replyMsg.id);
@@ -827,6 +846,14 @@ function formatContextWindow(tokens: number): string {
 function isUserFacingArtifact(path: string): boolean {
   const normalized = path.replace(/^\/+/, '');
   return normalized.startsWith('outputs/') || normalized.startsWith('generated/');
+}
+
+function artifactProducedInRun(evidenceJson: string): boolean {
+  try {
+    return JSON.parse(evidenceJson).producedInRun !== false;
+  } catch {
+    return true;
+  }
 }
 
 function outputFiles(nodes: FileNode[]): Map<string, number> {

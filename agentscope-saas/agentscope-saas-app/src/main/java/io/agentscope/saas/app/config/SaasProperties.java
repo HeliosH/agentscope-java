@@ -1551,6 +1551,9 @@ public class SaasProperties {
         /** Enables persistent, permission-enforced plan mode for complex work. */
         private boolean planModeEnabled = true;
 
+        /** Enables automatic memory flush and maintenance around each agent call. */
+        private boolean memoryHooksEnabled = true;
+
         @NestedConfigurationProperty private final Conversation conversation = new Conversation();
         @NestedConfigurationProperty private final Skills skills = new Skills();
         @NestedConfigurationProperty private final Permission permission = new Permission();
@@ -1594,6 +1597,14 @@ public class SaasProperties {
 
         public void setPlanModeEnabled(boolean planModeEnabled) {
             this.planModeEnabled = planModeEnabled;
+        }
+
+        public boolean isMemoryHooksEnabled() {
+            return memoryHooksEnabled;
+        }
+
+        public void setMemoryHooksEnabled(boolean memoryHooksEnabled) {
+            this.memoryHooksEnabled = memoryHooksEnabled;
         }
 
         public Conversation getConversation() {

@@ -27,6 +27,7 @@ if [ "$FILE_DIR" = "$FILE_PATH" ]; then
 fi
 COMMAND="${SANDBOX_SMOKE_COMMAND:-${CUBE_SMOKE_COMMAND:-grep -q '^browser-upload-' inputs/browser-upload.txt && mkdir -p \"$FILE_DIR\" && printf '%s\n' \"$MARKER\" > \"$FILE_PATH\" && cat \"$FILE_PATH\"}}"
 TIMEOUT="${SANDBOX_SMOKE_TIMEOUT:-${CUBE_SMOKE_TIMEOUT:-120}}"
+MAX_CONFIRM_ROUNDS="${SANDBOX_SMOKE_MAX_CONFIRM_ROUNDS:-4}"
 BACKEND_RELEASE_TIMEOUT="${SANDBOX_SMOKE_BACKEND_RELEASE_TIMEOUT:-${CUBE_SMOKE_BACKEND_RELEASE_TIMEOUT:-0}}"
 BACKEND_RELEASE_POLL_SECONDS="${SANDBOX_SMOKE_BACKEND_RELEASE_POLL_SECONDS:-2}"
 SANDBOX_TYPE_FILTER="${SANDBOX_SMOKE_SANDBOX_TYPE:-}"
@@ -303,7 +304,8 @@ else
   exit 1
 fi
 
-python3 - "$SSE1" "$CONFIRM_JSON" <<'PY'
+extract_confirmation() {
+  python3 - "$1" "$CONFIRM_JSON" <<'PY'
 import json
 import sys
 
@@ -321,7 +323,7 @@ with open(sse_path, encoding="utf-8") as fh:
         except json.JSONDecodeError:
             pass
 
-for ev in events:
+for ev in reversed(events):
     if ev.get("type") == "CUSTOM" and ev.get("name") == "require_user_confirm":
         value = ev.get("value") or {}
         results = []
@@ -336,23 +338,87 @@ for ev in events:
             })
         if results:
             with open(out_path, "w", encoding="utf-8") as out:
-                json.dump({"sessionId": ev.get("threadId"), "confirmResults": results}, out)
+                json.dump({
+                    "sessionId": ev.get("threadId"),
+                    "runId": ev.get("runId"),
+                    "confirmResults": results,
+                }, out)
             sys.exit(0)
 
 sys.exit(2)
 PY
-PY_RC=$?
+}
 
-if [ "$PY_RC" -eq 0 ]; then
-  ok "HITL confirmation requested"
+has_successful_tool_result() {
+  MARKER="$MARKER" python3 - "$1" <<'PY'
+import json
+import os
+import sys
+
+marker = os.environ["MARKER"]
+results = {}
+with open(sys.argv[1], encoding="utf-8") as fh:
+    for line in fh:
+        if not line.startswith("data:"):
+            continue
+        try:
+            event = json.loads(line[5:].strip())
+        except Exception:
+            continue
+        if event.get("type") != "TOOL_CALL_RESULT":
+            continue
+        call_id = event.get("toolCallId") or ""
+        results[call_id] = results.get(call_id, "") + str(event.get("content") or "")
+
+if any(marker in result and "Exit code: 0" in result for result in results.values()):
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
+SSE_CURRENT="$SSE1"
+CONFIRM_ROUNDS=0
+while ! has_successful_tool_result "$SSE_CURRENT"; do
+  if ! extract_confirmation "$SSE_CURRENT"; then
+    bad "sandbox returned neither a successful tool result nor a confirmation request"
+    python3 - "$SSE_CURRENT" <<'PY'
+import json
+import sys
+for line in open(sys.argv[1], encoding="utf-8"):
+    if not line.startswith("data:"):
+        continue
+    try:
+        ev = json.loads(line[5:].strip())
+    except Exception:
+        continue
+    if ev.get("type") == "CUSTOM" and ev.get("name") == "error":
+        print("    error:", (ev.get("value") or {}).get("message"))
+    elif ev.get("type") == "TOOL_CALL_RESULT":
+        print("    tool result:", ev.get("content") or "")
+PY
+    break
+  fi
+
+  CONFIRM_ROUNDS=$((CONFIRM_ROUNDS + 1))
+  if [ "$CONFIRM_ROUNDS" -gt "$MAX_CONFIRM_ROUNDS" ]; then
+    bad "sandbox exceeded $MAX_CONFIRM_ROUNDS HITL confirmation rounds"
+    break
+  fi
   curl -s -N --max-time "$TIMEOUT" -X POST "$BASE/api/agents/$AGID/chat/stream" \
     -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
     --data-binary "@$CONFIRM_JSON" > "$SSE2" 2>/dev/null
-elif grep -q "$MARKER" "$SSE1"; then
-  cp "$SSE1" "$SSE2"
-  ok "sandbox completed without HITL prompt"
+  SSE_CURRENT="$SSE2"
+done
+
+if has_successful_tool_result "$SSE_CURRENT"; then
+  if [ "$CONFIRM_ROUNDS" -gt 0 ]; then
+    ok "HITL confirmation completed in $CONFIRM_ROUNDS round(s)"
+  else
+    ok "sandbox completed without HITL prompt"
+  fi
+  ok "sandbox execution output returned to SSE"
 else
-  bad "no HITL confirmation and marker not returned"
+  bad "sandbox execution output missing from TOOL_CALL_RESULT"
   python3 - "$SSE1" <<'PY'
 import json
 import sys
@@ -365,28 +431,6 @@ for line in open(sys.argv[1], encoding="utf-8"):
         continue
     if ev.get("type") == "CUSTOM" and ev.get("name") == "error":
         print("    error:", (ev.get("value") or {}).get("message"))
-PY
-  exit 1
-fi
-
-if grep -q "$MARKER" "$SSE2"; then
-  ok "sandbox execution output returned to SSE"
-else
-  bad "sandbox execution output missing"
-  python3 - "$SSE2" <<'PY'
-import json
-import sys
-for line in open(sys.argv[1], encoding="utf-8"):
-    if not line.startswith("data:"):
-        continue
-    try:
-        ev = json.loads(line[5:].strip())
-    except Exception:
-        continue
-    if ev.get("type") == "CUSTOM" and ev.get("name") == "error":
-        print("    error:", (ev.get("value") or {}).get("message"))
-    elif ev.get("type") in {"TOOL_CALL_RESULT", "TEXT_MESSAGE_CONTENT"}:
-        print("    output:", ev.get("content") or ev.get("delta") or "")
 PY
 fi
 

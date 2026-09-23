@@ -18,8 +18,10 @@ import io.agentscope.saas.sandbox.SandboxLeaseService;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -51,6 +53,18 @@ public class WorkspaceArtifactService {
             UUID attemptId,
             SandboxLeaseContext lease,
             WorkspaceCheckpointContext checkpoint) {
+        return publish(orgId, runId, taskId, attemptId, lease, checkpoint, null);
+    }
+
+    @Transactional
+    public Publication publish(
+            UUID orgId,
+            UUID runId,
+            UUID taskId,
+            UUID attemptId,
+            SandboxLeaseContext lease,
+            WorkspaceCheckpointContext checkpoint,
+            Map<String, UUID> baselineVersions) {
         checkpoint.verifyReady();
         List<FileRecord> files =
                 checkpoint.files().stream()
@@ -74,7 +88,7 @@ public class WorkspaceArtifactService {
                                     file.versionId(),
                                     file.logicalPath(),
                                     ARTIFACT_TYPE_WORKSPACE_FILE,
-                                    evidence(file, checkpoint),
+                                    evidence(file, checkpoint, baselineVersions),
                                     now));
             if (inserted != 1) {
                 throw new IllegalStateException(
@@ -107,24 +121,28 @@ public class WorkspaceArtifactService {
                 .toList();
     }
 
-    private String evidence(FileRecord file, WorkspaceCheckpointContext checkpoint) {
+    private String evidence(
+            FileRecord file,
+            WorkspaceCheckpointContext checkpoint,
+            Map<String, UUID> baselineVersions) {
         try {
-            return objectMapper.writeValueAsString(
-                    Map.of(
-                            "logicalPath",
-                            file.logicalPath(),
-                            "versionNo",
-                            file.versionNo(),
-                            "sha256",
-                            file.sha256(),
-                            "sizeBytes",
-                            file.sizeBytes(),
-                            "storageBackend",
-                            file.storageBackend(),
-                            "sandboxStatePersisted",
-                            checkpoint.stateWasPersisted(),
-                            "sandboxStopped",
-                            checkpoint.sandboxWasStopped()));
+            Map<String, Object> fields =
+                    new LinkedHashMap<>(
+                            Map.of(
+                                    "logicalPath", file.logicalPath(),
+                                    "versionNo", file.versionNo(),
+                                    "sha256", file.sha256(),
+                                    "sizeBytes", file.sizeBytes(),
+                                    "storageBackend", file.storageBackend(),
+                                    "sandboxStatePersisted", checkpoint.stateWasPersisted(),
+                                    "sandboxStopped", checkpoint.sandboxWasStopped()));
+            if (baselineVersions != null) {
+                fields.put(
+                        "producedInRun",
+                        !Objects.equals(
+                                baselineVersions.get(file.logicalPath()), file.versionId()));
+            }
+            return objectMapper.writeValueAsString(fields);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Failed to serialize workspace artifact evidence", e);
         }

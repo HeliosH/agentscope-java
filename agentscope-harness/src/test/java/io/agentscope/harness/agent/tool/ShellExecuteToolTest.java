@@ -15,10 +15,16 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.message.TextBlock;
+import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.core.tool.Toolkit;
 import io.agentscope.harness.agent.filesystem.local.LocalFilesystemWithShell;
 import io.agentscope.harness.agent.filesystem.model.ShellExecutionRequest;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
@@ -28,6 +34,28 @@ import org.junit.jupiter.api.io.TempDir;
 class ShellExecuteToolTest {
 
     @TempDir Path workspace;
+
+    @Test
+    void omittedOptionalArgumentsUseWorkspaceAndDefaultTimeout() {
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerTool(new ShellExecuteTool(new LocalFilesystemWithShell(workspace)));
+        ToolUseBlock call =
+                ToolUseBlock.builder()
+                        .id("execute-defaults")
+                        .name("execute")
+                        .input(Map.of("command", "pwd"))
+                        .content("{\"command\":\"pwd\"}")
+                        .build();
+
+        var result =
+                toolkit.callTools(List.of(call), null, null, RuntimeContext.empty())
+                        .block(Duration.ofSeconds(5))
+                        .get(0);
+
+        String output = ((TextBlock) result.getOutput().get(0)).getText();
+        assertTrue(output.contains("Exit code: 0"), output);
+        assertTrue(output.contains(workspace.toAbsolutePath().toString()));
+    }
 
     @Test
     void nativeCwdTreatsShellSyntaxAsDirectoryData() throws Exception {

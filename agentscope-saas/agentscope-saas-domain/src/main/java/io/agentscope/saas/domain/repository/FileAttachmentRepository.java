@@ -19,5 +19,8 @@ public interface FileAttachmentRepository {
     List<FileAttachmentEntity> findByOrgIdAndUserIdAndMessageIdOrderByCreatedAtDesc(
             UUID orgId, UUID userId, UUID messageId);
 
+    List<FileAttachmentEntity> findByOrgIdAndUserIdAndMessageIds(
+            UUID orgId, UUID userId, List<UUID> messageIds);
+
     FileAttachmentEntity save(FileAttachmentEntity attachment);
 }

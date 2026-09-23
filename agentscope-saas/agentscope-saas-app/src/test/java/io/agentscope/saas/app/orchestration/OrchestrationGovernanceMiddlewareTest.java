@@ -124,8 +124,77 @@ class OrchestrationGovernanceMiddlewareTest {
                         org.mockito.ArgumentMatchers.eq(AGENT_RUN_ID),
                         json.capture(),
                         hash.capture());
-        assertThat(json.getValue()).contains("enterprise-model", "lookup", "toolSchemaHash");
+        assertThat(json.getValue()).contains("enterprise-model");
+        assertThat(json.getValue()).doesNotContain("toolSchemaHash");
         assertThat(hash.getValue()).hasSize(64);
+    }
+
+    @Test
+    void capabilitySnapshotRemainsStableWhenConversationChangesAcrossResume() {
+        OrchestrationGovernanceService governance = mock(OrchestrationGovernanceService.class);
+        when(governance.preflight(ORG_ID, RUN_ID, AGENT_RUN_ID))
+                .thenReturn(new OrchestrationGovernanceService.BudgetDecision(true, null, null));
+        var middleware = new OrchestrationGovernanceMiddleware(governance, new ObjectMapper());
+        Model model = mock(Model.class);
+        when(model.getModelName()).thenReturn("enterprise-model");
+        ToolSchema firstTool =
+                ToolSchema.builder()
+                        .name("lookup")
+                        .description("lookup")
+                        .parameters(Map.of("type", "object"))
+                        .build();
+
+        middleware
+                .onModelCall(
+                        mock(Agent.class),
+                        context(),
+                        new ModelCallInput(
+                                List.of(
+                                        Msg.builder()
+                                                .role(MsgRole.USER)
+                                                .textContent("first")
+                                                .build()),
+                                List.of(firstTool),
+                                null,
+                                model),
+                        ignored -> Flux.empty())
+                .then()
+                .block();
+        middleware
+                .onModelCall(
+                        mock(Agent.class),
+                        context(),
+                        new ModelCallInput(
+                                List.of(
+                                        Msg.builder()
+                                                .role(MsgRole.USER)
+                                                .textContent("changed after confirmation")
+                                                .build()),
+                                List.of(
+                                        ToolSchema.builder()
+                                                .name("new-step-tool")
+                                                .description("registered after confirmation")
+                                                .parameters(Map.of("type", "object"))
+                                                .build()),
+                                null,
+                                model),
+                        ignored -> Flux.empty())
+                .then()
+                .block();
+
+        var json = org.mockito.ArgumentCaptor.forClass(String.class);
+        var hash = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(governance, times(2))
+                .saveRuntimeCapabilitySnapshot(
+                        org.mockito.ArgumentMatchers.eq(ORG_ID),
+                        org.mockito.ArgumentMatchers.eq(RUN_ID),
+                        org.mockito.ArgumentMatchers.eq(AGENT_RUN_ID),
+                        json.capture(),
+                        hash.capture());
+        assertThat(json.getAllValues()).hasSize(2).containsOnly(json.getValue());
+        assertThat(json.getValue()).doesNotContain("modelVisibleContextHash");
+        assertThat(json.getValue()).doesNotContain("toolSchemaHash", "extensionSetHash");
+        assertThat(hash.getAllValues()).hasSize(2).containsOnly(hash.getValue());
     }
 
     @Test

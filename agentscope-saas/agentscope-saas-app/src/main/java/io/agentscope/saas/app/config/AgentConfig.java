@@ -169,6 +169,10 @@ public class AgentConfig {
                         .middleware(new LlamaFirewallSecurityMiddleware(llamaFirewallClient))
                         .middleware(new UsageMeteringMiddleware(usageService));
 
+        if (!agentCfg.isMemoryHooksEnabled()) {
+            builder.disableMemoryHooks();
+        }
+
         if (agentCfg.getLoopGuard().isEnabled()) {
             builder.middleware(
                     new ToolLoopGuardMiddleware(
@@ -199,7 +203,7 @@ public class AgentConfig {
             builder.compaction(buildCompactionConfig(conversation));
             log.info(
                     "Conversation compaction enabled: triggerMessages={} triggerTokens={}"
-                            + " keepMessages={} keepTokens={} maxContextTokens={}"
+                            + " keepMessages={} keepTokens={} workspaceContextCapTokens={}"
                             + " (zero trigger uses selected model profile)",
                     conversation.getCompactionTriggerMessages(),
                     conversation.getCompactionTriggerTokens(),

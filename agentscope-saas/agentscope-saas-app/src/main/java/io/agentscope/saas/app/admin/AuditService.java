@@ -17,6 +17,7 @@ package io.agentscope.saas.app.admin;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.domain.model.AuditLogEntity;
 import io.agentscope.saas.domain.repository.AuditLogRepository;
 import java.util.Collection;
@@ -65,7 +66,16 @@ public class AuditService {
             entity.setAction(trim(action, 64));
             entity.setResource(trim(resource, 128));
             entity.setDetail(serializeDetail(detail));
-            repository.save(entity);
+            String previousOrgId = TenantContextHolder.getOrgId();
+            if (previousOrgId != null && !previousOrgId.equals(orgId.toString())) {
+                throw new IllegalStateException("Audit organization differs from request tenant");
+            }
+            TenantContextHolder.setOrgId(orgId.toString());
+            try {
+                repository.save(entity);
+            } finally {
+                TenantContextHolder.setOrgId(previousOrgId);
+            }
         } catch (RuntimeException e) {
             log.warn("Failed to write audit event {} on {}: {}", action, resource, e.getMessage());
         }

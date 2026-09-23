@@ -41,10 +41,10 @@ import reactor.core.publisher.Flux;
 /**
  * Middleware that triggers memory flush and message offload at the end of each agent call.
  *
- * <p>Runs in {@link #onAgent}'s {@code doOnComplete} so long-term memories are extracted and
- * persisted after every call, even when conversation compaction was not triggered during that
- * call. When {@link CompactionMiddleware} is active, it handles flush/offload for the messages
- * it summarizes; this middleware covers the remaining tail of messages that were kept verbatim.
+ * <p>Runs before {@link #onAgent} completes so long-term memories are extracted and persisted
+ * after every call while the task's sandbox is still available. When {@link CompactionMiddleware}
+ * is active, it handles flush/offload for the messages it summarizes; this middleware covers the
+ * remaining tail of messages that were kept verbatim.
  *
  * <p>Flush is gated by a {@link MemoryConfig.FlushTrigger}:
  * <ul>
@@ -125,10 +125,12 @@ public class MemoryFlushMiddleware implements MiddlewareBase {
             AgentInput input,
             Function<AgentInput, Flux<AgentEvent>> next) {
         final RuntimeContext rc = ctx != null ? ctx : RuntimeContext.empty();
-        return next.apply(input).doOnComplete(() -> doFlush(agent, rc).subscribe());
+        return next.apply(input)
+                .concatWith(
+                        Flux.defer(() -> doFlush(agent, rc).thenMany(Flux.<AgentEvent>empty())));
     }
 
-    private reactor.core.publisher.Mono<Void> doFlush(Agent agent, RuntimeContext rc) {
+    reactor.core.publisher.Mono<Void> doFlush(Agent agent, RuntimeContext rc) {
         if (!(agent instanceof ReActAgent reActAgent)) {
             return reactor.core.publisher.Mono.empty();
         }

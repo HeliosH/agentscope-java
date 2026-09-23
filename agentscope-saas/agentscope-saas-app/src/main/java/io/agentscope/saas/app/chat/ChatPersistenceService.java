@@ -19,6 +19,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.TextBlock;
+import io.agentscope.saas.app.workspace.FileCatalogService;
 import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.domain.model.AgentEntity;
 import io.agentscope.saas.domain.model.ChatMessageEntity;
@@ -50,18 +51,21 @@ public class ChatPersistenceService {
     private final ChatMessageRepository messageRepository;
     private final RunOrchestrationRepository runRepository;
     private final ObjectMapper objectMapper;
+    private final FileCatalogService fileCatalogService;
 
     public ChatPersistenceService(
             AgentRepository agentRepository,
             ChatSessionRepository sessionRepository,
             ChatMessageRepository messageRepository,
             RunOrchestrationRepository runRepository,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            FileCatalogService fileCatalogService) {
         this.agentRepository = agentRepository;
         this.sessionRepository = sessionRepository;
         this.messageRepository = messageRepository;
         this.runRepository = runRepository;
         this.objectMapper = objectMapper;
+        this.fileCatalogService = fileCatalogService;
     }
 
     /**
@@ -141,6 +145,16 @@ public class ChatPersistenceService {
     @Transactional
     public ChatMessageEntity saveUserMessage(
             TenantContext tenant, UUID sessionId, UUID agentId, String content) {
+        return saveUserMessage(tenant, sessionId, agentId, content, List.of());
+    }
+
+    @Transactional
+    public ChatMessageEntity saveUserMessage(
+            TenantContext tenant,
+            UUID sessionId,
+            UUID agentId,
+            String content,
+            List<AttachmentInput> attachments) {
         ChatMessageEntity msg =
                 newMessage(
                         tenant,
@@ -150,9 +164,20 @@ public class ChatPersistenceService {
                         List.of(TextBlock.builder().text(content == null ? "" : content).build()));
         // The durable Run is inserted in the same transaction and references this message row.
         ChatMessageEntity saved = messageRepository.saveAndFlush(msg);
+        for (AttachmentInput attachment : attachments) {
+            fileCatalogService.attachExistingVersion(
+                    tenant,
+                    agentId,
+                    sessionId,
+                    saved.getId(),
+                    attachment.path(),
+                    attachment.versionId());
+        }
         touchSession(saved.getSessionId(), content);
         return saved;
     }
+
+    public record AttachmentInput(String path, UUID versionId) {}
 
     /**
      * Persists the final assistant reply and bumps the session's message count/timestamp.

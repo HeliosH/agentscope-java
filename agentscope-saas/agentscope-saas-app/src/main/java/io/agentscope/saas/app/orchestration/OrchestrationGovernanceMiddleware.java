@@ -31,9 +31,7 @@ import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
 import io.agentscope.saas.sandbox.SandboxRuntimeAttributes;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
@@ -167,17 +165,6 @@ public final class OrchestrationGovernanceMiddleware implements MiddlewareBase {
 
     private RuntimeCapabilitySnapshot snapshot(RuntimeContext ctx, ModelCallInput input) {
         try {
-            RuntimeToolScope toolScope = RuntimeToolScope.current(ctx);
-            List<String> toolNames =
-                    input.tools() == null
-                            ? List.of()
-                            : input.tools().stream().map(tool -> tool.getName()).sorted().toList();
-            List<Object> orderedSchemas = new ArrayList<>();
-            if (input.tools() != null) {
-                input.tools().stream()
-                        .sorted(java.util.Comparator.comparing(tool -> tool.getName()))
-                        .forEach(orderedSchemas::add);
-            }
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("schemaVersion", 1);
             payload.put("modelName", input.model().getModelName());
@@ -190,21 +177,6 @@ public final class OrchestrationGovernanceMiddleware implements MiddlewareBase {
                     payload.put("safetyMarginTokens", profile.safetyMarginTokens());
                 }
             }
-            payload.put("toolNames", toolNames);
-            payload.put(
-                    "toolSchemaHash",
-                    RuntimeToolScope.hash(objectMapper.writeValueAsString(orderedSchemas)));
-            payload.put(
-                    "modelVisibleContextHash",
-                    RuntimeToolScope.hash(objectMapper.writeValueAsString(input.messages())));
-            payload.put(
-                    "extensionSetHash",
-                    toolScope != null
-                            ? toolScope.configurationHash()
-                            : RuntimeToolScope.hash(String.join("\n", toolNames)));
-            payload.put(
-                    "contributions",
-                    toolScope != null ? toolScope.contributions() : Map.of("platform", "static"));
             String json = objectMapper.writeValueAsString(payload);
             return new RuntimeCapabilitySnapshot(json, RuntimeToolScope.hash(json));
         } catch (Exception e) {

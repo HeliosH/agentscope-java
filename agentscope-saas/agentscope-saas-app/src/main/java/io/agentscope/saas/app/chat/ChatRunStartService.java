@@ -16,6 +16,7 @@ import io.agentscope.saas.domain.model.AgentEntity;
 import io.agentscope.saas.domain.model.ChatSessionEntity;
 import io.agentscope.saas.domain.repository.AgentRepository;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -52,7 +53,8 @@ public class ChatRunStartService {
             String message,
             String requestId,
             String executionMessage,
-            String modelId) {
+            String modelId,
+            List<ChatPersistenceService.AttachmentInput> attachments) {
         AgentEntity resolved = persistence.resolveAgent(tenant, requestedAgentId);
         UUID orgId = UUID.fromString(tenant.orgId());
         UUID userId = UUID.fromString(tenant.userId());
@@ -82,7 +84,8 @@ public class ChatRunStartService {
         ChatSessionEntity session =
                 persistence.resolveSession(tenant, locked.getId(), requestedSessionId, message);
         var userMessage =
-                persistence.saveUserMessage(tenant, session.getId(), locked.getId(), message);
+                persistence.saveUserMessage(
+                        tenant, session.getId(), locked.getId(), message, attachments);
         var run =
                 orchestration.createDirectRun(
                         tenant,
@@ -110,6 +113,49 @@ public class ChatRunStartService {
                 run.rootAttemptId(),
                 RunOrchestrationService.RUN_RUNNING,
                 run.reused());
+    }
+
+    /** Resolves a paused direct Run for a HITL continuation without creating another Run. */
+    @Transactional
+    public StartedRun resume(
+            TenantContext tenant,
+            String requestedAgentId,
+            String requestedSessionId,
+            String requestedRunId) {
+        if (requestedRunId == null || requestedRunId.isBlank()) {
+            throw new IllegalArgumentException("runId is required for tool confirmation");
+        }
+        AgentEntity resolved = persistence.resolveAgent(tenant, requestedAgentId);
+        UUID sessionId = parseUuid(requestedSessionId, "sessionId");
+        UUID runId = parseUuid(requestedRunId, "runId");
+        var handle =
+                orchestration
+                        .resumeDirectRun(tenant, resolved.getId(), sessionId, runId)
+                        .orElseThrow(
+                                () ->
+                                        new IllegalArgumentException(
+                                                "Paused Run was not found or cannot be resumed"));
+        return new StartedRun(
+                handle.agentId(),
+                handle.sessionId(),
+                null,
+                handle.runId(),
+                handle.rootAgentRunId(),
+                handle.rootTaskId(),
+                handle.rootAttemptId(),
+                RunOrchestrationService.RUN_RUNNING,
+                false);
+    }
+
+    private static UUID parseUuid(String value, String field) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(field + " is required for tool confirmation");
+        }
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException error) {
+            throw new IllegalArgumentException(field + " must be a UUID", error);
+        }
     }
 
     public record StartedRun(

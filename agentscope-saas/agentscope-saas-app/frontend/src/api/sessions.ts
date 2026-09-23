@@ -25,6 +25,7 @@ export interface TurnEntry {
   toolResult: string | null;
   sourceRunId?: string | null;
   artifacts?: TurnArtifact[] | null;
+  uploads?: TurnArtifact[] | null;
 }
 
 export interface TurnArtifact {

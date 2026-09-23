@@ -43,6 +43,28 @@ class ToolExecutionJournalTest {
     }
 
     @Test
+    void usesRuntimeIdentityWhenResumingToolWithoutModelStepSnapshot() {
+        var events = new ArrayList<String>();
+        var journal = new RecordingJournal(events, ToolExecutionJournal.PrepareResult.execute());
+        var calls = new AtomicInteger();
+        Toolkit toolkit = toolkit(new TestTool(calls, events, false, ToolRetrySafety.NEVER));
+        StepSnapshot.Identity identity =
+                new StepSnapshot.Identity("run-1", "agent-run-1", "task-1", "attempt-1");
+        RuntimeContext context =
+                RuntimeContext.builder()
+                        .sessionId("session-1")
+                        .put(StepSnapshot.Identity.class, identity)
+                        .put(ToolExecutionJournal.class, journal)
+                        .build();
+
+        ToolResultBlock result = call(toolkit, context);
+
+        assertEquals("ok", text(result));
+        assertEquals(identity, journal.invocation.identity());
+        assertEquals("run-1:call-1", journal.invocation.operationId());
+    }
+
+    @Test
     void reusesCommittedResultWithoutInvokingTool() {
         var events = new ArrayList<String>();
         var journal =
@@ -102,6 +124,10 @@ class ToolExecutionJournalTest {
                         .sessionId("session-1")
                         .put(ToolExecutionJournal.class, journal)
                         .build();
+        return call(toolkit, context);
+    }
+
+    private static ToolResultBlock call(Toolkit toolkit, RuntimeContext context) {
         ToolUseBlock use =
                 ToolUseBlock.builder()
                         .id("call-1")

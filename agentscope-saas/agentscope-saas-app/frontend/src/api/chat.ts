@@ -14,8 +14,9 @@ export interface ConfirmToolCall {
 export interface ChatRequest {
   message: string;
   sessionId?: string;
+  runId?: string;
   modelId?: string;
-  attachments?: Array<{ path: string; name: string; sizeBytes: number }>;
+  attachments?: Array<{ path: string; name: string; sizeBytes: number; versionId?: string }>;
   confirmResults?: ConfirmResultInput[];
 }
 
@@ -86,6 +87,7 @@ export async function* stream(agentId: string, req: ChatRequest): AsyncGenerator
     body: JSON.stringify({
       message: req.message,
       sessionId: req.sessionId,
+      runId: req.runId,
       modelId: req.modelId,
       attachments: req.attachments,
       confirmResults: req.confirmResults,
@@ -182,7 +184,7 @@ export async function* stream(agentId: string, req: ChatRequest): AsyncGenerator
       } else if (type === 'CUSTOM' && payload.name === 'require_user_confirm') {
         const value = payload.value as { toolCalls?: unknown[] } | undefined;
         const confirmTools = (value?.toolCalls ?? []).map(toConfirmToolCall);
-        yield { type: 'confirm_required', confirmTools };
+        yield { type: 'confirm_required', confirmTools, runId: payload.runId as string };
       }
       // TEXT_MESSAGE_START/END, STATE_*, RAW, and REASONING_* are ignored.
     }
