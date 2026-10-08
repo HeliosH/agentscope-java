@@ -5,12 +5,19 @@
  */
 package io.agentscope.saas.domain.orchestration;
 
+import io.agentscope.saas.domain.memory.RuntimeMessageRepository.Scope;
 import java.time.OffsetDateTime;
 import java.util.Optional;
 import java.util.UUID;
 
 /** Persistence port for monotonic, lease-fenced conversation checkpoints. */
 public interface ContextCheckpointRepository {
+
+    boolean lockArchiveScope(UUID orgId, UUID runId, Scope scope);
+
+    int attachBody(Scope scope, UUID bodyId, OffsetDateTime eligibleAt);
+
+    int insertBodyReference(UUID checkpointId, UUID orgId, UUID bodyId);
 
     boolean lockActiveScope(
             UUID orgId,

@@ -16,8 +16,14 @@
 package io.agentscope.saas.app.workspace;
 
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.tool.ExecutionLeaseSnapshot;
+import io.agentscope.core.tool.StepSnapshot;
 import io.agentscope.harness.agent.filesystem.sandbox.WorkspaceProjectionSink;
+import io.agentscope.saas.app.orchestration.SessionRunFenceService;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException;
+import io.agentscope.saas.domain.workspace.FilePublicationRepository.Execution;
+import io.agentscope.saas.orchestration.RunOrchestrationService;
 import io.agentscope.saas.sandbox.SandboxRuntimeAttributes;
 import java.util.Map;
 import java.util.UUID;
@@ -56,34 +62,61 @@ public class WorkspaceProjectionCatalogSink implements WorkspaceProjectionSink {
             return;
         }
         try {
-            fileCatalogService
-                    .recordWorkspaceFile(
-                            tenant,
-                            parseUuid(
-                                    runtimeContext != null
-                                            ? runtimeContext.get(ATTR_AGENT_ID)
-                                            : null),
-                            parseUuid(
-                                    runtimeContext != null ? runtimeContext.getSessionId() : null),
-                            path,
-                            content,
-                            MediaType.APPLICATION_OCTET_STREAM_VALUE,
-                            FileCatalogService.SOURCE_SANDBOX_PROJECTION,
-                            Map.of("source", "sandbox.release.projection"))
-                    .ifPresentOrElse(
-                            record -> {
-                                if (checkpoint != null) {
-                                    checkpoint.recordFile(record);
-                                }
-                            },
-                            () -> {
-                                if (checkpoint != null) {
-                                    checkpoint.failed(
-                                            "workspace_catalog",
-                                            new IllegalStateException(
-                                                    "file object store is unavailable"));
-                                }
-                            });
+            var binding = runtimeContext.get(SessionRunFenceService.Binding.class);
+            if (binding == null && runtimeContext.get(RunOrchestrationService.ATTR_RUN_ID) != null)
+                throw new SessionExecutionRevokedException();
+            var publication =
+                    binding != null && binding.runId() != null
+                            ? fileCatalogService.recordWorkspaceFileForAttempt(
+                                    tenant,
+                                    binding.agentId(),
+                                    binding.runId(),
+                                    binding.fence(),
+                                    execution(runtimeContext, binding.runId()),
+                                    path,
+                                    content,
+                                    MediaType.APPLICATION_OCTET_STREAM_VALUE,
+                                    FileCatalogService.SOURCE_SANDBOX_PROJECTION,
+                                    Map.of("source", "sandbox.release.projection"))
+                            : binding != null
+                                    ? fileCatalogService.recordWorkspaceFileForExecution(
+                                            tenant,
+                                            binding.agentId(),
+                                            binding.runId(),
+                                            binding.fence(),
+                                            path,
+                                            content,
+                                            MediaType.APPLICATION_OCTET_STREAM_VALUE,
+                                            FileCatalogService.SOURCE_SANDBOX_PROJECTION,
+                                            Map.of("source", "sandbox.release.projection"))
+                                    : fileCatalogService.recordWorkspaceFile(
+                                            tenant,
+                                            parseUuid(
+                                                    runtimeContext != null
+                                                            ? runtimeContext.get(ATTR_AGENT_ID)
+                                                            : null),
+                                            parseUuid(
+                                                    runtimeContext != null
+                                                            ? runtimeContext.getSessionId()
+                                                            : null),
+                                            path,
+                                            content,
+                                            MediaType.APPLICATION_OCTET_STREAM_VALUE,
+                                            FileCatalogService.SOURCE_SANDBOX_PROJECTION,
+                                            Map.of("source", "sandbox.release.projection"));
+            publication.ifPresentOrElse(
+                    record -> {
+                        if (checkpoint != null) {
+                            checkpoint.recordFile(record);
+                        }
+                    },
+                    () -> {
+                        if (checkpoint != null) {
+                            checkpoint.failed(
+                                    "workspace_catalog",
+                                    new IllegalStateException("file object store is unavailable"));
+                        }
+                    });
         } catch (Exception e) {
             if (checkpoint != null) {
                 checkpoint.failed("workspace_catalog", e);
@@ -112,7 +145,15 @@ public class WorkspaceProjectionCatalogSink implements WorkspaceProjectionSink {
             return;
         }
         try {
-            fileCatalogService.markDeleted(tenant, path);
+            var binding = runtimeContext.get(SessionRunFenceService.Binding.class);
+            if (binding != null)
+                fileCatalogService.markDeletedForExecution(
+                        tenant, binding.agentId(), binding.runId(), binding.fence(), path);
+            else {
+                if (runtimeContext.get(RunOrchestrationService.ATTR_RUN_ID) != null)
+                    throw new SessionExecutionRevokedException();
+                fileCatalogService.markDeleted(tenant, path);
+            }
         } catch (Exception e) {
             if (checkpoint != null) {
                 checkpoint.failed("workspace_catalog_delete", e);
@@ -130,5 +171,17 @@ public class WorkspaceProjectionCatalogSink implements WorkspaceProjectionSink {
         } catch (IllegalArgumentException e) {
             return null;
         }
+    }
+
+    private static Execution execution(RuntimeContext context, UUID run) {
+        StepSnapshot.Identity identity = context.get(StepSnapshot.Identity.class);
+        ExecutionLeaseSnapshot lease = context.get(ExecutionLeaseSnapshot.class);
+        if (identity == null || lease == null || !run.toString().equals(identity.runId()))
+            throw new IllegalStateException("Publication execution scope unavailable");
+        return new Execution(
+                UUID.fromString(identity.taskId()),
+                UUID.fromString(identity.agentRunId()),
+                UUID.fromString(identity.attemptId()),
+                lease.owner());
     }
 }

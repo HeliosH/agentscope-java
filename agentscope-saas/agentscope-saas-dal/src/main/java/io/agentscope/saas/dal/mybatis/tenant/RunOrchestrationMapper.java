@@ -19,6 +19,7 @@ import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewRun
 import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewTask;
 import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.RunAttempt;
 import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.RunEvent;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.SessionFence;
 import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.TaskNode;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -33,6 +34,142 @@ import org.apache.ibatis.annotations.Update;
 
 /** Tenant MyBatis mapper for the durable Run aggregate. */
 public interface RunOrchestrationMapper {
+
+    @Select(
+            """
+            SELECT execution_generation FROM chat_sessions
+             WHERE id = #{sessionId} AND org_id = #{orgId}
+               AND user_id = #{userId} AND agent_id = #{agentId}
+             FOR UPDATE
+            """)
+    List<Long> lockSessionGeneration(
+            @Param("sessionId") UUID sessionId,
+            @Param("orgId") UUID orgId,
+            @Param("userId") UUID userId,
+            @Param("agentId") UUID agentId);
+
+    @Select(
+            """
+            SELECT id AS session_id, execution_generation FROM chat_sessions
+             WHERE id = #{sessionId} AND org_id = #{orgId} AND user_id = #{userId} AND agent_id = #{agentId}
+            """)
+    @ConstructorArgs({
+        @Arg(column = "session_id", javaType = UUID.class),
+        @Arg(column = "execution_generation", javaType = long.class)
+    })
+    List<SessionFence> findSessionFence(
+            @Param("sessionId") UUID sessionId,
+            @Param("orgId") UUID orgId,
+            @Param("userId") UUID userId,
+            @Param("agentId") UUID agentId);
+
+    String CURRENT_SESSION_FENCE =
+            """
+            SELECT s.id AS session_id, s.execution_generation
+              FROM chat_sessions s
+             WHERE s.org_id = #{orgId} AND s.user_id = #{userId} AND s.agent_id = #{agentId}
+               AND EXISTS (SELECT 1 FROM assistant_runs r
+                            WHERE r.id = #{runId} AND r.org_id = s.org_id
+                              AND r.user_id = s.user_id AND r.agent_id = s.agent_id
+                              AND r.session_id = s.id AND r.session_generation = s.execution_generation)
+            """;
+
+    @Select(CURRENT_SESSION_FENCE)
+    @ConstructorArgs({
+        @Arg(column = "session_id", javaType = UUID.class),
+        @Arg(column = "execution_generation", javaType = long.class)
+    })
+    List<SessionFence> findCurrentSessionFence(
+            @Param("runId") UUID runId,
+            @Param("orgId") UUID orgId,
+            @Param("userId") UUID userId,
+            @Param("agentId") UUID agentId);
+
+    @Select(CURRENT_SESSION_FENCE + " FOR UPDATE")
+    @ConstructorArgs({
+        @Arg(column = "session_id", javaType = UUID.class),
+        @Arg(column = "execution_generation", javaType = long.class)
+    })
+    List<SessionFence> lockCurrentSessionFence(
+            @Param("runId") UUID runId,
+            @Param("orgId") UUID orgId,
+            @Param("userId") UUID userId,
+            @Param("agentId") UUID agentId);
+
+    @Update(
+            """
+            UPDATE chat_sessions SET execution_generation = execution_generation + 1
+             WHERE id = #{sessionId} AND org_id = #{orgId}
+            """)
+    int advanceSessionGeneration(@Param("sessionId") UUID sessionId, @Param("orgId") UUID orgId);
+
+    @Update(
+            """
+            UPDATE file_publications SET status = 'ABORTED', reserved_bytes = 0
+             WHERE org_id = #{orgId} AND session_id = #{sessionId} AND session_generation IS NOT NULL
+               AND status IN ('STAGED', 'STORED')
+            """)
+    int revokeSessionPublications(@Param("sessionId") UUID sessionId, @Param("orgId") UUID orgId);
+
+    @Update(
+            """
+            UPDATE assistant_runs SET status = 'CANCELLED', cancel_requested = TRUE,
+                   failure_code = #{reason}, failure_message = 'Session execution was revoked',
+                   completed_at = #{now}, updated_at = #{now}, version = version + 1
+             WHERE session_id = #{sessionId} AND org_id = #{orgId}
+               AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+            """)
+    int revokeSessionRuns(
+            @Param("sessionId") UUID sessionId,
+            @Param("orgId") UUID orgId,
+            @Param("reason") String reason,
+            @Param("now") OffsetDateTime now);
+
+    @Update(
+            """
+            UPDATE task_nodes SET status = 'CANCELLED', last_error_code = #{reason},
+                   last_error_message = 'Session execution was revoked', completed_at = #{now},
+                   updated_at = #{now}, version = version + 1
+             WHERE org_id = #{orgId} AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+               AND run_id IN (SELECT id FROM assistant_runs WHERE session_id = #{sessionId} AND org_id = #{orgId})
+            """)
+    int revokeSessionTasks(
+            @Param("sessionId") UUID sessionId,
+            @Param("orgId") UUID orgId,
+            @Param("reason") String reason,
+            @Param("now") OffsetDateTime now);
+
+    @Update(
+            """
+            UPDATE agent_runs SET status = 'CANCELLED', completed_at = #{now}, updated_at = #{now}, version = version + 1
+             WHERE org_id = #{orgId} AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+               AND run_id IN (SELECT id FROM assistant_runs WHERE session_id = #{sessionId} AND org_id = #{orgId})
+            """)
+    int revokeSessionAgents(
+            @Param("sessionId") UUID sessionId,
+            @Param("orgId") UUID orgId,
+            @Param("now") OffsetDateTime now);
+
+    @Update(
+            """
+            UPDATE run_attempts SET status = 'CANCELLED', error_code = #{reason},
+                   error_message = 'Session execution was revoked', completed_at = #{now}, updated_at = #{now},
+                   lease_owner = NULL, lease_expires_at = NULL, version = version + 1
+             WHERE org_id = #{orgId} AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+               AND run_id IN (SELECT id FROM assistant_runs WHERE session_id = #{sessionId} AND org_id = #{orgId})
+            """)
+    int revokeSessionAttempts(
+            @Param("sessionId") UUID sessionId,
+            @Param("orgId") UUID orgId,
+            @Param("reason") String reason,
+            @Param("now") OffsetDateTime now);
+
+    @Delete(
+            """
+            DELETE FROM context_checkpoints WHERE org_id = #{orgId}
+              AND run_id IN (SELECT id FROM assistant_runs WHERE session_id = #{sessionId} AND org_id = #{orgId})
+            """)
+    int deleteSessionCheckpoints(@Param("sessionId") UUID sessionId, @Param("orgId") UUID orgId);
 
     String RUN_COLUMNS =
             """
@@ -223,11 +360,13 @@ public interface RunOrchestrationMapper {
             INSERT INTO assistant_runs
                 (id, org_id, user_id, agent_id, session_id, trigger_message_id, idempotency_key,
                  mode, status, cancel_requested, next_event_seq, token_budget,
-                 cost_budget_micros, model_call_budget, deadline_at, started_at, updated_at)
+                 cost_budget_micros, model_call_budget, deadline_at, started_at, updated_at, session_generation)
             VALUES
                 (#{id}, #{orgId}, #{userId}, #{agentId}, #{sessionId}, #{triggerMessageId},
                  #{idempotencyKey}, #{mode}, #{status}, FALSE, 0, #{tokenBudget},
-                 #{costBudgetMicros}, #{modelCallBudget}, #{deadlineAt}, #{startedAt}, #{updatedAt})
+                 #{costBudgetMicros}, #{modelCallBudget}, #{deadlineAt}, #{startedAt}, #{updatedAt},
+                 (SELECT execution_generation FROM chat_sessions WHERE id = #{sessionId} AND org_id = #{orgId}
+                   AND user_id = #{userId} AND agent_id = #{agentId}))
             """)
     int insertRun(NewRun run);
 
@@ -266,6 +405,8 @@ public interface RunOrchestrationMapper {
             UPDATE assistant_runs
                SET completed_at = NULL, updated_at = #{updatedAt}, version = version + 1
              WHERE id = #{runId} AND org_id = #{orgId}
+               AND EXISTS (SELECT 1 FROM chat_sessions s WHERE s.id = assistant_runs.session_id
+                            AND s.org_id = assistant_runs.org_id AND s.execution_generation = assistant_runs.session_generation)
             """)
     int reopenRun(
             @Param("runId") UUID runId,

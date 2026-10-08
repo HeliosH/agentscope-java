@@ -23,11 +23,17 @@ import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.domain.model.FileAttachmentEntity;
 import io.agentscope.saas.domain.model.FileEntity;
 import io.agentscope.saas.domain.model.FileVersionEntity;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository;
+import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.SessionFence;
+import io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException;
 import io.agentscope.saas.domain.repository.FileAttachmentRepository;
 import io.agentscope.saas.domain.repository.FileRepository;
 import io.agentscope.saas.domain.repository.FileVersionRepository;
 import io.agentscope.saas.domain.repository.OrgRepository;
 import io.agentscope.saas.domain.repository.UserRepository;
+import io.agentscope.saas.domain.workspace.FilePublicationRepository.Execution;
+import io.agentscope.saas.domain.workspace.FilePublicationRepository.Intent;
+import io.agentscope.saas.domain.workspace.FilePublicationRepository.Publication;
 import io.agentscope.saas.storage.FileObject;
 import io.agentscope.saas.storage.FileObjectStore;
 import java.nio.charset.StandardCharsets;
@@ -43,9 +49,12 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -57,6 +66,7 @@ import org.springframework.web.server.ResponseStatusException;
  */
 @Service
 public class FileCatalogService {
+    private static final Logger log = LoggerFactory.getLogger(FileCatalogService.class);
 
     public static final String STATUS_ACTIVE = "active";
     public static final String STATUS_DELETED = "deleted";
@@ -77,6 +87,8 @@ public class FileCatalogService {
     private final ObjectProvider<FileObjectStore> objectStoreProvider;
     private final ObjectMapper objectMapper;
     private final SaasProperties properties;
+    private final RunOrchestrationRepository runs;
+    private final FilePublicationCoordinator publications;
 
     public FileCatalogService(
             FileRepository fileRepository,
@@ -87,6 +99,53 @@ public class FileCatalogService {
             ObjectProvider<FileObjectStore> objectStoreProvider,
             ObjectMapper objectMapper,
             SaasProperties properties) {
+        this(
+                fileRepository,
+                fileVersionRepository,
+                fileAttachmentRepository,
+                orgRepository,
+                userRepository,
+                objectStoreProvider,
+                objectMapper,
+                properties,
+                null);
+    }
+
+    public FileCatalogService(
+            FileRepository fileRepository,
+            FileVersionRepository fileVersionRepository,
+            FileAttachmentRepository fileAttachmentRepository,
+            OrgRepository orgRepository,
+            UserRepository userRepository,
+            ObjectProvider<FileObjectStore> objectStoreProvider,
+            ObjectMapper objectMapper,
+            SaasProperties properties,
+            RunOrchestrationRepository runs) {
+        this(
+                fileRepository,
+                fileVersionRepository,
+                fileAttachmentRepository,
+                orgRepository,
+                userRepository,
+                objectStoreProvider,
+                objectMapper,
+                properties,
+                runs,
+                null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public FileCatalogService(
+            FileRepository fileRepository,
+            FileVersionRepository fileVersionRepository,
+            FileAttachmentRepository fileAttachmentRepository,
+            OrgRepository orgRepository,
+            UserRepository userRepository,
+            ObjectProvider<FileObjectStore> objectStoreProvider,
+            ObjectMapper objectMapper,
+            SaasProperties properties,
+            RunOrchestrationRepository runs,
+            FilePublicationCoordinator publications) {
         this.fileRepository = fileRepository;
         this.fileVersionRepository = fileVersionRepository;
         this.fileAttachmentRepository = fileAttachmentRepository;
@@ -95,9 +154,11 @@ public class FileCatalogService {
         this.objectStoreProvider = objectStoreProvider;
         this.objectMapper = objectMapper;
         this.properties = properties;
+        this.runs = runs;
+        this.publications = publications;
     }
 
-    @Transactional
+    @Transactional(propagation = Propagation.NEVER)
     public Optional<FileRecord> recordWorkspaceFile(
             TenantContext tenant,
             UUID agentId,
@@ -116,11 +177,41 @@ public class FileCatalogService {
                 contentType,
                 source,
                 metadata,
+                null,
+                null,
+                null,
                 null);
     }
 
-    /** Runs the workspace mutation only after quota locks and validation have succeeded. */
-    @Transactional
+    @Transactional(propagation = Propagation.NEVER)
+    public Optional<FileRecord> recordWorkspaceFileForExecution(
+            TenantContext tenant,
+            UUID agentId,
+            UUID runId,
+            SessionFence fence,
+            String logicalPath,
+            byte[] content,
+            String contentType,
+            String source,
+            Map<String, Object> metadata) {
+        Objects.requireNonNull(fence, "sessionFence");
+        return recordWorkspaceFileLocked(
+                tenant,
+                agentId,
+                fence.sessionId(),
+                logicalPath,
+                content,
+                contentType,
+                source,
+                metadata,
+                null,
+                runId,
+                fence,
+                null);
+    }
+
+    /** Runs the workspace mutation after durable quota admission, outside SQL transactions. */
+    @Transactional(propagation = Propagation.NEVER)
     public Optional<FileRecord> recordWorkspaceFileWithWrite(
             TenantContext tenant,
             UUID agentId,
@@ -140,7 +231,10 @@ public class FileCatalogService {
                 contentType,
                 source,
                 metadata,
-                Objects.requireNonNull(workspaceWrite, "workspaceWrite"));
+                Objects.requireNonNull(workspaceWrite, "workspaceWrite"),
+                null,
+                null,
+                null);
     }
 
     private Optional<FileRecord> recordWorkspaceFileLocked(
@@ -152,7 +246,70 @@ public class FileCatalogService {
             String contentType,
             String source,
             Map<String, Object> metadata,
-            Runnable workspaceWrite) {
+            Runnable workspaceWrite,
+            UUID runId,
+            SessionFence fence,
+            Publication prepared) {
+        return recordWorkspaceFileLocked(
+                tenant,
+                agentId,
+                sessionId,
+                logicalPath,
+                content,
+                contentType,
+                source,
+                metadata,
+                workspaceWrite,
+                runId,
+                fence,
+                prepared,
+                null);
+    }
+
+    @Transactional(propagation = Propagation.NEVER)
+    public Optional<FileRecord> recordWorkspaceFileForAttempt(
+            TenantContext tenant,
+            UUID agent,
+            UUID run,
+            SessionFence fence,
+            Execution execution,
+            String path,
+            byte[] bytes,
+            String contentType,
+            String source,
+            Map<String, Object> metadata) {
+        Objects.requireNonNull(run);
+        Objects.requireNonNull(execution);
+        return recordWorkspaceFileLocked(
+                tenant,
+                agent,
+                fence.sessionId(),
+                path,
+                bytes,
+                contentType,
+                source,
+                metadata,
+                null,
+                run,
+                fence,
+                null,
+                execution);
+    }
+
+    private Optional<FileRecord> recordWorkspaceFileLocked(
+            TenantContext tenant,
+            UUID agentId,
+            UUID sessionId,
+            String logicalPath,
+            byte[] content,
+            String contentType,
+            String source,
+            Map<String, Object> metadata,
+            Runnable workspaceWrite,
+            UUID runId,
+            SessionFence fence,
+            Publication prepared,
+            Execution execution) {
         if (!properties.getFileStore().isEnabled()) {
             runWorkspaceWrite(workspaceWrite);
             return Optional.empty();
@@ -174,6 +331,73 @@ public class FileCatalogService {
         }
         String sha256 = sha256(bytes);
 
+        if (publications != null && prepared == null) {
+            return withTenantOrg(
+                    orgId.get().toString(),
+                    () ->
+                            Optional.of(
+                                    publications.publish(
+                                            () ->
+                                                    preparePublication(
+                                                            tenant,
+                                                            orgId.get(),
+                                                            userId.get(),
+                                                            agentId,
+                                                            sessionId,
+                                                            runId,
+                                                            fence,
+                                                            path,
+                                                            bytes.length,
+                                                            sha256,
+                                                            store),
+                                            p ->
+                                                    prepareIntent(
+                                                            p,
+                                                            contentType,
+                                                            source,
+                                                            metadata,
+                                                            execution,
+                                                            workspaceWrite != null),
+                                            p -> {
+                                                if (p.ownsObject()) {
+                                                    putObject(
+                                                            store,
+                                                            p.orgId(),
+                                                            p.objectKey(),
+                                                            bytes,
+                                                            contentType,
+                                                            sha256);
+                                                    byte[] persisted =
+                                                            getObject(
+                                                                    store,
+                                                                    p.orgId(),
+                                                                    p.objectKey());
+                                                    if (persisted == null
+                                                            || persisted.length != bytes.length
+                                                            || !sha256.equals(sha256(persisted)))
+                                                        throw new IllegalStateException(
+                                                                "FILE_PUBLICATION_INTEGRITY_FAILED");
+                                                }
+                                                runWorkspaceWrite(workspaceWrite);
+                                            },
+                                            p ->
+                                                    recordWorkspaceFileLocked(
+                                                                    tenant,
+                                                                    agentId,
+                                                                    sessionId,
+                                                                    path,
+                                                                    bytes,
+                                                                    contentType,
+                                                                    source,
+                                                                    metadata,
+                                                                    null,
+                                                                    runId,
+                                                                    fence,
+                                                                    p,
+                                                                    execution)
+                                                            .orElseThrow())));
+        }
+
         return withTenantOrg(
                 orgId.get().toString(),
                 () -> {
@@ -183,8 +407,17 @@ public class FileCatalogService {
                     userRepository
                             .lockTenantUser(orgId.get(), userId.get())
                             .orElseThrow(() -> new IllegalStateException("User not found"));
+                    validateExecutionFence(tenant, agentId, runId, fence);
+                    if (prepared != null)
+                        lockPublicationSession(tenant, agentId, sessionId, runId, fence);
+                    Intent intent = prepared == null ? null : publications.intent(prepared);
+                    if (intent != null) publications.requireExecution(prepared, intent);
                     Optional<FileEntity> existing =
-                            fileRepository.lockByOrgUserPath(orgId.get(), userId.get(), path);
+                            fence == null
+                                    ? fileRepository.lockByOrgUserPath(
+                                            orgId.get(), userId.get(), path)
+                                    : fileRepository.findByOrgIdAndUserIdAndLogicalPath(
+                                            orgId.get(), userId.get(), path);
                     FileEntity file =
                             existing.orElseGet(
                                     () ->
@@ -195,22 +428,71 @@ public class FileCatalogService {
                                                     sessionId,
                                                     path,
                                                     source));
-                    if (existing.isEmpty()) {
-                        fileRepository.saveAndFlush(file);
-                    }
-                    Optional<FileVersionEntity> current = currentVersion(file, orgId.get());
-                    long replacedBytes =
-                            existing.isPresent()
-                                            && STATUS_ACTIVE.equals(file.getStatus())
-                                            && current.isPresent()
-                                            && current.get().getSizeBytes() != null
-                                    ? current.get().getSizeBytes()
-                                    : 0L;
-                    enforceQuota(orgId.get(), userId.get(), replacedBytes, bytes.length);
+                    Optional<FileVersionEntity> current =
+                            existing.isEmpty()
+                                    ? Optional.empty()
+                                    : currentVersion(file, orgId.get());
+                    if (intent != null) requireBase(intent, existing);
+                    long replacedBytes = replacementSize(file, current);
+                    enforceQuota(
+                            orgId.get(),
+                            userId.get(),
+                            replacedBytes,
+                            bytes.length,
+                            prepared == null ? null : prepared.id());
                     if (workspaceWrite != null) {
                         workspaceWrite.run();
                     }
-                    if (current.isPresent() && sha256.equals(current.get().getSha256())) {
+                    String objectKey =
+                            prepared == null
+                                    ? objectKey(orgId.get(), userId.get(), sha256)
+                                    : prepared.objectKey();
+                    String objectBackend = prepared == null ? store.backend() : prepared.backend();
+                    if (fence != null || prepared != null) {
+                        if (prepared == null) {
+                            if (current.isPresent() && sha256.equals(current.get().getSha256())) {
+                                objectKey = current.get().getObjectKey();
+                                objectBackend = current.get().getStorageBackend();
+                            } else
+                                putObject(
+                                        store, orgId.get(), objectKey, bytes, contentType, sha256);
+                        }
+                        // Session before file avoids a cycle with chat attachment FK locks.
+                        lockExecutionFence(tenant, agentId, runId, fence);
+                        existing =
+                                fileRepository.lockByOrgUserPath(orgId.get(), userId.get(), path);
+                        file =
+                                existing.orElseGet(
+                                        () ->
+                                                newFile(
+                                                        orgId.get(),
+                                                        userId.get(),
+                                                        agentId,
+                                                        sessionId,
+                                                        path,
+                                                        source));
+                        current =
+                                existing.isEmpty()
+                                        ? Optional.empty()
+                                        : currentVersion(file, orgId.get());
+                        enforceQuota(
+                                orgId.get(),
+                                userId.get(),
+                                replacementSize(file, current),
+                                bytes.length,
+                                prepared == null ? null : prepared.id());
+                    }
+                    if (prepared != null
+                            && !prepared.ownsObject()
+                            && (current.isEmpty()
+                                    || !STATUS_ACTIVE.equals(file.getStatus())
+                                    || !sha256.equals(current.get().getSha256())
+                                    || !objectKey.equals(current.get().getObjectKey())))
+                        throw new IllegalStateException("FILE_PUBLICATION_SOURCE_CHANGED");
+                    if (current.isPresent()
+                            && sha256.equals(current.get().getSha256())
+                            && (prepared == null
+                                    || objectKey.equals(current.get().getObjectKey()))) {
                         FileVersionEntity version = current.get();
                         file.setAgentId(agentId);
                         file.setSessionId(sessionId);
@@ -232,8 +514,9 @@ public class FileCatalogService {
                                                 : 0L,
                                         version.getSha256()));
                     }
-                    String objectKey = objectKey(orgId.get(), userId.get(), sha256);
-                    putObject(store, orgId.get(), objectKey, bytes, contentType, sha256);
+                    if (fence == null && prepared == null)
+                        putObject(store, orgId.get(), objectKey, bytes, contentType, sha256);
+                    if (existing.isEmpty()) fileRepository.saveAndFlush(file);
                     long versionNo =
                             existing.isEmpty()
                                     ? 1L
@@ -245,7 +528,7 @@ public class FileCatalogService {
                                     sessionId,
                                     versionNo,
                                     objectKey,
-                                    store.backend(),
+                                    objectBackend,
                                     contentType,
                                     bytes.length,
                                     sha256,
@@ -266,16 +549,301 @@ public class FileCatalogService {
                                     path,
                                     versionNo,
                                     objectKey,
-                                    store.backend(),
+                                    objectBackend,
                                     bytes.length,
                                     sha256));
                 });
     }
 
+    private Publication preparePublication(
+            TenantContext tenant,
+            UUID org,
+            UUID user,
+            UUID agent,
+            UUID session,
+            UUID run,
+            SessionFence fence,
+            String path,
+            long size,
+            String digest,
+            FileObjectStore store) {
+        lockQuotaOwners(org, user);
+        publications.requireIdlePath(org, user, path);
+        lockPublicationSession(tenant, agent, session, run, fence);
+        Optional<FileEntity> file =
+                fileRepository.findByOrgIdAndUserIdAndLogicalPath(org, user, path);
+        Optional<FileVersionEntity> current = file.flatMap(f -> currentVersion(f, org));
+        long replaced = file.map(f -> replacementSize(f, current)).orElse(0L);
+        enforceQuota(org, user, replaced, size);
+        boolean reuse =
+                file.isPresent()
+                        && STATUS_ACTIVE.equals(file.get().getStatus())
+                        && current.isPresent()
+                        && digest.equals(current.get().getSha256())
+                        && store.backend().equals(current.get().getStorageBackend());
+        UUID id = UUID.randomUUID();
+        String prefix = properties.getFileStore().getObjectKeyPrefix();
+        if (prefix == null || prefix.isBlank()) prefix = "files/";
+        if (!prefix.endsWith("/")) prefix += "/";
+        String key =
+                reuse
+                        ? current.get().getObjectKey()
+                        : prefix
+                                + "org="
+                                + org
+                                + "/user="
+                                + user
+                                + "/publications/"
+                                + id
+                                + "-"
+                                + digest.substring(0, 16);
+        OffsetDateTime until = publications.leaseUntil();
+        return new Publication(
+                id,
+                org,
+                user,
+                agent,
+                session,
+                run,
+                fence == null ? null : fence.generation(),
+                path,
+                key,
+                store.backend(),
+                digest,
+                size,
+                Math.max(0L, size - replaced),
+                !reuse,
+                "STAGED",
+                until,
+                until,
+                null,
+                0,
+                null);
+    }
+
+    private Intent prepareIntent(
+            Publication p,
+            String contentType,
+            String source,
+            Map<String, Object> metadata,
+            Execution execution,
+            boolean rawWriteRequired) {
+        Optional<FileEntity> base =
+                fileRepository.findByOrgIdAndUserIdAndLogicalPath(
+                        p.orgId(), p.userId(), p.logicalPath());
+        String json;
+        try {
+            json = objectMapper.writeValueAsString(metadata == null ? Map.of() : metadata);
+        } catch (JsonProcessingException error) {
+            throw new IllegalArgumentException("Invalid publication metadata");
+        }
+        if (json.getBytes(StandardCharsets.UTF_8).length > 32768)
+            throw new IllegalArgumentException("Publication metadata exceeds limit");
+        Intent i =
+                new Intent(
+                        p.id(),
+                        base.map(FileEntity::getId).orElse(null),
+                        base.map(FileEntity::getCurrentVersionId).orElse(null),
+                        base.map(FileEntity::getStatus).orElse(null),
+                        contentType,
+                        source,
+                        json,
+                        execution == null ? null : execution.taskId(),
+                        execution == null ? null : execution.agentRunId(),
+                        execution == null ? null : execution.attemptId(),
+                        execution == null ? null : execution.leaseOwner(),
+                        rawWriteRequired);
+        publications.requireExecution(p, i);
+        return i;
+    }
+
+    private static void requireBase(Intent i, Optional<FileEntity> file) {
+        if (!Objects.equals(i.baseFileId(), file.map(FileEntity::getId).orElse(null))
+                || !Objects.equals(
+                        i.baseVersionId(), file.map(FileEntity::getCurrentVersionId).orElse(null))
+                || !Objects.equals(i.baseStatus(), file.map(FileEntity::getStatus).orElse(null)))
+            throw new IllegalStateException("FILE_PUBLICATION_BASE_CHANGED");
+    }
+
+    @Transactional(propagation = Propagation.NEVER)
+    public boolean recoverPublication(Publication p, UUID token) {
+        return withTenantOrg(
+                p.orgId().toString(),
+                () -> {
+                    var tenant =
+                            new TenantContext(
+                                    p.orgId().toString(),
+                                    p.userId().toString(),
+                                    "member",
+                                    "standard",
+                                    0,
+                                    0);
+                    Intent intent =
+                            Objects.requireNonNull(
+                                    publications.intent(p), "Publication intent missing");
+                    long readLimit = properties.getFileStore().getMaxFileBytes();
+                    if (p.sizeBytes() < 0 || (readLimit > 0 && p.sizeBytes() > readLimit))
+                        throw new IllegalStateException("FILE_PUBLICATION_READ_LIMIT");
+                    SessionFence fence =
+                            p.sessionGeneration() == null
+                                    ? null
+                                    : new SessionFence(p.sessionId(), p.sessionGeneration());
+                    boolean claimed =
+                            publications.claimRecovery(
+                                    p,
+                                    token,
+                                    () -> {
+                                        lockQuotaOwners(p.orgId(), p.userId());
+                                        lockPublicationSession(
+                                                tenant,
+                                                p.agentId(),
+                                                p.sessionId(),
+                                                p.runId(),
+                                                fence);
+                                        publications.requireExecution(p, intent);
+                                        publications.requireIdlePath(
+                                                p.orgId(), p.userId(), p.logicalPath());
+                                        var file =
+                                                fileRepository.lockByOrgUserPath(
+                                                        p.orgId(), p.userId(), p.logicalPath());
+                                        requireBase(intent, file);
+                                        var version =
+                                                file.flatMap(f -> currentVersion(f, p.orgId()));
+                                        enforceQuota(
+                                                p.orgId(),
+                                                p.userId(),
+                                                file.map(f -> replacementSize(f, version))
+                                                        .orElse(0L),
+                                                p.sizeBytes(),
+                                                p.id());
+                                    });
+                    if (!claimed) return false;
+                    FileObjectStore store = objectStoreProvider.getIfAvailable();
+                    if (store == null || !p.backend().equals(store.backend()))
+                        throw new IllegalStateException("FILE_PUBLICATION_BACKEND_CHANGED");
+                    byte[] bytes;
+                    try {
+                        bytes = store.getBounded(p.orgId(), p.objectKey(), p.sizeBytes());
+                    } catch (Exception error) {
+                        throw new FilePublicationRetryableException();
+                    }
+                    if (bytes == null
+                            || bytes.length != p.sizeBytes()
+                            || !p.sha256().equals(sha256(bytes)))
+                        throw new IllegalStateException("FILE_PUBLICATION_INTEGRITY_FAILED");
+                    Map<String, Object> metadata;
+                    try {
+                        if (intent.metadataJson().getBytes(StandardCharsets.UTF_8).length > 65536)
+                            throw new IllegalArgumentException();
+                        var tree = objectMapper.readTree(intent.metadataJson());
+                        if (!tree.isObject() || objectMapper.writeValueAsBytes(tree).length > 32768)
+                            throw new IllegalArgumentException();
+                        metadata =
+                                objectMapper.convertValue(
+                                        tree,
+                                        new com.fasterxml.jackson.core.type.TypeReference<
+                                                Map<String, Object>>() {});
+                    } catch (Exception malformed) {
+                        throw new IllegalStateException("FILE_PUBLICATION_METADATA_INVALID");
+                    }
+                    publications.commitRecovery(
+                            p,
+                            token,
+                            candidate ->
+                                    recordWorkspaceFileLocked(
+                                                    tenant,
+                                                    p.agentId(),
+                                                    p.sessionId(),
+                                                    p.logicalPath(),
+                                                    bytes,
+                                                    intent.contentType(),
+                                                    intent.source(),
+                                                    metadata,
+                                                    null,
+                                                    p.runId(),
+                                                    fence,
+                                                    candidate,
+                                                    intent.execution())
+                                            .orElseThrow());
+                    return true;
+                });
+    }
+
+    private void lockQuotaOwners(UUID org, UUID user) {
+        orgRepository
+                .lockTenantOrg(org)
+                .orElseThrow(() -> new IllegalStateException("Organization not found"));
+        userRepository
+                .lockTenantUser(org, user)
+                .orElseThrow(() -> new IllegalStateException("User not found"));
+    }
+
+    private void lockPublicationSession(
+            TenantContext tenant, UUID agent, UUID session, UUID run, SessionFence fence) {
+        if (fence != null) {
+            lockExecutionFence(tenant, agent, run, fence);
+        } else if (session != null) {
+            if (runs == null) throw new SessionExecutionRevokedException();
+            runs.lockSessionGeneration(
+                            session,
+                            UUID.fromString(tenant.orgId()),
+                            UUID.fromString(tenant.userId()),
+                            agent)
+                    .orElseThrow(SessionExecutionRevokedException::new);
+        }
+    }
+
+    private static long replacementSize(FileEntity file, Optional<FileVersionEntity> current) {
+        return STATUS_ACTIVE.equals(file.getStatus())
+                        && current.isPresent()
+                        && current.get().getSizeBytes() != null
+                ? current.get().getSizeBytes()
+                : 0L;
+    }
+
+    private void validateExecutionFence(
+            TenantContext tenant, UUID agentId, UUID runId, SessionFence fence) {
+        if (fence == null) return;
+        if (runs == null) throw new SessionExecutionRevokedException();
+        UUID org = UUID.fromString(tenant.orgId()), user = UUID.fromString(tenant.userId());
+        var current =
+                runId == null
+                        ? runs.findSessionFence(fence.sessionId(), org, user, agentId)
+                        : runs.findCurrentSessionFence(runId, org, user, agentId);
+        if (current.filter(fence::equals).isEmpty()) throw new SessionExecutionRevokedException();
+    }
+
+    private void lockExecutionFence(
+            TenantContext tenant, UUID agentId, UUID runId, SessionFence fence) {
+        if (fence == null) return;
+        if (runs == null) throw new SessionExecutionRevokedException();
+        UUID org = UUID.fromString(tenant.orgId()), user = UUID.fromString(tenant.userId());
+        if (runId == null) {
+            long generation =
+                    runs.lockSessionGeneration(fence.sessionId(), org, user, agentId)
+                            .orElseThrow(SessionExecutionRevokedException::new);
+            if (generation != fence.generation()) throw new SessionExecutionRevokedException();
+        } else {
+            var current =
+                    runs.lockCurrentSessionFence(runId, org, user, agentId)
+                            .orElseThrow(SessionExecutionRevokedException::new);
+            if (!fence.equals(current)) throw new SessionExecutionRevokedException();
+        }
+    }
+
     private void enforceQuota(UUID orgId, UUID userId, long replacedBytes, long incomingBytes) {
+        enforceQuota(orgId, userId, replacedBytes, incomingBytes, null);
+    }
+
+    private void enforceQuota(
+            UUID orgId, UUID userId, long replacedBytes, long incomingBytes, UUID publicationId) {
         SaasProperties.FileStore cfg = properties.getFileStore();
         long userLimit = cfg.getMaxUserBytes();
         long userUsage = fileVersionRepository.currentUsageByUser(orgId, userId);
+        if (publications != null)
+            userUsage =
+                    projectedUsage(
+                            userUsage, 0, publications.reserved(orgId, userId, publicationId));
         long projectedUser = projectedUsage(userUsage, replacedBytes, incomingBytes);
         if (userLimit > 0 && projectedUser > userLimit) {
             throw new ResponseStatusException(
@@ -284,6 +852,9 @@ public class FileCatalogService {
         }
         long orgLimit = cfg.getMaxOrgBytes();
         long orgUsage = fileVersionRepository.currentUsageByOrg(orgId);
+        if (publications != null)
+            orgUsage =
+                    projectedUsage(orgUsage, 0, publications.reserved(orgId, null, publicationId));
         long projectedOrg = projectedUsage(orgUsage, replacedBytes, incomingBytes);
         if (orgLimit > 0 && projectedOrg > orgLimit) {
             throw new ResponseStatusException(
@@ -307,7 +878,7 @@ public class FileCatalogService {
         }
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(propagation = Propagation.NEVER)
     public Optional<StoredFile> readCurrentFile(TenantContext tenant, String logicalPath) {
         if (!properties.getFileStore().isEnabled()) {
             return Optional.empty();
@@ -448,7 +1019,7 @@ public class FileCatalogService {
                                 .orElse(List.of()));
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(propagation = Propagation.NEVER)
     public Optional<StoredFile> readVersion(TenantContext tenant, UUID versionId) {
         if (!properties.getFileStore().isEnabled() || versionId == null) {
             return Optional.empty();
@@ -489,7 +1060,7 @@ public class FileCatalogService {
                                                                                         .getSha256()))));
     }
 
-    @Transactional
+    @Transactional(propagation = Propagation.NEVER)
     public Optional<FileRecord> restoreVersion(
             TenantContext tenant,
             UUID agentId,
@@ -684,6 +1255,26 @@ public class FileCatalogService {
 
     @Transactional
     public void markDeleted(TenantContext tenant, String logicalPath) {
+        markDeletedLocked(tenant, logicalPath, null, null, null);
+    }
+
+    @Transactional
+    public void markDeletedForExecution(
+            TenantContext tenant,
+            UUID agentId,
+            UUID runId,
+            SessionFence fence,
+            String logicalPath) {
+        markDeletedLocked(
+                tenant, logicalPath, agentId, runId, Objects.requireNonNull(fence, "sessionFence"));
+    }
+
+    private void markDeletedLocked(
+            TenantContext tenant,
+            String logicalPath,
+            UUID agentId,
+            UUID runId,
+            SessionFence fence) {
         if (!properties.getFileStore().isEnabled()) {
             return;
         }
@@ -696,6 +1287,11 @@ public class FileCatalogService {
         withTenantOrg(
                 orgId.get().toString(),
                 () -> {
+                    if (publications != null) {
+                        lockQuotaOwners(orgId.get(), userId.get());
+                        publications.requireIdlePath(orgId.get(), userId.get(), path);
+                    }
+                    lockExecutionFence(tenant, agentId, runId, fence);
                     fileRepository
                             .lockByOrgUserPath(orgId.get(), userId.get(), path)
                             .ifPresent(
@@ -725,6 +1321,11 @@ public class FileCatalogService {
         withTenantOrg(
                 orgId.get().toString(),
                 () -> {
+                    if (publications != null) {
+                        lockQuotaOwners(orgId.get(), userId.get());
+                        publications.requireIdlePath(orgId.get(), userId.get(), sourcePath);
+                        publications.requireIdlePath(orgId.get(), userId.get(), targetPath);
+                    }
                     Optional<FileEntity> sourceOpt =
                             fileRepository.lockByOrgUserPath(orgId.get(), userId.get(), sourcePath);
                     if (sourceOpt.isEmpty()) {
@@ -878,7 +1479,8 @@ public class FileCatalogService {
         try {
             store.put(new FileObject(orgId, objectKey, bytes, contentType, sha256));
         } catch (Exception e) {
-            throw new IllegalStateException("Failed to store file object: " + objectKey, e);
+            log.warn("File object write failed ({})", e.getClass().getSimpleName());
+            throw new IllegalStateException("Failed to store file object");
         }
     }
 
@@ -886,7 +1488,8 @@ public class FileCatalogService {
         try {
             return store.get(orgId, objectKey);
         } catch (Exception e) {
-            throw new IllegalStateException("Failed to read file object: " + objectKey, e);
+            log.warn("File object read failed ({})", e.getClass().getSimpleName());
+            throw new IllegalStateException("Failed to read file object");
         }
     }
 

@@ -78,7 +78,8 @@ public final class ModelCatalog
             String defaultId,
             Map<String, Route> routes,
             List<ModelOption> options,
-            String version) {}
+            String version,
+            String sourceVersion) {}
 
     /** A fully validated catalog snapshot that can be activated after its DB transaction commits. */
     public final class PreparedRefresh {
@@ -194,10 +195,40 @@ public final class ModelCatalog
         // Keep routing identical to stream(messages,...). Runtime context is not a second,
         // potentially conflicting source of tenant identity at this final request boundary.
         CatalogSnapshot selected = catalog(selectedOrgId(messages));
-        return new BoundRoute(resolveRoute(selected, selectedId(messages)), selected.version());
+        return new BoundRoute(
+                resolveRoute(selected, selectedId(messages)),
+                selected.version(),
+                selected.sourceVersion());
     }
 
-    private record BoundRoute(Route route, String routeVersion)
+    @Override
+    public Model bindToContext(RuntimeContext context) {
+        Object modelId = context != null ? context.get(MODEL_ID_KEY) : null;
+        return bindToContext(context, modelId != null ? modelId.toString() : null);
+    }
+
+    public Model bindToContext(RuntimeContext context, String modelId) {
+        return bindToOrganization(orgId(context), modelId);
+    }
+
+    /** Explicit server-validated organization, independent of message or context metadata. */
+    public Model bindToOrganization(UUID orgId, String modelId) {
+        CatalogSnapshot selected = catalog(orgId);
+        return new BoundRoute(
+                resolveRoute(selected, modelId), selected.version(), selected.sourceVersion());
+    }
+
+    /** Recheck persisted configuration before a governed dispatch, including deletion/fallback. */
+    public void requireCurrentBinding(UUID orgId, Model model) {
+        if (!(model instanceof BoundRoute bound))
+            throw new IllegalArgumentException("Catalog binding required");
+        var current = catalog(orgId);
+        resolveRoute(current, bound.route().option().id());
+        if (!current.sourceVersion().equals(bound.sourceVersion()))
+            throw new IllegalStateException("MODEL_ROUTE_CHANGED_REBIND_REQUIRED");
+    }
+
+    private record BoundRoute(Route route, String routeVersion, String sourceVersion)
             implements io.agentscope.core.model.StepBindableModel.BoundModel,
                     ContextWindowAwareModel,
                     io.agentscope.core.model.InputTokenAwareModel {
@@ -290,13 +321,41 @@ public final class ModelCatalog
         if (orgId == null || definitions == null) {
             return deployment;
         }
-        return organizationCatalogs.computeIfAbsent(orgId, this::loadManagedCatalog);
+        // A local invalidation is insufficient when another replica commits a model update.
+        return organizationCatalogs.compute(
+                orgId,
+                (id, current) -> {
+                    var managed = definitions.findByOrgIdOrderByModelId(id);
+                    return current != null && current.sourceVersion().equals(sourceVersion(managed))
+                            ? current
+                            : loadManagedCatalog(id, managed);
+                });
     }
 
     private CatalogSnapshot loadManagedCatalog(UUID orgId) {
+        return loadManagedCatalog(orgId, definitions.findByOrgIdOrderByModelId(orgId));
+    }
+
+    private static String sourceVersion(List<ModelDefinitionEntity> managed) {
+        return managed.stream()
+                .map(
+                        row ->
+                                row.getId()
+                                        + ":"
+                                        + row.getModelId()
+                                        + ":"
+                                        + row.getVersion()
+                                        + ":"
+                                        + row.isEnabled()
+                                        + ":"
+                                        + row.isDefaultModel())
+                .sorted()
+                .collect(java.util.stream.Collectors.joining("|"));
+    }
+
+    private CatalogSnapshot loadManagedCatalog(UUID orgId, List<ModelDefinitionEntity> managed) {
         LinkedHashMap<String, Route> merged = new LinkedHashMap<>(deployment.routes());
         String selectedDefault = deployment.defaultId();
-        List<ModelDefinitionEntity> managed = definitions.findByOrgIdOrderByModelId(orgId);
         for (ModelDefinitionEntity definition : managed) {
             merged.remove(definition.getModelId());
             if (!definition.isEnabled()) {
@@ -317,7 +376,13 @@ public final class ModelCatalog
         if (!merged.containsKey(selectedDefault)) {
             selectedDefault = merged.keySet().iterator().next();
         }
-        return withDefault(selectedDefault, merged);
+        var snapshot = withDefault(selectedDefault, merged);
+        return new CatalogSnapshot(
+                snapshot.defaultId(),
+                snapshot.routes(),
+                snapshot.options(),
+                snapshot.version(),
+                sourceVersion(managed));
     }
 
     private static CatalogSnapshot withDefault(String defaultId, Map<String, Route> routes) {
@@ -340,7 +405,8 @@ public final class ModelCatalog
                 defaultId,
                 Map.copyOf(normalized),
                 normalized.values().stream().map(Route::option).toList(),
-                UUID.randomUUID().toString());
+                UUID.randomUUID().toString(),
+                "");
     }
 
     private static Route resolveRoute(CatalogSnapshot catalog, String requestedId) {

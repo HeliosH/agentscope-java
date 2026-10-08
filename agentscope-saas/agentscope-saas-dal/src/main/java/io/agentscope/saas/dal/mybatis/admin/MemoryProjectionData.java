@@ -19,4 +19,5 @@ public record MemoryProjectionData(
         String agentId,
         String sessionId,
         String contentJson,
-        String metadataJson) {}
+        String metadataJson,
+        int attempts) {}

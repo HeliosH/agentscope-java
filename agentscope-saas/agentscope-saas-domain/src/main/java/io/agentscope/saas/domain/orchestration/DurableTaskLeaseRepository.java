@@ -16,6 +16,7 @@ import java.util.UUID;
 
 /** Persistence port for the cross-tenant durable task worker state machine. */
 public interface DurableTaskLeaseRepository {
+    boolean lockRun(UUID runId);
 
     List<TaskCandidate> findReadyCandidates(OffsetDateTime readyAt, int limit);
 

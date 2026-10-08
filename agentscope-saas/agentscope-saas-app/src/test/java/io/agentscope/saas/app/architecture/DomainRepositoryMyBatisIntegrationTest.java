@@ -206,7 +206,7 @@ class DomainRepositoryMyBatisIntegrationTest {
                 .contains(attachment.getId());
 
         MemoryEventEntity memory = memory(orgId, userId, agent.getId(), session.getId(), now);
-        memoryEvents.save(memory);
+        assertThat(memoryEvents.appendIfAbsent(memory)).isTrue();
         assertThat(
                         JSON.readTree(
                                 memoryEvents
@@ -218,6 +218,13 @@ class DomainRepositoryMyBatisIntegrationTest {
         memory.setSyncAttempts(1);
         memory.setUpdatedAt(now.plusSeconds(3));
         memoryEvents.save(memory);
+        memory.setSyncStatus("pending");
+        memory.setSyncAttempts(0);
+        assertThat(memoryEvents.appendIfAbsent(memory)).isFalse();
+        assertThat(memoryEvents.findById(memory.getId()).orElseThrow().getSyncStatus())
+                .isEqualTo("synced");
+        assertThat(memoryEvents.findById(memory.getId()).orElseThrow().getSyncAttempts())
+                .isEqualTo(1);
         assertThat(
                         memoryEvents.findAdminEvents(
                                 orgId, userId, session.getId().toString(), "synced", 5))

@@ -29,6 +29,7 @@ import io.agentscope.core.state.AgentState;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.model.WriteResult;
 import io.agentscope.harness.agent.memory.compaction.ToolResultEvictionConfig;
+import io.agentscope.harness.agent.memory.session.SessionArchiveStore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
@@ -61,11 +62,20 @@ public class ToolResultEvictionMiddleware implements MiddlewareBase {
 
     private final AbstractFilesystem filesystem;
     private final ToolResultEvictionConfig config;
+    private final SessionArchiveStore archiveStore;
 
     public ToolResultEvictionMiddleware(
             AbstractFilesystem filesystem, ToolResultEvictionConfig config) {
+        this(filesystem, config, null);
+    }
+
+    public ToolResultEvictionMiddleware(
+            AbstractFilesystem filesystem,
+            ToolResultEvictionConfig config,
+            SessionArchiveStore archiveStore) {
         this.filesystem = filesystem;
         this.config = config;
+        this.archiveStore = archiveStore;
     }
 
     @Override
@@ -119,14 +129,16 @@ public class ToolResultEvictionMiddleware implements MiddlewareBase {
         if (!changed) {
             return msg;
         }
-        return Msg.builder()
-                .id(msg.getId())
-                .name(msg.getName())
-                .role(msg.getRole())
-                .content(rebuilt)
-                .metadata(msg.getMetadata())
-                .timestamp(msg.getTimestamp())
-                .build();
+        Msg projected =
+                Msg.builder()
+                        .id(msg.getId())
+                        .name(msg.getName())
+                        .role(msg.getRole())
+                        .content(rebuilt)
+                        .metadata(msg.getMetadata())
+                        .timestamp(msg.getTimestamp())
+                        .build();
+        return archiveStore != null ? SessionArchiveStore.projection(msg, projected) : projected;
     }
 
     private ToolResultBlock maybeEvict(

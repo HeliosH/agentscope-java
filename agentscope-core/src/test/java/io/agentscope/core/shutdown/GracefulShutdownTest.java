@@ -83,6 +83,16 @@ class GracefulShutdownTest {
         }
 
         @Test
+        void resetRestoresDefaultConfiguration() {
+            manager.setConfig(
+                    new GracefulShutdownConfig(
+                            Duration.ofMillis(100), PartialReasoningPolicy.DISCARD));
+            manager.resetForTesting();
+            assertEquals(GracefulShutdownConfig.DEFAULT, manager.getConfig());
+            assertEquals(ShutdownState.RUNNING, manager.getState());
+        }
+
+        @Test
         @DisplayName("setConfig updates config")
         void setConfigUpdates() {
             GracefulShutdownConfig custom =

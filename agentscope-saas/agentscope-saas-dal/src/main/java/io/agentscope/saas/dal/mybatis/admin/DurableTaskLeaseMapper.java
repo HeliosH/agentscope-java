@@ -21,6 +21,8 @@ import org.apache.ibatis.annotations.Update;
 
 /** Administrative MyBatis mapper for the cross-tenant durable task worker. */
 public interface DurableTaskLeaseMapper {
+    @Select("SELECT id FROM assistant_runs WHERE id = #{runId} FOR UPDATE")
+    List<UUID> lockRun(@Param("runId") UUID runId);
 
     @Select(
             """

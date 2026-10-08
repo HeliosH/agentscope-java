@@ -250,8 +250,12 @@ public class AgentController {
     }
 
     @PostMapping("/draft")
-    public Mono<AgentDraftService.AgentDraft> draft(@RequestBody DraftRequest request) {
-        return draftService.draft(request == null ? null : request.description());
+    public Mono<AgentDraftService.AgentDraft> draft(
+            @RequestBody DraftRequest request, @AuthenticationPrincipal Jwt jwt) {
+        TenantContext tenant = tenant(jwt);
+        orgId(tenant);
+        userId(tenant);
+        return draftService.draft(tenant, request == null ? null : request.description());
     }
 
     // -----------------------------------------------------------------

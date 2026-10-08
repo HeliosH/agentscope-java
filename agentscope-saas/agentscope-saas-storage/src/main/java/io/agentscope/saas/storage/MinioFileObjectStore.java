@@ -66,6 +66,20 @@ public final class MinioFileObjectStore implements FileObjectStore {
     }
 
     @Override
+    public byte[] getBounded(UUID orgId, String objectKey, long maxBytes) throws Exception {
+        if (maxBytes < 1 || maxBytes > 33554432)
+            throw new IllegalArgumentException("Invalid object read budget");
+        try (var in =
+                client.getObject(
+                        GetObjectArgs.builder().bucket(bucket).object(objectKey).build())) {
+            byte[] bytes = in.readNBytes(Math.toIntExact(maxBytes + 1));
+            if (bytes.length > maxBytes)
+                throw new IllegalStateException("Object exceeds read budget");
+            return bytes;
+        }
+    }
+
+    @Override
     public void delete(UUID orgId, String objectKey) throws Exception {
         client.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(objectKey).build());
     }

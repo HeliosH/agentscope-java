@@ -18,23 +18,30 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
-/** MyBatis mapper for memory ledger projection leases. */
+/** System queue scan; mutations additionally bind the owning organization and claim token. */
 public interface MemoryProjectionMapper {
+
+    String ELIGIBLE =
+            """
+            AND source = 'mem0' AND event_type = 'conversation'
+            AND (
+                (sync_status IN ('pending', 'failed')
+                 AND (sync_next_attempt_at IS NULL OR sync_next_attempt_at <= #{now}))
+                OR (sync_status = 'syncing'
+                    AND ((sync_lease_until IS NOT NULL AND sync_lease_until <= #{now})
+                         OR (sync_lease_until IS NULL AND updated_at <= #{legacyStaleBefore})))
+            )
+            """;
 
     @Select(
             """
-            SELECT id, org_id, user_id, agent_id, session_id, content_json, metadata_json
+            SELECT id, org_id, user_id, agent_id, session_id, content_json, metadata_json,
+                   sync_attempts AS attempts
               FROM memory_events
-             WHERE source = 'mem0'
-               AND event_type = 'conversation'
-               AND sync_attempts < #{maxAttempts}
-               AND (
-                    sync_status IN ('pending', 'failed')
-                    OR (sync_status = 'syncing' AND updated_at < #{staleBefore})
-               )
-             ORDER BY created_at ASC
-             LIMIT #{batchSize}
-            """)
+             WHERE 1 = 1
+            """
+                    + ELIGIBLE
+                    + " ORDER BY created_at, id LIMIT #{batchSize}")
     @ConstructorArgs({
         @Arg(column = "id", javaType = UUID.class),
         @Arg(column = "org_id", javaType = UUID.class),
@@ -42,55 +49,90 @@ public interface MemoryProjectionMapper {
         @Arg(column = "agent_id", javaType = String.class),
         @Arg(column = "session_id", javaType = String.class),
         @Arg(column = "content_json", javaType = String.class),
-        @Arg(column = "metadata_json", javaType = String.class)
+        @Arg(column = "metadata_json", javaType = String.class),
+        @Arg(column = "attempts", javaType = int.class)
     })
     List<MemoryProjectionData> findReplayable(
             @Param("batchSize") int batchSize,
-            @Param("maxAttempts") int maxAttempts,
-            @Param("staleBefore") OffsetDateTime staleBefore);
+            @Param("now") OffsetDateTime now,
+            @Param("legacyStaleBefore") OffsetDateTime legacyStaleBefore);
 
     @Update(
             """
             UPDATE memory_events
-               SET sync_status = 'syncing', last_error = NULL, updated_at = #{claimedAt}
-             WHERE id = #{id}
-               AND source = 'mem0'
-               AND event_type = 'conversation'
-               AND sync_attempts < #{maxAttempts}
-               AND (
-                    sync_status IN ('pending', 'failed')
-                    OR (sync_status = 'syncing' AND updated_at < #{staleBefore})
-               )
-            """)
+               SET sync_status = 'syncing', sync_claim_token = #{token},
+                   sync_lease_until = #{leaseUntil}, sync_next_attempt_at = NULL,
+                   sync_attempts = sync_attempts + 1, last_error = NULL, updated_at = #{now}
+             WHERE id = #{id} AND org_id = #{orgId}
+               AND sync_attempts = #{expectedAttempts} AND sync_attempts < #{maxAttempts}
+            """
+                    + ELIGIBLE)
     int claim(
+            @Param("orgId") UUID orgId,
+            @Param("id") UUID id,
+            @Param("token") UUID token,
+            @Param("expectedAttempts") int expectedAttempts,
+            @Param("maxAttempts") int maxAttempts,
+            @Param("now") OffsetDateTime now,
+            @Param("leaseUntil") OffsetDateTime leaseUntil,
+            @Param("legacyStaleBefore") OffsetDateTime legacyStaleBefore);
+
+    String OWNED =
+            """
+             WHERE id = #{id} AND org_id = #{orgId}
+               AND source = 'mem0' AND event_type = 'conversation'
+               AND sync_status = 'syncing' AND sync_claim_token = #{token}
+               AND sync_lease_until > #{now}
+            """;
+
+    @Update(
+            """
+            UPDATE memory_events
+               SET sync_status = 'synced', synced_at = #{now}, last_error = NULL,
+                   sync_claim_token = NULL, sync_lease_until = NULL,
+                   sync_next_attempt_at = NULL, updated_at = #{now}
+            """
+                    + OWNED)
+    int markSynced(
+            @Param("orgId") UUID orgId,
+            @Param("id") UUID id,
+            @Param("token") UUID token,
+            @Param("now") OffsetDateTime now);
+
+    @Update(
+            """
+            UPDATE memory_events
+               SET sync_status = CASE WHEN sync_attempts >= #{maxAttempts}
+                                      THEN 'dead_letter' ELSE 'failed' END,
+                   last_error = #{error}, sync_claim_token = NULL, sync_lease_until = NULL,
+                   sync_next_attempt_at = CASE WHEN sync_attempts >= #{maxAttempts}
+                                               THEN NULL ELSE #{nextAttemptAt} END,
+                   updated_at = #{now}
+            """
+                    + OWNED)
+    int markFailed(
+            @Param("orgId") UUID orgId,
+            @Param("id") UUID id,
+            @Param("token") UUID token,
+            @Param("error") String error,
+            @Param("maxAttempts") int maxAttempts,
+            @Param("now") OffsetDateTime now,
+            @Param("nextAttemptAt") OffsetDateTime nextAttemptAt);
+
+    @Update(
+            """
+            UPDATE memory_events
+               SET sync_status = 'dead_letter', sync_claim_token = NULL,
+                   sync_lease_until = NULL, sync_next_attempt_at = NULL,
+                   last_error = COALESCE(last_error, 'MEMORY_PROJECTION_ATTEMPTS_EXHAUSTED'),
+                   updated_at = #{now}
+             WHERE id = #{id} AND org_id = #{orgId} AND sync_attempts >= #{maxAttempts}
+            """
+                    + ELIGIBLE)
+    int exhaust(
+            @Param("orgId") UUID orgId,
             @Param("id") UUID id,
             @Param("maxAttempts") int maxAttempts,
-            @Param("staleBefore") OffsetDateTime staleBefore,
-            @Param("claimedAt") OffsetDateTime claimedAt);
-
-    @Update(
-            """
-            UPDATE memory_events
-               SET sync_status = 'synced',
-                   sync_attempts = sync_attempts + 1,
-                   synced_at = #{syncedAt},
-                   last_error = NULL,
-                   updated_at = #{syncedAt}
-             WHERE id = #{id} AND sync_status = 'syncing'
-            """)
-    int markSynced(@Param("id") UUID id, @Param("syncedAt") OffsetDateTime syncedAt);
-
-    @Update(
-            """
-            UPDATE memory_events
-               SET sync_status = 'failed',
-                   sync_attempts = sync_attempts + 1,
-                   last_error = #{error},
-                   updated_at = #{failedAt}
-             WHERE id = #{id} AND sync_status = 'syncing'
-            """)
-    int markFailed(
-            @Param("id") UUID id,
-            @Param("error") String error,
-            @Param("failedAt") OffsetDateTime failedAt);
+            @Param("now") OffsetDateTime now,
+            @Param("legacyStaleBefore") OffsetDateTime legacyStaleBefore);
 }

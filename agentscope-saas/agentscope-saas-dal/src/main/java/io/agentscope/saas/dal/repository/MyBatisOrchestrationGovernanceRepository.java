@@ -65,10 +65,18 @@ public class MyBatisOrchestrationGovernanceRepository implements OrchestrationGo
 
     @Override
     public OrchestrationBudget lockBudget(UUID orgId, UUID runId, UUID agentRunId) {
-        return mapper.lockBudget(orgId, runId, agentRunId).stream()
+        return mapper.lockBudget(orgId, runId, agentRunId, null).stream()
                 .findFirst()
                 .map(MyBatisOrchestrationGovernanceRepository::toDomain)
                 .orElseThrow(() -> new IllegalStateException("Run budget scope was not found"));
+    }
+
+    @Override
+    public OrchestrationBudget lockTaskBudget(UUID orgId, UUID runId, UUID taskId) {
+        return mapper.lockBudget(orgId, runId, null, taskId).stream()
+                .findFirst()
+                .map(MyBatisOrchestrationGovernanceRepository::toDomain)
+                .orElseThrow(() -> new IllegalStateException("Task budget scope was not found"));
     }
 
     @Override

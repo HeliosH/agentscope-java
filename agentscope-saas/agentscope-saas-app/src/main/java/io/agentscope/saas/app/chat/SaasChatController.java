@@ -519,10 +519,21 @@ public class SaasChatController {
                                                                 resolved.agentId(),
                                                                 durableRunId);
                                                     } else {
-                                                        persistence.saveAssistantMessage(
+                                                        var binding =
+                                                                ctx.get(
+                                                                        io.agentscope.saas.app
+                                                                                .orchestration
+                                                                                .SessionRunFenceService
+                                                                                .Binding.class);
+                                                        if (binding == null)
+                                                            throw new io.agentscope.saas.domain
+                                                                    .orchestration
+                                                                    .SessionExecutionRevokedException();
+                                                        persistence.saveAssistantMessageForSession(
                                                                 tenant,
                                                                 resolved.sessionId(),
                                                                 resolved.agentId(),
+                                                                binding.fence().generation(),
                                                                 accumulator.blocks());
                                                     }
                                                     return (Object) null;
@@ -552,6 +563,7 @@ public class SaasChatController {
                                     RunRecoveryCoordinator.Decision decision =
                                             recoveryCoordinator.decide(error, 1);
                                     if (resolved.rootAttemptId() != null
+                                            && recoveryCoordinator.canScheduleDurableRecovery()
                                             && (decision.recoverable() || decision.exhausted())) {
                                         long delayMillis =
                                                 decision.recoverable()
@@ -578,6 +590,7 @@ public class SaasChatController {
                                                                             + " already lost for"
                                                                             + " run {}",
                                                                         runId);
+                                                                return Flux.just(toSse(errorEvent));
                                                             }
                                                             streamOutcome.set("recovering");
                                                             Map<String, Object> recoveryPayload =

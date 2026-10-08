@@ -389,17 +389,34 @@ class ToolExecutor {
                             .doOnCancel(
                                     () -> {
                                         if (terminal.compareAndSet(false, true)) {
-                                            journal.complete(
-                                                    invocation,
-                                                    invocation.retrySafety()
-                                                                    == ToolRetrySafety.NEVER
-                                                            ? ToolExecutionJournal.TerminalStatus
-                                                                    .OUTCOME_UNKNOWN
-                                                            : ToolExecutionJournal.TerminalStatus
-                                                                    .CANCELLED,
-                                                    null,
-                                                    new CancellationException(
-                                                            "Tool subscription cancelled"));
+                                            // Cancellation has no error channel; journal failure
+                                            // must not interfere with upstream cancellation.
+                                            try {
+                                                journal.complete(
+                                                        invocation,
+                                                        invocation.retrySafety()
+                                                                        == ToolRetrySafety.NEVER
+                                                                ? ToolExecutionJournal
+                                                                        .TerminalStatus
+                                                                        .OUTCOME_UNKNOWN
+                                                                : ToolExecutionJournal
+                                                                        .TerminalStatus.CANCELLED,
+                                                        null,
+                                                        new CancellationException(
+                                                                "Tool subscription cancelled"));
+                                            } catch (ToolLeaseLostException revoked) {
+                                                logger.debug(
+                                                        "Tool cancellation journal lease already"
+                                                                + " revoked: {}",
+                                                        invocation.operationId());
+                                            } catch (RuntimeException failure) {
+                                                logger.warn(
+                                                        "Tool cancellation journal failed; durable"
+                                                                + " reconciliation is required for"
+                                                                + " operation {}",
+                                                        invocation.operationId(),
+                                                        failure);
+                                            }
                                         }
                                     });
                 });

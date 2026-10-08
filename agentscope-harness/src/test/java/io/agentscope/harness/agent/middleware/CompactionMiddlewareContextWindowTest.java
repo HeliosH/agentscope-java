@@ -96,7 +96,15 @@ class CompactionMiddlewareContextWindowTest {
                     .blockLast();
         }
 
-        assertEquals(1, model.summaryCalls.get());
+        assertEquals(2, model.summaryCalls.get());
+        assertTrue(model.summaryInputs.get(0).get(0).getTextContent().contains("aaaaa"));
+        assertTrue(model.summaryInputs.get(1).get(0).getTextContent().contains("ccccc"));
+        assertTrue(
+                model.summaryInputs.stream()
+                        .allMatch(
+                                messages ->
+                                        model.estimateInputTokens(messages, List.of())
+                                                <= model.small.inputTokenBudget()));
         assertTrue(forwarded.get().messages().size() < inputMessages.size());
         assertEquals(
                 "small",
@@ -349,11 +357,13 @@ class CompactionMiddlewareContextWindowTest {
         private final ModelContextProfile large =
                 new ModelContextProfile("large", 1_000_000, 131_072, 16_384);
         private final AtomicInteger summaryCalls = new AtomicInteger();
+        private final List<List<Msg>> summaryInputs = new ArrayList<>();
 
         @Override
         public Flux<ChatResponse> stream(
                 List<Msg> messages, List<ToolSchema> tools, GenerateOptions options) {
             summaryCalls.incrementAndGet();
+            summaryInputs.add(messages);
             return Flux.just(
                     ChatResponse.builder()
                             .content(List.of(TextBlock.builder().text("compact summary").build()))

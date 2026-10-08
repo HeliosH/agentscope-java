@@ -23,7 +23,10 @@ import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.model.Model;
+import io.agentscope.core.model.PurposeBindableModel;
 import io.agentscope.core.util.JsonUtils;
+import io.agentscope.harness.agent.memory.compaction.TokenCounterUtil;
+import io.agentscope.harness.agent.memory.session.SessionArchiveStore;
 import io.agentscope.harness.agent.memory.session.SessionEntry;
 import io.agentscope.harness.agent.memory.session.SessionTree;
 import io.agentscope.harness.agent.workspace.WorkspaceConstants;
@@ -92,6 +95,18 @@ public class MemoryFlushManager {
     private final WorkspaceManager workspaceManager;
     private final Model model;
     private final String flushPrompt;
+    private final java.time.Duration invocationTimeout;
+    private SessionArchiveStore archiveStore;
+    private String archiveReference;
+
+    public MemoryFlushManager withArchive(SessionArchiveStore store) {
+        this.archiveStore = store;
+        return this;
+    }
+
+    public boolean hasAuthoritativeArchive() {
+        return archiveStore != null;
+    }
 
     public MemoryFlushManager(WorkspaceManager workspaceManager, Model model) {
         this(workspaceManager, model, DEFAULT_FLUSH_PROMPT);
@@ -102,6 +117,20 @@ public class MemoryFlushManager {
      *     {@link #DEFAULT_FLUSH_PROMPT}.
      */
     public MemoryFlushManager(WorkspaceManager workspaceManager, Model model, String flushPrompt) {
+        this(workspaceManager, model, flushPrompt, java.time.Duration.ofSeconds(30));
+    }
+
+    public MemoryFlushManager(
+            WorkspaceManager workspaceManager,
+            Model model,
+            String flushPrompt,
+            java.time.Duration invocationTimeout) {
+        if (invocationTimeout == null
+                || invocationTimeout.isZero()
+                || invocationTimeout.isNegative()) {
+            throw new IllegalArgumentException("Memory invocation timeout must be positive");
+        }
+        this.invocationTimeout = invocationTimeout;
         this.workspaceManager = workspaceManager;
         this.model = model;
         this.flushPrompt = flushPrompt != null ? flushPrompt : DEFAULT_FLUSH_PROMPT;
@@ -124,57 +153,81 @@ public class MemoryFlushManager {
         String dailyRelPath = WorkspaceConstants.MEMORY_DIR + "/" + today + ".md";
         String existingDaily = readExistingContent(rc, dailyRelPath);
 
-        StringBuilder userPrompt = new StringBuilder();
-        if (!existingMemory.isBlank()) {
-            userPrompt
-                    .append("MEMORY.md (read-only curated long-term memory — do NOT restate):\n")
-                    .append(existingMemory)
-                    .append("\n\n");
-        }
-        if (!existingDaily.isBlank()) {
-            userPrompt
-                    .append("Today's daily ledger so far (your output will be appended after):\n")
-                    .append(existingDaily)
-                    .append("\n\n");
-        }
-        userPrompt
-                .append(
-                        "Extract NEW memories from this conversation window (skip anything"
-                                + " already covered above):\n\n")
-                .append(conversationText);
-
-        List<Msg> flushInput = new ArrayList<>();
-        flushInput.add(
-                Msg.builder()
-                        .role(MsgRole.SYSTEM)
-                        .content(TextBlock.builder().text(flushPrompt).build())
-                        .build());
-        flushInput.add(
-                Msg.builder()
-                        .role(MsgRole.USER)
-                        .content(TextBlock.builder().text(userPrompt.toString()).build())
-                        .build());
-
-        return model.stream(flushInput, null, null)
-                .reduce(
-                        new StringBuilder(),
-                        (sb, chatResponse) -> {
-                            List<ContentBlock> blocks = chatResponse.getContent();
-                            if (blocks != null) {
-                                for (ContentBlock block : blocks) {
-                                    if (block instanceof TextBlock tb) {
-                                        String t = tb.getText();
-                                        if (t != null) {
-                                            sb.append(t);
-                                        }
-                                    }
-                                }
+        String referenceText =
+                "MEMORY.md (read-only):\n"
+                        + existingMemory
+                        + "\n\nToday's existing daily ledger (read-only):\n"
+                        + existingDaily;
+        return Mono.defer(
+                        () -> {
+                            Model bound =
+                                    PurposeTextFold.bind(
+                                            model, rc, PurposeBindableModel.Purpose.MEMORY_EXTRACT);
+                            int maxInput =
+                                    bound instanceof PurposeBindableModel.BoundInvocation
+                                            ? 0
+                                            : 8000;
+                            int budget = PurposeTextFold.inputBudget(bound, rc, maxInput);
+                            Mono<String> reference;
+                            // Reserve space for a previous candidate and a useful new source page.
+                            if (TokenCounterUtil.calculateToken(
+                                            extractionInput(referenceText, "", ""), null, bound)
+                                    <= budget / 2) {
+                                reference = Mono.just(referenceText);
+                            } else {
+                                reference =
+                                        PurposeTextFold.fold(
+                                                bound,
+                                                rc,
+                                                referenceText,
+                                                "",
+                                                (previous, page) ->
+                                                        List.of(
+                                                                Msg.builder()
+                                                                        .role(MsgRole.USER)
+                                                                        .textContent(
+                                                                                "Build a concise"
+                                                                                    + " read-only"
+                                                                                    + " deduplication"
+                                                                                    + " reference."
+                                                                                    + " Retain"
+                                                                                    + " known"
+                                                                                    + " facts,"
+                                                                                    + " never"
+                                                                                    + " invent new"
+                                                                                    + " memories."
+                                                                                    + " Return the"
+                                                                                    + " complete"
+                                                                                    + " merged"
+                                                                                    + " reference.\n"
+                                                                                    + "Previous"
+                                                                                    + " reference:\n"
+                                                                                        + previous
+                                                                                        + "\n"
+                                                                                        + "Next reference"
+                                                                                        + " page:\n"
+                                                                                        + page)
+                                                                        .build()),
+                                                maxInput,
+                                                Math.max(1, Math.min(1024, budget / 5)),
+                                                invocationTimeout);
                             }
-                            return sb;
+                            return reference.flatMap(
+                                    known ->
+                                            PurposeTextFold.fold(
+                                                    bound,
+                                                    rc,
+                                                    conversationText,
+                                                    "",
+                                                    (previous, page) ->
+                                                            extractionInput(known, previous, page),
+                                                    maxInput,
+                                                    1024,
+                                                    invocationTimeout));
                         })
                 .flatMap(
                         sb -> {
-                            String extracted = sb.toString();
+                            String extracted = sb;
                             if (extracted.isBlank() || extracted.strip().equals("NO_REPLY")) {
                                 log.debug("No memories to flush");
                                 return Mono.empty();
@@ -184,12 +237,36 @@ public class MemoryFlushManager {
                         });
     }
 
+    private List<Msg> extractionInput(String reference, String previous, String page) {
+        String candidates = "NO_REPLY".equals(previous.strip()) ? "" : previous;
+        return List.of(
+                Msg.builder().role(MsgRole.SYSTEM).textContent(flushPrompt).build(),
+                Msg.builder()
+                        .role(MsgRole.USER)
+                        .textContent(
+                                "Known memory (read-only, do not restate):\n"
+                                        + reference
+                                        + "\n\nNew candidates from earlier pages:\n"
+                                        + candidates
+                                        + "\n\nNext conversation page:\n"
+                                        + page
+                                        + "\n\n"
+                                        + "Return the COMPLETE accumulated new candidates,"
+                                        + " preserving earlier candidates. Return NO_REPLY only if"
+                                        + " there are no new candidates in any page.")
+                        .build());
+    }
+
     /**
      * Returns the string path of the session JSONL file where messages for the given agent and
      * session are offloaded. Used by the compaction layer to embed the archive location in the
      * summary message so the agent can retrieve full history if needed.
      */
     public String resolveOffloadPath(RuntimeContext rc, String agentId, String sessionId) {
+        if (archiveStore != null)
+            return archiveReference != null
+                    ? archiveReference
+                    : archiveStore.reference(rc, agentId, sessionId);
         try {
             Path p = workspaceManager.resolveSessionContextFile(rc, agentId, sessionId);
             return p != null ? p.toString() : "";
@@ -208,6 +285,15 @@ public class MemoryFlushManager {
      */
     public void offloadMessages(
             RuntimeContext rc, List<Msg> messages, String agentId, String sessionId) {
+        if (archiveStore != null) {
+            try {
+                archiveReference =
+                        archiveStore.append(rc, agentId, sessionId, messages).reference();
+                return;
+            } catch (RuntimeException error) {
+                throw new SessionArchiveStore.ArchiveCommitException(error);
+            }
+        }
         offloadToSessionTree(rc, messages, agentId, sessionId);
 
         log.debug(
@@ -256,7 +342,12 @@ public class MemoryFlushManager {
                 String toolCallId = extractToolCallId(msg);
                 SessionEntry.MessageEntry entry =
                         new SessionEntry.MessageEntry(
-                                null, lastId, null, msg.getRole().name(), rendered, toolCallId);
+                                msg.getId(),
+                                lastId,
+                                null,
+                                msg.getRole().name(),
+                                rendered,
+                                toolCallId);
                 tree.append(entry);
                 lastId = entry.getId();
             }

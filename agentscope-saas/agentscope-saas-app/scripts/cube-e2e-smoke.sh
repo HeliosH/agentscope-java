@@ -495,6 +495,83 @@ fi
 
 wait_backend_release || true
 
+if [ "${SANDBOX_SMOKE_RUNTIME_ARCHIVE:-true}" = "true" ]; then
+  if [ -n "$SESSION_KEY" ] && BASE="$BASE" TOK="$TOK" AGID="$AGID" SESSION_KEY="$SESSION_KEY" \
+    EMAIL="$EMAIL" PASSWORD="$PASSWORD" python3 - <<'PY'
+import json
+import os
+import urllib.request
+import urllib.error
+import urllib.parse
+
+base = os.environ['BASE']
+token = os.environ['TOK']
+url = (base + '/api/agents/' + os.environ['AGID'] + '/sessions/'
+       + os.environ['SESSION_KEY'] + '/runtime-messages')
+
+def get(params, auth=token):
+    request = urllib.request.Request(url + '?' + urllib.parse.urlencode(params),
+        headers={'Authorization': 'Bearer ' + auth})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.load(response)
+
+first = get({'afterSeq': 0, 'limit': 1})
+assert len(first['items']) == 1 and first['hasMore']
+cursor = first['nextAfterSeq']
+remaining = get({'afterSeq': cursor, 'limit': 100})
+seqs = [item['seq'] for item in remaining['items']]
+assert seqs and seqs == sorted(set(seqs)) and min(seqs) > cursor
+roles = {item['message']['role'].upper() for item in first['items'] + remaining['items']}
+assert {'USER', 'ASSISTANT', 'TOOL'} <= roles, roles
+latest = get({'limit': 1})
+assert len(latest['items']) == 1 and latest['hasMore']
+older = get({'beforeSeq': latest['nextBeforeSeq'], 'limit': 1})
+assert older['items'][0]['seq'] < latest['items'][0]['seq']
+preview = get({'afterSeq': 0, 'limit': 100, 'includeContent': 'false'})
+full = first['items'] + remaining['items']
+assert [item['seq'] for item in preview['items']] == [item['seq'] for item in full]
+offloaded = 0
+for brief, source in zip(preview['items'], full):
+    assert brief['message']['id'] == source['message']['id']
+    assert brief['message']['role'] == source['message']['role']
+    if brief['message'].get('metadata', {}).get('archiveBodyOffloaded'):
+        offloaded += 1
+        assert brief['message']['metadata']['archiveContentBytes'] > 256
+        assert 'archiveBodyOffloaded' not in source['message'].get('metadata', {})
+        assert 'Archived body preview' in json.dumps(brief['message'])
+        assert 'objectKey' not in brief['message']['metadata']
+if os.environ.get('SANDBOX_SMOKE_REQUIRE_OFFLOAD') == 'true':
+    assert offloaded > 0, 'No real object-backed runtime message was verified'
+
+other_account = {'email': 'archive-other-' + os.environ['EMAIL'],
+    'password': os.environ['PASSWORD'], 'displayName': 'Archive isolation smoke'}
+
+def authenticate(path):
+    request = urllib.request.Request(base + '/api/auth/' + path,
+        data=json.dumps(other_account).encode(), headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.load(response)['token']
+
+try:
+    other_token = authenticate('login')
+except urllib.error.HTTPError as error:
+    if error.code not in (401, 404):
+        raise
+    other_token = authenticate('register')
+try:
+    get({'afterSeq': 0, 'limit': 1}, other_token)
+    raise AssertionError('Foreign employee can read runtime archive')
+except urllib.error.HTTPError as error:
+    assert error.code == 404, error.code
+print('runtime source survives sandbox release; ordered windows, preview/full reads and employee isolation passed; offloaded=' + str(offloaded))
+PY
+  then
+    ok "runtime archive persists after release with ordered windows and employee isolation"
+  else
+    bad "runtime archive validation failed"
+  fi
+fi
+
 echo ""
 echo "=== RESULT: PASS=$PASS FAIL=$FAIL ==="
 [ "$FAIL" -eq 0 ] && exit 0 || exit 1

@@ -14,6 +14,14 @@ public interface StepBindableModel extends Model {
     /** Returns a stable model handle; later catalog changes must not alter this handle's route. */
     Model bindToStep(RuntimeContext context, List<Msg> messages);
 
+    /**
+     * Binds a framework-generated helper request to trusted runtime routing information.
+     * Unlike user requests, helper messages do not carry routing metadata.
+     */
+    default Model bindToContext(RuntimeContext context) {
+        return bindToStep(context, List.of());
+    }
+
     /** A fixed route with an opaque version, without exposing endpoint credentials. */
     interface BoundModel extends Model {
         String routeVersion();

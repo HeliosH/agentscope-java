@@ -58,4 +58,9 @@ public class MyBatisMemoryEventRepository implements MemoryEventRepository {
         }
         return event;
     }
+
+    @Override
+    public boolean appendIfAbsent(MemoryEventEntity event) {
+        return mapper.appendIfAbsent(event) == 1;
+    }
 }

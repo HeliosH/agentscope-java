@@ -12,12 +12,15 @@ import {
   createAdminModel,
   deleteAdminModel,
   listAdminModels,
+  listModelInvocationPolicies,
   testAdminModel,
   updateAdminModel,
   type AdminModelTestResult,
   type AdminModelView,
   type AdminModelWriteRequest,
+  type ModelInvocationPolicy,
 } from '../api/admin';
+import ModelInvocationPolicies from '../components/ModelInvocationPolicies';
 import type { MeResponse } from '../auth';
 import {
   DataPanel,
@@ -56,6 +59,7 @@ function formatTokens(value: number): string {
 export default function AdminModelsPage() {
   const { me } = useOutletContext<{ me: MeResponse | null }>();
   const [models, setModels] = useState<AdminModelView[]>([]);
+  const [policies, setPolicies] = useState<ModelInvocationPolicy[]>([]);
   const [editing, setEditing] = useState<AdminModelView | 'new' | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<Record<string, AdminModelTestResult>>({});
@@ -67,7 +71,9 @@ export default function AdminModelsPage() {
     setLoading(true);
     setError(null);
     try {
-      setModels(await listAdminModels());
+      const [catalog, purposePolicies] = await Promise.all([listAdminModels(), listModelInvocationPolicies()]);
+      setModels(catalog);
+      setPolicies(purposePolicies);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -236,6 +242,12 @@ export default function AdminModelsPage() {
           {!loading && models.length === 0 && <EmptyState>No models are available.</EmptyState>}
         </div>
       </DataPanel>
+
+      <ModelInvocationPolicies policies={policies} models={models} loading={loading}
+        onSaved={saved => {
+          setPolicies(current => current.map(policy => policy.purpose === saved.purpose ? saved : policy));
+          setNotice('Model invocation policy saved.');
+        }} />
 
       {editing && (
         <ModelEditor

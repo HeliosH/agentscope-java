@@ -55,6 +55,8 @@ QwenPaw 是 **Python 产品**。框架有"等价物" ≠ QwenPaw 代码能直接
 | 22 | [CubeSandbox 持久化、Skills 与恢复方案](./22-cubesandbox-persistence-skills-practice.md) | host-mount 安全边界、公共 Skills 覆盖、MinIO 冷备、网络与重建验收 |
 | 23 | [企业扩展运行时优化落地方案](./23-enterprise-extension-runtime-plan.md) | 请求级工具隔离、可撤销扩展、依赖治理、运行能力快照与企业插件路线图 |
 | 24 | [CubeSandbox Volume 持久工作区优化方案](./24-cubesandbox-volume-workspace-plan.md) | 用户工作卷、公共 Skills Volume、增量同步、冲突保护、回收与跨 Provider 恢复 |
+| 37 | [运行时可靠性修复与能力收尾落地方案](./37-runtime-reliability-and-feature-closure-plan.md) | 非 JWT 缺陷修复、任务工作区、增量归档、企业记忆、重试与验证、生产门禁及后续实施批次 |
+| 38 | [运行时可靠性实施记录](./38-runtime-reliability-implementation-progress.md) | 路由、容量、PG 顺序归档、大正文回收、轻量检查点、自适应转存、会话执行代际、文件发布预留/短事务/持久补登、提交屏障、调用治理、记忆投影队列的实施范围、配置、验证证据和剩余边界 |
 
 ## 一页速读
 

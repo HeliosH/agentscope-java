@@ -65,7 +65,7 @@ public interface MemoryLedgerMapper {
     @Select(COLUMNS + " WHERE id = #{id}")
     List<MemoryEventEntity> findById(@Param("id") UUID id);
 
-    @Insert(
+    String INSERT_SOURCE =
             """
             INSERT INTO memory_events
                 (id, org_id, user_id, agent_id, session_id, source, event_type, content_json,
@@ -75,8 +75,13 @@ public interface MemoryLedgerMapper {
                  #{contentJson,typeHandler=io.agentscope.saas.dal.mybatis.type.JsonTypeHandler},
                  #{metadataJson,typeHandler=io.agentscope.saas.dal.mybatis.type.JsonTypeHandler},
                  #{syncStatus}, #{syncAttempts}, #{syncedAt}, #{lastError}, #{updatedAt})
-            """)
+            """;
+
+    @Insert(INSERT_SOURCE)
     int insert(MemoryEventEntity event);
+
+    @Insert(INSERT_SOURCE + " ON CONFLICT DO NOTHING")
+    int appendIfAbsent(MemoryEventEntity event);
 
     @Update(
             """

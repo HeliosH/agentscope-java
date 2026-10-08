@@ -24,6 +24,12 @@ public class MyBatisRunArtifactRepository implements RunArtifactRepository {
     }
 
     @Override
+    public boolean lockCurrentPublicationScope(
+            UUID orgId, UUID runId, UUID taskId, UUID attemptId) {
+        return !mapper.lockCurrentPublicationScope(orgId, runId, taskId, attemptId).isEmpty();
+    }
+
+    @Override
     public boolean existsById(UUID id, UUID orgId) {
         return mapper.countById(id, orgId) > 0;
     }

@@ -42,6 +42,8 @@ public interface FileObjectGcRepository {
 
     long countObjectReferences(UUID orgId, String objectKey);
 
+    boolean hasPendingPublication(UUID orgId, String objectKey);
+
     int recordDeletion(UUID queueId, String status, String error, OffsetDateTime changedAt);
 
     record FileReference(UUID id, UUID orgId) {}

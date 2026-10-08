@@ -29,6 +29,8 @@ public interface ChatSessionRepository {
 
     Optional<ChatSessionEntity> findById(UUID id);
 
+    boolean markReadOwned(UUID id, UUID orgId, UUID userId, UUID agentId);
+
     ChatSessionEntity save(ChatSessionEntity session);
 
     void delete(ChatSessionEntity session);

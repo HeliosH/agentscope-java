@@ -50,6 +50,14 @@ public class OrchestrationGovernanceService {
         return transactions.execute(status -> evaluate(orgId, runId, agentRunId, 0, 0, 0, false));
     }
 
+    public BudgetDecision preflightTask(UUID orgId, UUID runId, UUID taskId) {
+        if (!properties.getOrchestration().isBudgetEnforcementEnabled())
+            return BudgetDecision.allowed();
+        return transactions.execute(
+                status ->
+                        evaluate(repository.lockTaskBudget(orgId, runId, taskId), 0, 0, 0, false));
+    }
+
     public BudgetDecision consume(
             UUID orgId,
             UUID runId,
@@ -57,6 +65,52 @@ public class OrchestrationGovernanceService {
             long inputTokens,
             long outputTokens,
             long totalTokens) {
+        return consumeUsage(orgId, runId, agentRunId, inputTokens, outputTokens, totalTokens, 1);
+    }
+
+    /** Call slots are consumed at admission; settlement adds tokens without charging twice. */
+    public BudgetDecision consumeUsage(
+            UUID orgId,
+            UUID runId,
+            UUID agentRunId,
+            long inputTokens,
+            long outputTokens,
+            long totalTokens,
+            int modelCallDelta) {
+        return consumeScopedUsage(
+                orgId,
+                runId,
+                agentRunId,
+                null,
+                inputTokens,
+                outputTokens,
+                totalTokens,
+                modelCallDelta);
+    }
+
+    public BudgetDecision consumeTaskUsage(
+            UUID orgId,
+            UUID runId,
+            UUID taskId,
+            long inputTokens,
+            long outputTokens,
+            long totalTokens,
+            int modelCallDelta) {
+        return consumeScopedUsage(
+                orgId, runId, null, taskId, inputTokens, outputTokens, totalTokens, modelCallDelta);
+    }
+
+    private BudgetDecision consumeScopedUsage(
+            UUID orgId,
+            UUID runId,
+            UUID agentRunId,
+            UUID taskId,
+            long inputTokens,
+            long outputTokens,
+            long totalTokens,
+            int modelCallDelta) {
+        if (modelCallDelta < 0 || modelCallDelta > 1)
+            throw new IllegalArgumentException("Invalid model call delta");
         if (!properties.getOrchestration().isBudgetEnforcementEnabled()) {
             return BudgetDecision.allowed();
         }
@@ -71,7 +125,15 @@ public class OrchestrationGovernanceService {
                         properties.getOrchestration().getInputTokenCostMicrosPerMillion(),
                         properties.getOrchestration().getOutputTokenCostMicrosPerMillion());
         return transactions.execute(
-                status -> evaluate(orgId, runId, agentRunId, normalizedTotal, costMicros, 1, true));
+                status ->
+                        evaluate(
+                                taskId == null
+                                        ? repository.lockBudget(orgId, runId, agentRunId)
+                                        : repository.lockTaskBudget(orgId, runId, taskId),
+                                normalizedTotal,
+                                costMicros,
+                                modelCallDelta,
+                                true));
     }
 
     public Optional<Duration> remainingTime(UUID orgId, UUID runId, UUID agentRunId) {
@@ -168,6 +230,15 @@ public class OrchestrationGovernanceService {
             int modelCallDelta,
             boolean consume) {
         OrchestrationBudget row = repository.lockBudget(orgId, runId, agentRunId);
+        return evaluate(row, tokenDelta, costDelta, modelCallDelta, consume);
+    }
+
+    private BudgetDecision evaluate(
+            OrchestrationBudget row,
+            long tokenDelta,
+            long costDelta,
+            int modelCallDelta,
+            boolean consume) {
         if (!"RUNNING".equals(row.runStatus())) {
             return BudgetDecision.rejected("RUN_NOT_ACTIVE", "Run is no longer active");
         }

@@ -18,6 +18,7 @@ package io.agentscope.harness.agent.middleware;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
 
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.event.AgentEvent;
@@ -27,6 +28,7 @@ import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.spec.LocalFilesystemSpec;
+import io.agentscope.harness.agent.memory.session.SessionArchiveStore;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -61,6 +63,23 @@ class AtPathExpansionMiddlewareTest {
                 expanded.contains("<attached_file path=\"./README.md\">"),
                 () -> "attached_file tag missing: " + expanded);
         assertTrue(expanded.contains("PROJECT_README"));
+    }
+
+    @Test
+    void archiveEnabledExpansionPreservesOriginalSourceIdentity(
+            @TempDir Path project, @TempDir Path workspace) throws IOException {
+        Files.writeString(project.resolve("README.md"), "PROJECT_README", StandardCharsets.UTF_8);
+        Msg user = userMsg("Please look at @./README.md");
+        AtPathExpansionMiddleware middleware =
+                new AtPathExpansionMiddleware(
+                        workspaceManagerFor(project, workspace), mock(SessionArchiveStore.class));
+        Msg expanded = runOnAgent(middleware, user).get(0);
+        assertTrue(expanded.getTextContent().contains("PROJECT_README"));
+        assertEquals(user.getId(), expanded.getId());
+        assertEquals(
+                SessionArchiveStore.digest(user),
+                expanded.getMetadata().get(SessionArchiveStore.PROJECTION_SOURCE_HASH));
+        assertFalse(user.getMetadata().containsKey(SessionArchiveStore.PROJECTION_SOURCE_HASH));
     }
 
     @Test

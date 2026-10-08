@@ -34,6 +34,8 @@ public interface OrchestrationGovernanceRepository {
 
     OrchestrationBudget lockBudget(UUID orgId, UUID runId, UUID agentRunId);
 
+    OrchestrationBudget lockTaskBudget(UUID orgId, UUID runId, UUID taskId);
+
     void recordUsage(
             OrchestrationBudget budget,
             OffsetDateTime now,

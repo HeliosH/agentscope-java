@@ -62,9 +62,6 @@ import org.slf4j.LoggerFactory;
 public class SandboxLifecycleMiddleware implements MiddlewareBase {
 
     private static final Logger log = LoggerFactory.getLogger(SandboxLifecycleMiddleware.class);
-    private static final int RESTORE_MAX_FILES = 5_000;
-    private static final long RESTORE_MAX_FILE_BYTES = 4L * 1024L * 1024L;
-    private static final long RESTORE_MAX_TOTAL_BYTES = 64L * 1024L * 1024L;
 
     private final SandboxManager sandboxManager;
     private final SandboxBackedFilesystem filesystemProxy;
@@ -189,9 +186,10 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
         if (plan == null || plan.files().isEmpty()) {
             return;
         }
-        if (plan.files().size() > RESTORE_MAX_FILES) {
+        var policy = filesystemProxy.getTransferPolicy();
+        if (plan.files().size() > policy.maxFiles()) {
             throw new IllegalStateException(
-                    "Workspace checkpoint exceeds restore file limit " + RESTORE_MAX_FILES);
+                    "Workspace checkpoint exceeds restore file limit " + policy.maxFiles());
         }
         long totalBytes = 0L;
         ByteArrayOutputStream archiveBytes = new ByteArrayOutputStream();
@@ -199,15 +197,15 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             ArchiveOutputStream<TarArchiveEntry> compatibleArchive = archive;
             archive.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
             for (WorkspaceRestorePlan.WorkspaceFile file : plan.files()) {
-                if (file.size() > RESTORE_MAX_FILE_BYTES) {
+                if (file.size() > policy.maxFileBytes()) {
                     throw new IllegalStateException(
                             "Workspace checkpoint file exceeds restore limit: " + file.path());
                 }
                 totalBytes = Math.addExact(totalBytes, file.size());
-                if (totalBytes > RESTORE_MAX_TOTAL_BYTES) {
+                if (totalBytes > policy.maxTotalBytes()) {
                     throw new IllegalStateException(
                             "Workspace checkpoint exceeds restore byte limit "
-                                    + RESTORE_MAX_TOTAL_BYTES);
+                                    + policy.maxTotalBytes());
                 }
                 byte[] content = file.content();
                 TarArchiveEntry entry = new TarArchiveEntry(file.path());
@@ -257,8 +255,10 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
         Sandbox sandbox = result.getSandbox();
         SandboxContext sandboxContext = ctx != null ? ctx.get(SandboxContext.class) : null;
         try {
-            int projected = filesystemProxy.projectSandboxWorkspaceToRemote(ctx);
-            notifyObserver(obs -> obs.onWorkspaceProjectionSucceeded(ctx, projected));
+            var report = filesystemProxy.projectSandboxWorkspaceWithReport(ctx);
+            report.verifyComplete();
+            int projected = report.projectedFiles();
+            notifyObserver(obs -> obs.onWorkspaceProjectionSucceeded(ctx, report));
             if (projected > 0) {
                 log.debug("[sandbox-mw] Projected {} workspace files before release", projected);
             }

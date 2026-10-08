@@ -32,6 +32,8 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.test.context.ActiveProfiles;
 
 /**
@@ -57,6 +59,18 @@ class SaasAppContextLoadsTest {
     @Autowired ModelDefinitionRepository modelDefinitionRepository;
     @Autowired ModelManagementService modelManagementService;
     @Autowired AdminModelsController adminModelsController;
+    @Autowired ApplicationContext applicationContext;
+
+    @Test
+    void memoryProjectionSchedulerDoesNotReplaceDefaultRuntimeScheduler() {
+        var memory =
+                applicationContext.getBean(
+                        "memoryProjectionScheduler", ThreadPoolTaskScheduler.class);
+        var runtime = applicationContext.getBean("taskScheduler");
+        assertThat(runtime).isNotSameAs(memory);
+        assertThat(memory.getPoolSize()).isEqualTo(1);
+        assertThat(memory.getThreadNamePrefix()).isEqualTo("memory-projection-");
+    }
 
     @Test
     void contextLoads() {

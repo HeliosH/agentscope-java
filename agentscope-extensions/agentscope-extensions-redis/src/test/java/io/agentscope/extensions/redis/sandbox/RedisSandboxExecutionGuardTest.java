@@ -19,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -30,6 +32,7 @@ import io.agentscope.harness.agent.sandbox.SandboxLease;
 import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import redis.clients.jedis.UnifiedJedis;
 import redis.clients.jedis.params.SetParams;
 
@@ -61,13 +64,15 @@ class RedisSandboxExecutionGuardTest {
                 RedisSandboxExecutionGuard.builder(jedis)
                         .keyPrefix("test:")
                         .retryInterval(Duration.ofMillis(1))
-                        .maxWait(Duration.ofMillis(100))
+                        .maxWait(Duration.ofSeconds(5))
                         .build();
 
         SandboxLease lease = guard.tryEnter(key());
         lease.close();
 
-        verify(jedis).eval(anyString(), any(List.class), any(List.class));
+        ArgumentCaptor<String> token = ArgumentCaptor.forClass(String.class);
+        verify(jedis, times(2)).set(anyString(), token.capture(), any(SetParams.class));
+        verify(jedis).eval(anyString(), any(List.class), eq(List.of(token.getValue())));
     }
 
     private static SandboxIsolationKey key() {

@@ -24,4 +24,7 @@ public interface MemoryEventRepository {
     Optional<MemoryEventEntity> findById(UUID id);
 
     MemoryEventEntity save(MemoryEventEntity event);
+
+    /** Insert-only source receipt. A duplicate must never reset a projection lease or status. */
+    boolean appendIfAbsent(MemoryEventEntity event);
 }

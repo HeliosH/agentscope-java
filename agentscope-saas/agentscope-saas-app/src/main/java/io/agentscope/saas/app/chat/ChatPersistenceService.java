@@ -21,10 +21,12 @@ import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.saas.app.workspace.FileCatalogService;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.domain.memory.RuntimeMessageRepository;
 import io.agentscope.saas.domain.model.AgentEntity;
 import io.agentscope.saas.domain.model.ChatMessageEntity;
 import io.agentscope.saas.domain.model.ChatSessionEntity;
 import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository;
+import io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException;
 import io.agentscope.saas.domain.repository.AgentRepository;
 import io.agentscope.saas.domain.repository.ChatMessageRepository;
 import io.agentscope.saas.domain.repository.ChatSessionRepository;
@@ -52,6 +54,7 @@ public class ChatPersistenceService {
     private final RunOrchestrationRepository runRepository;
     private final ObjectMapper objectMapper;
     private final FileCatalogService fileCatalogService;
+    private final RuntimeMessageRepository runtimeMessages;
 
     public ChatPersistenceService(
             AgentRepository agentRepository,
@@ -59,13 +62,15 @@ public class ChatPersistenceService {
             ChatMessageRepository messageRepository,
             RunOrchestrationRepository runRepository,
             ObjectMapper objectMapper,
-            FileCatalogService fileCatalogService) {
+            FileCatalogService fileCatalogService,
+            RuntimeMessageRepository runtimeMessages) {
         this.agentRepository = agentRepository;
         this.sessionRepository = sessionRepository;
         this.messageRepository = messageRepository;
         this.runRepository = runRepository;
         this.objectMapper = objectMapper;
         this.fileCatalogService = fileCatalogService;
+        this.runtimeMessages = runtimeMessages;
     }
 
     /**
@@ -201,6 +206,25 @@ public class ChatPersistenceService {
         return saved;
     }
 
+    @Transactional
+    public ChatMessageEntity saveAssistantMessageForSession(
+            TenantContext tenant,
+            UUID sessionId,
+            UUID agentId,
+            long generation,
+            List<ContentBlock> blocks) {
+        long current =
+                runRepository
+                        .lockSessionGeneration(
+                                sessionId,
+                                UUID.fromString(tenant.orgId()),
+                                UUID.fromString(tenant.userId()),
+                                agentId)
+                        .orElseThrow(SessionExecutionRevokedException::new);
+        if (current != generation) throw new SessionExecutionRevokedException();
+        return saveAssistantMessage(tenant, sessionId, agentId, blocks);
+    }
+
     /** Persists one idempotent terminal assistant reply for a durable Run. */
     @Transactional
     public ChatMessageEntity saveAssistantMessageForRun(
@@ -212,9 +236,15 @@ public class ChatPersistenceService {
         if (blocks == null || blocks.isEmpty()) {
             return null;
         }
-        sessionRepository
-                .lockById(sessionId)
-                .orElseThrow(() -> new IllegalStateException("Session not found: " + sessionId));
+        var fence =
+                runRepository
+                        .lockCurrentSessionFence(
+                                runId,
+                                UUID.fromString(tenant.orgId()),
+                                UUID.fromString(tenant.userId()),
+                                agentId)
+                        .orElseThrow(SessionExecutionRevokedException::new);
+        if (!sessionId.equals(fence.sessionId())) throw new SessionExecutionRevokedException();
         ChatMessageEntity existing = messageRepository.findBySourceRunId(runId).orElse(null);
         if (existing != null) {
             return existing;
@@ -249,12 +279,15 @@ public class ChatPersistenceService {
     @Transactional
     public void resetSession(UUID sessionId) {
         sessionRepository
-                .findById(sessionId)
+                .lockById(sessionId)
                 .ifPresent(
                         s -> {
+                            runRepository.revokeSessionExecution(
+                                    sessionId, s.getOrgId(), "SESSION_RESET", OffsetDateTime.now());
                             runRepository.detachMessageReferencesForSession(
                                     sessionId, s.getOrgId());
                             messageRepository.deleteBySessionId(sessionId);
+                            runtimeMessages.deleteSession(s.getOrgId(), s.getUserId(), sessionId);
                             s.setMessageCount(0);
                             s.setLastMessage(null);
                             s.setUnread(false);
@@ -270,9 +303,14 @@ public class ChatPersistenceService {
     @Transactional
     public void deleteSession(UUID sessionId) {
         sessionRepository
-                .findById(sessionId)
+                .lockById(sessionId)
                 .ifPresent(
                         session -> {
+                            runRepository.revokeSessionExecution(
+                                    sessionId,
+                                    session.getOrgId(),
+                                    "SESSION_DELETED",
+                                    OffsetDateTime.now());
                             runRepository.detachMessageReferencesForSession(
                                     sessionId, session.getOrgId());
                             messageRepository.deleteBySessionId(sessionId);
@@ -295,6 +333,14 @@ public class ChatPersistenceService {
                         agent.getOrgId(), agent.getUserId(), agent.getId())
                 .forEach(
                         session -> {
+                            sessionRepository
+                                    .lockById(session.getId())
+                                    .orElseThrow(SessionExecutionRevokedException::new);
+                            runRepository.revokeSessionExecution(
+                                    session.getId(),
+                                    agent.getOrgId(),
+                                    "AGENT_DELETED",
+                                    OffsetDateTime.now());
                             runRepository.detachMessageReferencesForSession(
                                     session.getId(), agent.getOrgId());
                             messageRepository.deleteBySessionId(session.getId());

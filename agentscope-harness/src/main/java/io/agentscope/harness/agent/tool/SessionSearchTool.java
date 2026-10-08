@@ -18,6 +18,7 @@ package io.agentscope.harness.agent.tool;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
+import io.agentscope.harness.agent.memory.session.SessionArchiveStore;
 import io.agentscope.harness.agent.memory.session.SessionEntry;
 import io.agentscope.harness.agent.memory.session.SessionTree;
 import io.agentscope.harness.agent.workspace.WorkspaceConstants;
@@ -34,27 +35,33 @@ import org.slf4j.LoggerFactory;
 /**
  * Tool for searching past session transcripts and viewing session history.
  *
- * <p>Operates exclusively on the local session cache. Remote synchronisation is handled by
- * {@link io.agentscope.harness.agent.memory.session.SessionTree#load()} in write paths
- * (e.g. {@link io.agentscope.harness.agent.memory.MemoryFlushManager}), keeping this tool
- * lightweight and fast for in-process search.
+ * <p>Uses the durable archive when configured; search may cover bounded previews rather than
+ * offloaded full bodies. File-only deployments search the local session cache. Remote
+ * synchronisation is handled in write paths.
  */
 public class SessionSearchTool {
 
     private static final Logger log = LoggerFactory.getLogger(SessionSearchTool.class);
 
     private final WorkspaceManager workspaceManager;
+    private final SessionArchiveStore archiveStore;
 
     public SessionSearchTool(WorkspaceManager workspaceManager) {
+        this(workspaceManager, null);
+    }
+
+    public SessionSearchTool(WorkspaceManager workspaceManager, SessionArchiveStore archiveStore) {
         this.workspaceManager = workspaceManager;
+        this.archiveStore = archiveStore;
     }
 
     @Tool(
             name = "session_search",
             readOnly = true,
             description =
-                    "Search past session transcripts for a keyword or phrase."
-                            + " Returns matching entries with session context.")
+                    "Search past session transcripts for a keyword or phrase. Returns matching"
+                            + " entries with session context. Durable archive search covers indexed"
+                            + " previews, not all offloaded body content.")
     public String sessionSearch(
             RuntimeContext runtimeContext,
             @ToolParam(name = "query", description = "Search query (keyword or phrase)")
@@ -76,6 +83,26 @@ public class SessionSearchTool {
         RuntimeContext rc = runtimeContext != null ? runtimeContext : RuntimeContext.empty();
         int limit = maxResults != null && maxResults > 0 ? maxResults : 10;
         String effectiveAgentId = agentId != null && !agentId.isBlank() ? agentId : null;
+        if (archiveStore != null) {
+            var hits = archiveStore.search(rc, effectiveAgentId, query, Math.min(limit, 100));
+            String coverage =
+                    "Coverage: indexed previews only; offloaded full bodies are not searched."
+                            + " No match does not prove absence from full history.\n";
+            if (hits.isEmpty()) return coverage + "No preview matches found for: " + query;
+            StringBuilder out = new StringBuilder(coverage + "Runtime archive matches:\n");
+            for (var hit : hits)
+                out.append(hit.agentLabel())
+                        .append("/")
+                        .append(hit.sessionKey())
+                        .append(" seq=")
+                        .append(hit.seq())
+                        .append(" [")
+                        .append(hit.role())
+                        .append("]: ")
+                        .append(hit.preview())
+                        .append("\n");
+            return out.toString();
+        }
         String lowerQuery = query.toLowerCase();
 
         List<String> results = new ArrayList<>();
@@ -114,6 +141,15 @@ public class SessionSearchTool {
 
         RuntimeContext rc = runtimeContext != null ? runtimeContext : RuntimeContext.empty();
 
+        if (archiveStore != null) {
+            StringBuilder out = new StringBuilder("Runtime archive sessions:\n");
+            for (var session : archiveStore.list(rc, agentId, 100))
+                out.append(session.sessionKey())
+                        .append(" lastSeq=")
+                        .append(session.lastSeq())
+                        .append("\n");
+            return out.toString();
+        }
         // Prefer the structured session-store index (already two-layer: remote then local).
         String storeContent =
                 workspaceManager.readManagedWorkspaceFileUtf8(
@@ -183,6 +219,27 @@ public class SessionSearchTool {
 
         RuntimeContext rc = runtimeContext != null ? runtimeContext : RuntimeContext.empty();
         int limit = lastN != null && lastN > 0 ? lastN : 20;
+
+        if (archiveStore != null) {
+            var entries =
+                    archiveStore.readWindow(
+                            rc, agentId, sessionId, null, null, Math.min(limit, 100));
+            StringBuilder out = new StringBuilder("Runtime archive recent window:\n");
+            for (var entry : entries) {
+                String body =
+                        io.agentscope.core.util.JsonUtils.getJsonCodec()
+                                .toJson(entry.message().getContent());
+                if (body.length() > 500) body = body.substring(0, 500) + "... [preview]";
+                out.append("seq=")
+                        .append(entry.seq())
+                        .append(" [")
+                        .append(entry.message().getRole())
+                        .append("]: ")
+                        .append(body)
+                        .append("\n");
+            }
+            return out.toString();
+        }
 
         Path contextFile = workspaceManager.resolveSessionContextFile(rc, agentId, sessionId);
         if (!Files.isRegularFile(contextFile)) {

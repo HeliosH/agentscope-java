@@ -33,6 +33,8 @@ import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxAware;
 import io.agentscope.harness.agent.sandbox.SandboxErrorCode;
 import io.agentscope.harness.agent.sandbox.SandboxException;
+import io.agentscope.harness.agent.sandbox.WorkspaceProjectionReport;
+import io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -43,6 +45,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -65,9 +68,16 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
 
     private static final Logger log = LoggerFactory.getLogger(SandboxBackedFilesystem.class);
     private static final int REMOTE_PROJECTION_BATCH_SIZE = 100;
-    private static final int REMOTE_PROJECTION_MAX_FILES = 5_000;
-    private static final long REMOTE_PROJECTION_MAX_FILE_BYTES = 32L * 1024L * 1024L;
-    private static final long REMOTE_PROJECTION_MAX_TOTAL_BYTES = 256L * 1024L * 1024L;
+    private WorkspaceTransferPolicy transferPolicy = WorkspaceTransferPolicy.DEFAULT;
+
+    public void configureTransferPolicy(WorkspaceTransferPolicy policy) {
+        transferPolicy = Objects.requireNonNull(policy, "policy");
+    }
+
+    public WorkspaceTransferPolicy getTransferPolicy() {
+        return transferPolicy;
+    }
+
     private static final String REMOTE_PROJECTION_MANIFEST =
             "/.agentscope/sandbox_projection_manifest";
     private static final String VOLUME_SYNC_MANIFEST = "/.agentscope/volume_sync_manifest.json";
@@ -108,6 +118,7 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
         SandboxBackedFilesystem child = new SandboxBackedFilesystem();
         child.remoteFallback = this.remoteFallback;
         child.projectionSink = this.projectionSink;
+        child.transferPolicy = this.transferPolicy;
         return child;
     }
 
@@ -162,11 +173,11 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                         .filter(file -> !file.isDirectory())
                         .map(FileInfo::path)
                         .filter(path -> normalizeHydrationPath(path) != null)
-                        .limit(REMOTE_PROJECTION_MAX_FILES + 1L)
+                        .limit(transferPolicy.maxFiles() + 1L)
                         .toList();
-        if (allPaths.size() > REMOTE_PROJECTION_MAX_FILES) {
+        if (allPaths.size() > transferPolicy.maxFiles()) {
             throw new IllegalStateException(
-                    "Remote workspace exceeds hydration file limit " + REMOTE_PROJECTION_MAX_FILES);
+                    "Remote workspace exceeds hydration file limit " + transferPolicy.maxFiles());
         }
         List<String> paths =
                 incremental
@@ -206,23 +217,22 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                                 Math.min(paths.size(), offset + REMOTE_PROJECTION_BATCH_SIZE));
                 for (FileDownloadResponse file : fallback.downloadFiles(runtimeContext, batch)) {
                     if (!file.isSuccess() || file.content() == null) {
-                        log.warn(
-                                "[sandbox-fs] Skipping remote workspace file {} during hydration:"
-                                        + " {}",
-                                file.path(),
-                                file.error());
-                        continue;
+                        throw new IllegalStateException(
+                                "Remote workspace file unavailable during hydration: "
+                                        + file.path()
+                                        + ": "
+                                        + file.error());
                     }
                     byte[] content = file.content();
-                    if (content.length > REMOTE_PROJECTION_MAX_FILE_BYTES) {
+                    if (content.length > transferPolicy.maxFileBytes()) {
                         throw new IllegalStateException(
                                 "Remote workspace file exceeds hydration limit: " + file.path());
                     }
                     totalBytes = Math.addExact(totalBytes, content.length);
-                    if (totalBytes > REMOTE_PROJECTION_MAX_TOTAL_BYTES) {
+                    if (totalBytes > transferPolicy.maxTotalBytes()) {
                         throw new IllegalStateException(
                                 "Remote workspace exceeds hydration byte limit "
-                                        + REMOTE_PROJECTION_MAX_TOTAL_BYTES);
+                                        + transferPolicy.maxTotalBytes());
                     }
                     String path = normalizeHydrationPath(file.path());
                     if (path == null) {
@@ -483,10 +493,17 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
      * correct without scanning or deleting unrelated filesystem-backed data such as session mirrors.
      */
     public int projectSandboxWorkspaceToRemote(RuntimeContext runtimeContext) throws Exception {
+        var report = projectSandboxWorkspaceWithReport(runtimeContext);
+        report.verifyComplete();
+        return report.projectedFiles();
+    }
+
+    public WorkspaceProjectionReport projectSandboxWorkspaceWithReport(
+            RuntimeContext runtimeContext) throws Exception {
         Sandbox active = activeSandbox(runtimeContext);
         RemoteFilesystem fallback = remoteFallback;
         if (active == null || fallback == null) {
-            return 0;
+            return new WorkspaceProjectionReport(0, 0, 0, 0, true, List.of());
         }
 
         boolean incremental = active.hasPersistentWorkspace();
@@ -507,13 +524,22 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
             int unchanged = 0;
             long totalBytes = 0;
             boolean completeScan = true;
+            List<String> rejected = new ArrayList<>();
             TarArchiveEntry entry;
             while ((entry = tar.getNextTarEntry()) != null) {
                 if (!entry.isFile()) {
                     continue;
                 }
+                scanned++;
+                if (scanned > transferPolicy.maxFiles()) {
+                    completeScan = false;
+                    rejected.add("file count exceeds " + transferPolicy.maxFiles());
+                    break;
+                }
                 String path = toRemoteProjectionPath(entry.getName());
                 if (path == null) {
+                    completeScan = false;
+                    rejected.add("unsafe archive entry: " + entry.getName());
                     log.warn(
                             "[sandbox-fs] Skipping unsafe workspace archive entry: {}",
                             entry.getName());
@@ -523,36 +549,35 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                     continue;
                 }
                 currentProjection.add(path);
-                scanned++;
                 long size = entry.getSize();
-                if (size > REMOTE_PROJECTION_MAX_FILE_BYTES) {
+                if (size > transferPolicy.maxFileBytes()) {
+                    completeScan = false;
+                    rejected.add(
+                            path + ": exceeds file byte limit " + transferPolicy.maxFileBytes());
                     log.warn(
                             "[sandbox-fs] Skipping oversized workspace file {} ({} bytes)",
                             path,
                             size);
                     continue;
                 }
-                if (scanned > REMOTE_PROJECTION_MAX_FILES) {
-                    log.warn(
-                            "[sandbox-fs] Workspace remote projection hit file limit {}",
-                            REMOTE_PROJECTION_MAX_FILES);
-                    completeScan = false;
-                    break;
-                }
-                if (size > 0 && totalBytes + size > REMOTE_PROJECTION_MAX_TOTAL_BYTES) {
+                if (size > 0 && size > transferPolicy.maxTotalBytes() - totalBytes) {
                     log.warn(
                             "[sandbox-fs] Workspace remote projection hit byte limit {}",
-                            REMOTE_PROJECTION_MAX_TOTAL_BYTES);
+                            transferPolicy.maxTotalBytes());
                     completeScan = false;
+                    rejected.add(
+                            path + ": exceeds total byte limit " + transferPolicy.maxTotalBytes());
                     break;
                 }
 
                 byte[] content = readEntryBytes(tar, path);
-                if (totalBytes + content.length > REMOTE_PROJECTION_MAX_TOTAL_BYTES) {
+                if (content.length > transferPolicy.maxTotalBytes() - totalBytes) {
                     log.warn(
                             "[sandbox-fs] Workspace remote projection hit byte limit {}",
-                            REMOTE_PROJECTION_MAX_TOTAL_BYTES);
+                            transferPolicy.maxTotalBytes());
                     completeScan = false;
+                    rejected.add(
+                            path + ": exceeds total byte limit " + transferPolicy.maxTotalBytes());
                     break;
                 }
                 totalBytes += content.length;
@@ -653,7 +678,8 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                         totalBytes,
                         deleted);
             }
-            return projected;
+            return new WorkspaceProjectionReport(
+                    scanned, projected, unchanged, totalBytes, completeScan, rejected);
         }
     }
 
@@ -780,7 +806,7 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
         int read;
         while ((read = tar.read(buffer)) != -1) {
             bytes += read;
-            if (bytes > REMOTE_PROJECTION_MAX_FILE_BYTES) {
+            if (bytes > transferPolicy.maxFileBytes()) {
                 throw new SandboxException.SandboxRuntimeException(
                         SandboxErrorCode.WORKSPACE_ARCHIVE_READ_ERROR,
                         "Workspace file exceeds remote projection limit: " + path);

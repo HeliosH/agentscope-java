@@ -32,6 +32,7 @@ import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
 import io.agentscope.harness.agent.memory.compaction.ContextWindowExceededException;
 import io.agentscope.harness.agent.memory.compaction.ConversationCompactor;
 import io.agentscope.harness.agent.memory.compaction.TokenCounterUtil;
+import io.agentscope.harness.agent.memory.session.SessionArchiveStore;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
 import java.util.ArrayList;
 import java.util.List;
@@ -63,12 +64,22 @@ public class CompactionMiddleware implements MiddlewareBase {
     private final WorkspaceManager workspaceManager;
     private final Model model;
     private final CompactionConfig config;
+    private final SessionArchiveStore archiveStore;
 
     public CompactionMiddleware(
             WorkspaceManager workspaceManager, Model model, CompactionConfig config) {
+        this(workspaceManager, model, config, null);
+    }
+
+    public CompactionMiddleware(
+            WorkspaceManager workspaceManager,
+            Model model,
+            CompactionConfig config,
+            SessionArchiveStore archiveStore) {
         this.workspaceManager = workspaceManager;
         this.model = model;
         this.config = config;
+        this.archiveStore = archiveStore;
     }
 
     @Override
@@ -107,7 +118,8 @@ public class CompactionMiddleware implements MiddlewareBase {
                                     ? router.bindToStep(rc, messages)
                                     : model;
                     MemoryFlushManager flushManager =
-                            new MemoryFlushManager(workspaceManager, estimationModel);
+                            new MemoryFlushManager(workspaceManager, estimationModel)
+                                    .withArchive(archiveStore);
                     ConversationCompactor compactor =
                             new ConversationCompactor(estimationModel, flushManager);
                     final Msg sys = systemMsg;
@@ -121,7 +133,11 @@ public class CompactionMiddleware implements MiddlewareBase {
                             .compactIfNeeded(rc, conversation, effectiveConfig, agentId, sessionId)
                             .onErrorResume(
                                     e -> {
-                                        if (e instanceof ContextWindowExceededException) {
+                                        if (e instanceof ContextWindowExceededException
+                                                || e
+                                                        instanceof
+                                                        SessionArchiveStore
+                                                                .ArchiveCommitException) {
                                             return Mono.error(e);
                                         }
                                         log.warn(

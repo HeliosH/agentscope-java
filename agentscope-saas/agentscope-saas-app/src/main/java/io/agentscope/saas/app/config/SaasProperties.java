@@ -34,6 +34,7 @@ public class SaasProperties {
     @NestedConfigurationProperty private final Orchestration orchestration = new Orchestration();
     @NestedConfigurationProperty private final Subagents subagents = new Subagents();
     @NestedConfigurationProperty private final Ltm ltm = new Ltm();
+    @NestedConfigurationProperty private final RuntimeArchive runtimeArchive = new RuntimeArchive();
     @NestedConfigurationProperty private final Degradation degradation = new Degradation();
 
     public Model getModel() {
@@ -72,6 +73,157 @@ public class SaasProperties {
         return ltm;
     }
 
+    public RuntimeArchive getRuntimeArchive() {
+        return runtimeArchive;
+    }
+
+    public static class RuntimeArchive {
+        private boolean enabled = true;
+        private int maxBatchMessages = 5000;
+        private long maxMessageBytes = 33554432;
+        private long maxBatchBytes = 67108864;
+        private long maxWindowBytes = 33554432;
+        private boolean largeBodiesEnabled = true;
+        private long inlineMaxBytes = 65536;
+        private int bodyGraceSeconds = 3600;
+        private boolean bodyGcEnabled = true;
+        private int bodyGcBatchSize = 100;
+        private int bodyGcMaxAttempts = 10;
+        private long maxBodyUserBytes = 5368709120L;
+        private long maxBodyOrgBytes = 107374182400L;
+        private boolean lightweightCheckpointsEnabled = true;
+        private long checkpointInlineMaxBytes = 65536;
+        private long checkpointMaxJsonBytes = 1048576;
+
+        public boolean isLightweightCheckpointsEnabled() {
+            return lightweightCheckpointsEnabled;
+        }
+
+        public void setLightweightCheckpointsEnabled(boolean value) {
+            lightweightCheckpointsEnabled = value;
+        }
+
+        public long getCheckpointInlineMaxBytes() {
+            return checkpointInlineMaxBytes;
+        }
+
+        public void setCheckpointInlineMaxBytes(long value) {
+            checkpointInlineMaxBytes = value;
+        }
+
+        public long getCheckpointMaxJsonBytes() {
+            return checkpointMaxJsonBytes;
+        }
+
+        public void setCheckpointMaxJsonBytes(long value) {
+            checkpointMaxJsonBytes = value;
+        }
+
+        public long getMaxBodyUserBytes() {
+            return maxBodyUserBytes;
+        }
+
+        public void setMaxBodyUserBytes(long value) {
+            maxBodyUserBytes = value;
+        }
+
+        public long getMaxBodyOrgBytes() {
+            return maxBodyOrgBytes;
+        }
+
+        public void setMaxBodyOrgBytes(long value) {
+            maxBodyOrgBytes = value;
+        }
+
+        public boolean isLargeBodiesEnabled() {
+            return largeBodiesEnabled;
+        }
+
+        public void setLargeBodiesEnabled(boolean value) {
+            largeBodiesEnabled = value;
+        }
+
+        public long getInlineMaxBytes() {
+            return inlineMaxBytes;
+        }
+
+        public void setInlineMaxBytes(long value) {
+            inlineMaxBytes = value;
+        }
+
+        public int getBodyGraceSeconds() {
+            return bodyGraceSeconds;
+        }
+
+        public void setBodyGraceSeconds(int value) {
+            bodyGraceSeconds = value;
+        }
+
+        public boolean isBodyGcEnabled() {
+            return bodyGcEnabled;
+        }
+
+        public void setBodyGcEnabled(boolean value) {
+            bodyGcEnabled = value;
+        }
+
+        public int getBodyGcBatchSize() {
+            return bodyGcBatchSize;
+        }
+
+        public void setBodyGcBatchSize(int value) {
+            bodyGcBatchSize = value;
+        }
+
+        public int getBodyGcMaxAttempts() {
+            return bodyGcMaxAttempts;
+        }
+
+        public void setBodyGcMaxAttempts(int value) {
+            bodyGcMaxAttempts = value;
+        }
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int getMaxBatchMessages() {
+            return maxBatchMessages;
+        }
+
+        public void setMaxBatchMessages(int value) {
+            maxBatchMessages = value;
+        }
+
+        public long getMaxMessageBytes() {
+            return maxMessageBytes;
+        }
+
+        public void setMaxMessageBytes(long value) {
+            maxMessageBytes = value;
+        }
+
+        public long getMaxBatchBytes() {
+            return maxBatchBytes;
+        }
+
+        public void setMaxBatchBytes(long value) {
+            maxBatchBytes = value;
+        }
+
+        public long getMaxWindowBytes() {
+            return maxWindowBytes;
+        }
+
+        public void setMaxWindowBytes(long value) {
+            maxWindowBytes = value;
+        }
+    }
+
     public Degradation getDegradation() {
         return degradation;
     }
@@ -107,6 +259,12 @@ public class SaasProperties {
 
         /** Automatic recovery for transient model streams that fail after partial output. */
         private final ModelStreamRecovery streamRecovery = new ModelStreamRecovery();
+
+        private final ModelInvocationLimits invocations = new ModelInvocationLimits();
+
+        public ModelInvocationLimits getInvocations() {
+            return invocations;
+        }
 
         /** Deploy-time model choices. Empty keeps the legacy single-model behavior. */
         private List<ModelDefinition> catalog = new ArrayList<>();
@@ -220,9 +378,113 @@ public class SaasProperties {
         }
     }
 
-    /** Deployment-level policy for retrying a failed model turn without duplicating its prefix. */
+    /** Quotas include reasoning and auxiliary invocations. Null is unlimited; zero blocks calls. */
+    public static class ModelInvocationLimits {
+        private Long maxDailyOrgTokens;
+        private Long maxDailyUserTokens;
+        private Long maxDailyOrgCalls;
+        private Long maxDailyUserCalls;
+        private int reasoningTimeoutSeconds = 300;
+        private boolean reconciliationEnabled = true;
+        private int reconciliationGraceSeconds = 60;
+        private int reconciliationBatchSize = 100;
+
+        public boolean isReconciliationEnabled() {
+            return reconciliationEnabled;
+        }
+
+        public void setReconciliationEnabled(boolean value) {
+            reconciliationEnabled = value;
+        }
+
+        public int getReconciliationGraceSeconds() {
+            return reconciliationGraceSeconds;
+        }
+
+        public void setReconciliationGraceSeconds(int value) {
+            if (value < 1)
+                throw new IllegalArgumentException("Reconciliation grace must be positive");
+            reconciliationGraceSeconds = value;
+        }
+
+        public int getReconciliationBatchSize() {
+            return reconciliationBatchSize;
+        }
+
+        public void setReconciliationBatchSize(int value) {
+            if (value < 1 || value > 1000)
+                throw new IllegalArgumentException("Reconciliation batch must be 1..1000");
+            reconciliationBatchSize = value;
+        }
+
+        public Long getMaxDailyOrgTokens() {
+            return maxDailyOrgTokens;
+        }
+
+        public void setMaxDailyOrgTokens(Long value) {
+            requireQuota(value);
+            maxDailyOrgTokens = value;
+        }
+
+        public Long getMaxDailyUserTokens() {
+            return maxDailyUserTokens;
+        }
+
+        public void setMaxDailyUserTokens(Long value) {
+            requireQuota(value);
+            maxDailyUserTokens = value;
+        }
+
+        public Long getMaxDailyOrgCalls() {
+            return maxDailyOrgCalls;
+        }
+
+        public void setMaxDailyOrgCalls(Long value) {
+            requireQuota(value);
+            maxDailyOrgCalls = value;
+        }
+
+        public Long getMaxDailyUserCalls() {
+            return maxDailyUserCalls;
+        }
+
+        public void setMaxDailyUserCalls(Long value) {
+            requireQuota(value);
+            maxDailyUserCalls = value;
+        }
+
+        public int getReasoningTimeoutSeconds() {
+            return reasoningTimeoutSeconds;
+        }
+
+        public void setReasoningTimeoutSeconds(int value) {
+            if (value < 1) throw new IllegalArgumentException("Reasoning timeout must be positive");
+            reasoningTimeoutSeconds = value;
+        }
+
+        private static void requireQuota(Long value) {
+            if (value != null && value < 0)
+                throw new IllegalArgumentException("Model quota cannot be negative");
+        }
+    }
+
     public static class ModelStreamRecovery {
+        public enum Mode {
+            REQUEST_ONLY,
+            DURABLE
+        }
+
         private boolean enabled = true;
+        private Mode mode = Mode.REQUEST_ONLY;
+
+        public Mode getMode() {
+            return mode;
+        }
+
+        public void setMode(Mode mode) {
+            this.mode = java.util.Objects.requireNonNull(mode, "mode");
+        }
+
         private int maxAttempts = 3;
         private long initialBackoffMillis = 1_000;
         private long maxBackoffMillis = 10_000;
@@ -513,6 +775,12 @@ public class SaasProperties {
         /** Maximum active logical bytes for one org; zero disables the quota. */
         private long maxOrgBytes = 100L * GIB;
 
+        private long publicationLeaseSeconds = 300L;
+        private boolean publicationRecoveryEnabled = true;
+        private long publicationRecoveryDeadlineSeconds = 900L;
+        private int publicationRecoveryMaxAttempts = 3;
+        private long publicationRecoveryRetrySeconds = 30L;
+
         /** Executable containers blocked before they enter the workspace. */
         private List<String> blockedExtensions = List.of("exe", "dll", "com", "msi", "apk", "dmg");
 
@@ -591,6 +859,46 @@ public class SaasProperties {
 
         public void setMaxOrgBytes(long maxOrgBytes) {
             this.maxOrgBytes = maxOrgBytes;
+        }
+
+        public long getPublicationLeaseSeconds() {
+            return publicationLeaseSeconds;
+        }
+
+        public boolean isPublicationRecoveryEnabled() {
+            return publicationRecoveryEnabled;
+        }
+
+        public void setPublicationRecoveryEnabled(boolean enabled) {
+            publicationRecoveryEnabled = enabled;
+        }
+
+        public long getPublicationRecoveryDeadlineSeconds() {
+            return publicationRecoveryDeadlineSeconds;
+        }
+
+        public void setPublicationRecoveryDeadlineSeconds(long seconds) {
+            publicationRecoveryDeadlineSeconds = seconds;
+        }
+
+        public int getPublicationRecoveryMaxAttempts() {
+            return publicationRecoveryMaxAttempts;
+        }
+
+        public void setPublicationRecoveryMaxAttempts(int attempts) {
+            publicationRecoveryMaxAttempts = attempts;
+        }
+
+        public long getPublicationRecoveryRetrySeconds() {
+            return publicationRecoveryRetrySeconds;
+        }
+
+        public void setPublicationRecoveryRetrySeconds(long seconds) {
+            publicationRecoveryRetrySeconds = seconds;
+        }
+
+        public void setPublicationLeaseSeconds(long seconds) {
+            publicationLeaseSeconds = seconds;
         }
 
         public List<String> getBlockedExtensions() {
@@ -766,6 +1074,25 @@ public class SaasProperties {
     /** Sandbox execution configuration. When disabled, the shell tool is removed and no
      * sandbox filesystem is configured — the agent runs without command execution capability. */
     public static class Sandbox {
+        private int transferMaxFiles = 5_000;
+        private long transferMaxBytes = 256L * 1024L * 1024L;
+
+        public int getTransferMaxFiles() {
+            return transferMaxFiles;
+        }
+
+        public void setTransferMaxFiles(int value) {
+            transferMaxFiles = value;
+        }
+
+        public long getTransferMaxBytes() {
+            return transferMaxBytes;
+        }
+
+        public void setTransferMaxBytes(long value) {
+            transferMaxBytes = value;
+        }
+
         /** Whether sandbox-backed command execution is enabled. */
         private boolean enabled = false;
 
@@ -1733,6 +2060,16 @@ public class SaasProperties {
         private long schedulerRecoveryFixedDelaySeconds = 20;
         private long schedulerRetryMaxSeconds = 300;
         private long schedulerPollMillis = 1000;
+        private long sessionFencePollMillis = 1000;
+
+        public long getSessionFencePollMillis() {
+            return sessionFencePollMillis;
+        }
+
+        public void setSessionFencePollMillis(long value) {
+            sessionFencePollMillis = value;
+        }
+
         private long schedulerHeartbeatSeconds = 20;
         private int workerConcurrency = 4;
         private long workerExecutionTimeoutSeconds = 900;
@@ -2266,6 +2603,34 @@ public class SaasProperties {
 
         /** Reclaims rows left in syncing state after a worker crash. */
         private long replayStaleSeconds = 300L;
+
+        private long replayRetryBaseSeconds = 30L;
+        private long replayRetryMaxSeconds = 3600L;
+        private long replayScanBudgetSeconds = 30L;
+
+        public long getReplayRetryBaseSeconds() {
+            return replayRetryBaseSeconds;
+        }
+
+        public void setReplayRetryBaseSeconds(long value) {
+            replayRetryBaseSeconds = value;
+        }
+
+        public long getReplayRetryMaxSeconds() {
+            return replayRetryMaxSeconds;
+        }
+
+        public void setReplayRetryMaxSeconds(long value) {
+            replayRetryMaxSeconds = value;
+        }
+
+        public long getReplayScanBudgetSeconds() {
+            return replayScanBudgetSeconds;
+        }
+
+        public void setReplayScanBudgetSeconds(long value) {
+            replayScanBudgetSeconds = value;
+        }
 
         public boolean isEnabled() {
             return enabled;

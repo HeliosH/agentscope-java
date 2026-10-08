@@ -157,16 +157,26 @@ public interface FileObjectGcMapper {
 
     @Select(
             """
-            SELECT COUNT(*)
-              FROM file_versions
-             WHERE org_id = #{orgId} AND object_key = #{objectKey}
+            SELECT (SELECT COUNT(*) FROM file_versions
+                     WHERE org_id = #{orgId} AND object_key = #{objectKey})
+                 + (SELECT COUNT(*) FROM file_publications
+                     WHERE org_id = #{orgId} AND object_key = #{objectKey}
+                       AND status IN ('STAGED', 'STORED') AND lease_until > CURRENT_TIMESTAMP)
             """)
     long countObjectReferences(@Param("orgId") UUID orgId, @Param("objectKey") String objectKey);
+
+    @Select(
+            """
+            SELECT COUNT(*) FROM file_publications WHERE org_id = #{orgId} AND object_key = #{objectKey}
+              AND status IN ('STAGED', 'STORED') AND lease_until > CURRENT_TIMESTAMP
+            """)
+    long countPendingPublications(@Param("orgId") UUID orgId, @Param("objectKey") String objectKey);
 
     @Update(
             """
             UPDATE file_object_gc_queue
-               SET status = #{status}, last_error = #{error}, updated_at = #{changedAt}
+               SET status = #{status}, last_error = #{error}, updated_at = #{changedAt},
+                   attempts = CASE WHEN #{status} = 'pending' THEN 0 ELSE attempts END
              WHERE id = #{queueId}
             """)
     int recordDeletion(

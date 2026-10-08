@@ -16,6 +16,29 @@ import org.junit.jupiter.api.Test;
 
 class RunRecoveryCoordinatorTest {
 
+    @Test
+    void requestOnlyNeverPromisesBackgroundRecoveryEvenWithWorkerEnabled() {
+        var config = new SaasProperties();
+        config.getOrchestration().setEnabled(true);
+        config.getOrchestration().setSchedulerEnabled(true);
+        assertThat(new RunRecoveryCoordinator(config).canScheduleDurableRecovery()).isFalse();
+    }
+
+    @Test
+    void durableRecoveryRequiresAnEnabledWorker() {
+        var config = new SaasProperties();
+        config.getModel()
+                .getStreamRecovery()
+                .setMode(SaasProperties.ModelStreamRecovery.Mode.DURABLE);
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class, () -> new RunRecoveryCoordinator(config));
+        config.getOrchestration().setEnabled(true);
+        config.getOrchestration().setSchedulerEnabled(true);
+        assertThat(new RunRecoveryCoordinator(config).canScheduleDurableRecovery()).isTrue();
+        config.getModel().getStreamRecovery().setEnabled(false);
+        assertThat(new RunRecoveryCoordinator(config).canScheduleDurableRecovery()).isFalse();
+    }
+
     private SaasProperties properties;
     private RunRecoveryCoordinator coordinator;
 

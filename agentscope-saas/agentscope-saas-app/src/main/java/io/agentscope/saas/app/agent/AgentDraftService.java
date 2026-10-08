@@ -18,12 +18,15 @@ package io.agentscope.saas.app.agent;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
-import io.agentscope.core.model.ChatResponse;
+import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
+import io.agentscope.core.model.PurposeBindableModel;
+import io.agentscope.saas.core.tenant.TenantContext;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -100,6 +103,10 @@ public class AgentDraftService {
 
     /** Drafts an agent configuration from a free-text description. */
     public Mono<AgentDraft> draft(String description) {
+        return draft(null, description);
+    }
+
+    public Mono<AgentDraft> draft(TenantContext tenant, String description) {
         if (description == null || description.isBlank()) {
             return Mono.error(
                     new ResponseStatusException(HttpStatus.BAD_REQUEST, "description is required"));
@@ -118,31 +125,62 @@ public class AgentDraftService {
                         .content(TextBlock.builder().text(prompt).build())
                         .build();
 
-        return Mono.fromCallable(() -> callModelBlocking(userMsg))
+        return Mono.fromCallable(() -> callModelBlocking(tenant, userMsg))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMap(this::parseDraft);
     }
 
-    private String callModelBlocking(Msg userMsg) {
+    private String callModelBlocking(TenantContext tenant, Msg userMsg) {
         try {
-            List<ChatResponse> responses =
-                    model.stream(List.of(userMsg), null, null).collectList().block(CALL_TIMEOUT);
-            if (responses == null || responses.isEmpty()) {
-                throw new ResponseStatusException(
-                        HttpStatus.BAD_GATEWAY, "Model returned no response");
+            Model bound = model;
+            if (model instanceof PurposeBindableModel router) {
+                if (tenant == null)
+                    throw new ResponseStatusException(
+                            HttpStatus.UNAUTHORIZED, "Authenticated draft scope is required");
+                var context =
+                        RuntimeContext.builder()
+                                .userId(tenant.userId())
+                                .put(TenantContext.ATTR_KEY, tenant)
+                                .build();
+                bound = router.bindToPurpose(context, PurposeBindableModel.Purpose.REASONING);
             }
-            StringBuilder sb = new StringBuilder();
-            for (ChatResponse r : responses) {
-                if (r == null || r.getContent() == null) continue;
-                for (ContentBlock cb : r.getContent()) {
-                    if (cb instanceof TextBlock tb) {
-                        String txt = tb.getText();
-                        if (txt != null) sb.append(txt);
-                    }
-                }
-            }
-            String raw = sb.toString();
-            if (raw.isBlank()) {
+            String raw =
+                    bound.stream(
+                                    List.of(userMsg),
+                                    null,
+                                    GenerateOptions.builder()
+                                            .maxTokens(2048)
+                                            .temperature(0.2)
+                                            .build())
+                            .reduce(
+                                    new StringBuilder(),
+                                    (text, response) -> {
+                                        if (List.of("length", "max_tokens", "content_filter")
+                                                .contains(
+                                                        response.getFinishReason() == null
+                                                                ? ""
+                                                                : response.getFinishReason()))
+                                            throw new ResponseStatusException(
+                                                    HttpStatus.BAD_GATEWAY,
+                                                    "Model returned an incomplete draft");
+                                        if (response.getContent() != null)
+                                            for (ContentBlock block : response.getContent()) {
+                                                if (block instanceof TextBlock tb
+                                                        && tb.getText() != null) {
+                                                    if (text.length() + (long) tb.getText().length()
+                                                            > 1024 * 1024)
+                                                        throw new ResponseStatusException(
+                                                                HttpStatus.BAD_GATEWAY,
+                                                                "Draft exceeds output limit");
+                                                    text.append(tb.getText());
+                                                }
+                                            }
+                                        return text;
+                                    })
+                            .map(StringBuilder::toString)
+                            .timeout(CALL_TIMEOUT)
+                            .block(CALL_TIMEOUT);
+            if (raw == null || raw.isBlank()) {
                 throw new ResponseStatusException(
                         HttpStatus.BAD_GATEWAY, "Model returned empty content");
             }
@@ -152,7 +190,7 @@ public class AgentDraftService {
         } catch (Exception e) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_GATEWAY,
-                    "Model call failed: " + e.getClass().getSimpleName() + ": " + e.getMessage(),
+                    "Model call failed: " + e.getClass().getSimpleName(),
                     e);
         }
     }

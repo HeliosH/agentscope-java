@@ -55,8 +55,21 @@ saas:
     context-window-tokens: ${SAAS_MODEL_CONTEXT_WINDOW_TOKENS:32000}
     max-output-tokens: ${SAAS_MODEL_MAX_OUTPUT_TOKENS:4096}
     safety-margin-tokens: ${SAAS_MODEL_SAFETY_MARGIN_TOKENS:1024}
+    invocations:
+      reasoning-timeout-seconds: ${SAAS_MODEL_INVOCATION_TIMEOUT_SECONDS:300}
+      reconciliation-enabled: ${SAAS_MODEL_INVOCATION_RECONCILIATION_ENABLED:true}
+      reconciliation-grace-seconds: ${SAAS_MODEL_INVOCATION_RECONCILIATION_GRACE_SECONDS:60}
+      reconciliation-batch-size: ${SAAS_MODEL_INVOCATION_RECONCILIATION_BATCH_SIZE:100}
+      reconcile-fixed-delay-seconds: ${SAAS_MODEL_INVOCATION_RECONCILE_FIXED_DELAY_SECONDS:60}
+      # Empty means unlimited; zero blocks new calls. Includes memory and compression calls.
+      max-daily-org-tokens: ${SAAS_MODEL_MAX_DAILY_ORG_TOKENS:}
+      max-daily-user-tokens: ${SAAS_MODEL_MAX_DAILY_USER_TOKENS:}
+      max-daily-org-calls: ${SAAS_MODEL_MAX_DAILY_ORG_CALLS:}
+      max-daily-user-calls: ${SAAS_MODEL_MAX_DAILY_USER_CALLS:}
     stream-recovery:
       enabled: ${SAAS_MODEL_STREAM_RECOVERY_ENABLED:true}
+      # DURABLE requires an enabled local scheduler; REQUEST_ONLY never queues an orphaned run.
+      mode: ${SAAS_MODEL_STREAM_RECOVERY_MODE:REQUEST_ONLY}
       max-attempts: ${SAAS_MODEL_STREAM_RECOVERY_MAX_ATTEMPTS:3}
       initial-backoff-millis: ${SAAS_MODEL_STREAM_RECOVERY_INITIAL_BACKOFF_MILLIS:1000}
       max-backoff-millis: ${SAAS_MODEL_STREAM_RECOVERY_MAX_BACKOFF_MILLIS:10000}
@@ -99,6 +112,13 @@ saas:
     max-file-bytes: ${SAAS_FILE_STORE_MAX_FILE_BYTES:33554432}
     max-user-bytes: ${SAAS_FILE_STORE_MAX_USER_BYTES:5368709120}
     max-org-bytes: ${SAAS_FILE_STORE_MAX_ORG_BYTES:107374182400}
+    publication-lease-seconds: ${SAAS_FILE_STORE_PUBLICATION_LEASE_SECONDS:300}
+    publication-recovery-enabled: ${SAAS_FILE_STORE_PUBLICATION_RECOVERY_ENABLED:true}
+    publication-recovery-deadline-seconds: ${SAAS_FILE_STORE_PUBLICATION_RECOVERY_DEADLINE_SECONDS:900}
+    publication-recovery-max-attempts: ${SAAS_FILE_STORE_PUBLICATION_RECOVERY_MAX_ATTEMPTS:3}
+    publication-recovery-retry-seconds: ${SAAS_FILE_STORE_PUBLICATION_RECOVERY_RETRY_SECONDS:30}
+    publication-recovery-fixed-delay-seconds: ${SAAS_FILE_STORE_PUBLICATION_RECOVERY_FIXED_DELAY_SECONDS:5}
+    publication-gc-fixed-delay-seconds: ${SAAS_FILE_STORE_PUBLICATION_GC_FIXED_DELAY_SECONDS:300}
     blocked-extensions: ${SAAS_FILE_STORE_BLOCKED_EXTENSIONS:exe,dll,com,msi,apk,dmg}
     blocked-content-types: ${SAAS_FILE_STORE_BLOCKED_CONTENT_TYPES:application/x-msdownload,application/x-msdos-program,application/vnd.android.package-archive}
     deleted-retention-days: ${SAAS_FILE_STORE_DELETED_RETENTION_DAYS:30}
@@ -120,6 +140,8 @@ saas:
       bucket: ${SAAS_FILE_STORE_MINIO_BUCKET:${SAAS_SANDBOX_MINIO_BUCKET:agentscope-saas}}
       region: ${SAAS_FILE_STORE_MINIO_REGION:${SAAS_SANDBOX_MINIO_REGION:}}
   sandbox:
+    transfer-max-files: ${SAAS_SANDBOX_TRANSFER_MAX_FILES:5000}
+    transfer-max-bytes: ${SAAS_SANDBOX_TRANSFER_MAX_BYTES:268435456}
     enabled: ${SAAS_SANDBOX_ENABLED:false}
     type: ${SAAS_SANDBOX_TYPE:cube}
     image: ${SAAS_SANDBOX_IMAGE:ubuntu:22.04}
@@ -222,6 +244,7 @@ saas:
     # Every chat turn is persisted as a Run with a root TaskNode. The durable scheduler and
     # structured planner remain independently gated until their rollout phases are complete.
     enabled: ${SAAS_ORCHESTRATION_ENABLED:true}
+    session-fence-poll-millis: ${SAAS_ORCHESTRATION_SESSION_FENCE_POLL_MILLIS:1000}
     scheduler-enabled: ${SAAS_ORCHESTRATION_SCHEDULER_ENABLED:false}
     planner-enabled: ${SAAS_ORCHESTRATION_PLANNER_ENABLED:false}
     planner-max-depth: ${SAAS_ORCHESTRATION_PLANNER_MAX_DEPTH:8}
@@ -267,6 +290,7 @@ saas:
     max-children-per-agent: ${SAAS_SUBAGENTS_MAX_CHILDREN_PER_AGENT:8}
     max-tasks-per-run: ${SAAS_SUBAGENTS_MAX_TASKS_PER_RUN:32}
   ltm:
+    # File-based memory maintenance remains synchronous until its source/worker lifecycle is complete.
     # Long-term memory (Mem0). Disabled by default — the platform runs with zero external deps,
     # falling back to MEMORY.md + snapshot persistence. Enable with a reachable Mem0 endpoint to
     # add cross-session semantic recall.
@@ -281,6 +305,27 @@ saas:
     replay-batch-size: ${SAAS_LTM_REPLAY_BATCH_SIZE:50}
     replay-max-attempts: ${SAAS_LTM_REPLAY_MAX_ATTEMPTS:10}
     replay-stale-seconds: ${SAAS_LTM_REPLAY_STALE_SECONDS:300}
+    replay-retry-base-seconds: ${SAAS_LTM_REPLAY_RETRY_BASE_SECONDS:30}
+    replay-retry-max-seconds: ${SAAS_LTM_REPLAY_RETRY_MAX_SECONDS:3600}
+    replay-scan-budget-seconds: ${SAAS_LTM_REPLAY_SCAN_BUDGET_SECONDS:30}
+  runtime-archive:
+    enabled: ${SAAS_RUNTIME_ARCHIVE_ENABLED:true}
+    max-batch-messages: ${SAAS_RUNTIME_ARCHIVE_MAX_BATCH_MESSAGES:5000}
+    max-message-bytes: ${SAAS_RUNTIME_ARCHIVE_MAX_MESSAGE_BYTES:33554432}
+    max-batch-bytes: ${SAAS_RUNTIME_ARCHIVE_MAX_BATCH_BYTES:67108864}
+    max-window-bytes: ${SAAS_RUNTIME_ARCHIVE_MAX_WINDOW_BYTES:33554432}
+    large-bodies-enabled: ${SAAS_RUNTIME_ARCHIVE_LARGE_BODIES_ENABLED:true}
+    inline-max-bytes: ${SAAS_RUNTIME_ARCHIVE_INLINE_MAX_BYTES:65536}
+    body-grace-seconds: ${SAAS_RUNTIME_ARCHIVE_BODY_GRACE_SECONDS:3600}
+    body-gc-enabled: ${SAAS_RUNTIME_ARCHIVE_BODY_GC_ENABLED:true}
+    body-gc-fixed-delay-seconds: ${SAAS_RUNTIME_ARCHIVE_BODY_GC_DELAY_SECONDS:300}
+    body-gc-batch-size: ${SAAS_RUNTIME_ARCHIVE_BODY_GC_BATCH_SIZE:100}
+    body-gc-max-attempts: ${SAAS_RUNTIME_ARCHIVE_BODY_GC_MAX_ATTEMPTS:10}
+    max-body-user-bytes: ${SAAS_RUNTIME_ARCHIVE_BODY_MAX_USER_BYTES:5368709120}
+    max-body-org-bytes: ${SAAS_RUNTIME_ARCHIVE_BODY_MAX_ORG_BYTES:107374182400}
+    lightweight-checkpoints-enabled: ${SAAS_RUNTIME_ARCHIVE_LIGHTWEIGHT_CHECKPOINTS_ENABLED:true}
+    checkpoint-inline-max-bytes: ${SAAS_RUNTIME_ARCHIVE_CHECKPOINT_INLINE_MAX_BYTES:65536}
+    checkpoint-max-json-bytes: ${SAAS_RUNTIME_ARCHIVE_CHECKPOINT_MAX_JSON_BYTES:1048576}
   degradation:
     enabled: ${SAAS_DEGRADATION_ENABLED:true}
     # warn = expose/metric only; block = fail closed for new chat runs when critical deps degrade.
@@ -325,4 +370,11 @@ management:
 logging:
   level:
     io.agentscope: ${SAAS_LOG_LEVEL:INFO}
+    # Runtime source payloads can contain private user/tool data; do not log SQL bind values.
+    io.agentscope.saas.dal.mybatis.tenant.RuntimeMessageMapper: INFO
+    io.agentscope.saas.dal.mybatis.tenant.RuntimeBodyMapper: INFO
+    io.agentscope.saas.dal.mybatis.admin.RuntimeBodyGcMapper: INFO
+    io.agentscope.saas.dal.mybatis.admin.ContextCheckpointMapper: INFO
+    io.agentscope.saas.dal.mybatis.tenant.FilePublicationMapper: INFO
+    io.agentscope.saas.dal.mybatis.tenant.RelationalBlobStorageMapper: INFO
     org.springframework.security: WARN

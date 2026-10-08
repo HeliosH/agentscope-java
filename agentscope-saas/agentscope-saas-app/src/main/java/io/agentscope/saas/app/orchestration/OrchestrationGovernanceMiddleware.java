@@ -99,7 +99,11 @@ public final class OrchestrationGovernanceMiddleware implements MiddlewareBase {
             ctx.put(
                     ContextCheckpointStore.class,
                     contextCheckpointFactory.create(
-                            scope.orgId(), scope.runId(), scope.agentRunId()));
+                            scope.orgId(),
+                            scope.runId(),
+                            scope.agentRunId(),
+                            ctx,
+                            agent.getName()));
         }
         restorePermissions(agent, ctx, scope);
         require(governance.preflight(scope.orgId(), scope.runId(), scope.agentRunId()));
@@ -149,7 +153,13 @@ public final class OrchestrationGovernanceMiddleware implements MiddlewareBase {
         return next.apply(input)
                 .doOnNext(
                         event -> {
-                            if (scope != null && event instanceof ModelCallEndEvent end) {
+                            if (scope != null
+                                    && event instanceof ModelCallEndEvent end
+                                    && (!(input.model()
+                                                    instanceof
+                                                    io.agentscope.core.model.PurposeBindableModel
+                                                            governed)
+                                            || !governed.managesUsage())) {
                                 ChatUsage usage = end.getUsage();
                                 require(
                                         governance.consume(

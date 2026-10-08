@@ -32,6 +32,7 @@ class WorkspaceArtifactServiceTest {
         RunArtifactRepository repository = mock(RunArtifactRepository.class);
         SandboxLeaseService leaseService = mock(SandboxLeaseService.class);
         when(repository.insert(any())).thenReturn(1);
+        when(repository.lockCurrentPublicationScope(any(), any(), any(), any())).thenReturn(true);
         when(leaseService.checkpoint(any(), any(), any())).thenReturn(true);
         WorkspaceArtifactService service =
                 new WorkspaceArtifactService(repository, leaseService, new ObjectMapper());
@@ -101,6 +102,7 @@ class WorkspaceArtifactServiceTest {
     void marksOnlyChangedVersionsAsProducedInInteractiveRun() {
         RunArtifactRepository repository = mock(RunArtifactRepository.class);
         when(repository.insert(any())).thenReturn(1);
+        when(repository.lockCurrentPublicationScope(any(), any(), any(), any())).thenReturn(true);
         WorkspaceArtifactService service =
                 new WorkspaceArtifactService(
                         repository, mock(SandboxLeaseService.class), new ObjectMapper());

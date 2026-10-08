@@ -16,6 +16,23 @@ import org.apache.ibatis.annotations.Select;
 /** Tenant MyBatis mapper for orchestration artifacts. */
 public interface RunArtifactMapper {
 
+    @Select(
+            """
+            SELECT s.id FROM chat_sessions s
+             WHERE s.org_id = #{orgId} AND EXISTS (
+                 SELECT 1 FROM assistant_runs r JOIN task_nodes t ON t.run_id = r.id AND t.org_id = r.org_id
+                   JOIN run_attempts a ON a.run_id = r.id AND a.task_id = t.id AND a.org_id = r.org_id
+                  WHERE r.id = #{runId} AND t.id = #{taskId} AND a.id = #{attemptId}
+                    AND r.org_id = s.org_id AND r.user_id = s.user_id AND r.agent_id = s.agent_id
+                    AND r.session_id = s.id AND r.session_generation = s.execution_generation)
+             FOR UPDATE
+            """)
+    List<UUID> lockCurrentPublicationScope(
+            @Param("orgId") UUID orgId,
+            @Param("runId") UUID runId,
+            @Param("taskId") UUID taskId,
+            @Param("attemptId") UUID attemptId);
+
     @Select("SELECT COUNT(*) FROM run_artifacts WHERE id = #{id} AND org_id = #{orgId}")
     int countById(@Param("id") UUID id, @Param("orgId") UUID orgId);
 

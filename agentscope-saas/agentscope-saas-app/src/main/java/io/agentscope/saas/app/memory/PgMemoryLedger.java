@@ -22,10 +22,12 @@ import io.agentscope.saas.core.tenant.TenantContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.domain.model.MemoryEventEntity;
 import io.agentscope.saas.domain.repository.MemoryEventRepository;
+import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -41,9 +43,6 @@ public class PgMemoryLedger implements MemoryLedger {
     private static final String SOURCE_MEM0 = "mem0";
     private static final String EVENT_CONVERSATION = "conversation";
     private static final String STATUS_PENDING = "pending";
-    private static final String STATUS_SYNCED = "synced";
-    private static final String STATUS_FAILED = "failed";
-    private static final int MAX_ERROR_LENGTH = 2000;
 
     private final MemoryEventRepository repository;
     private final ObjectMapper objectMapper;
@@ -77,7 +76,7 @@ public class PgMemoryLedger implements MemoryLedger {
                 tenant.orgId(),
                 () -> {
                     MemoryEventEntity entity = new MemoryEventEntity();
-                    UUID eventId = UUID.randomUUID();
+                    UUID eventId = sourceId(tenant, agentName, sessionId, metadata);
                     entity.setId(eventId);
                     entity.setOrgId(orgId.get());
                     entity.setUserId(userId.get());
@@ -90,54 +89,43 @@ public class PgMemoryLedger implements MemoryLedger {
                     entity.setSyncStatus(STATUS_PENDING);
                     entity.setSyncAttempts(0);
                     entity.setUpdatedAt(OffsetDateTime.now());
-                    repository.save(entity);
+                    if (!repository.appendIfAbsent(entity)) {
+                        MemoryEventEntity existing = repository.findById(eventId).orElseThrow();
+                        if (!Objects.equals(existing.getOrgId(), entity.getOrgId())
+                                || !Objects.equals(existing.getUserId(), entity.getUserId())
+                                || !Objects.equals(existing.getAgentId(), entity.getAgentId())
+                                || !Objects.equals(existing.getSessionId(), entity.getSessionId())
+                                || !SOURCE_MEM0.equals(existing.getSource())
+                                || !EVENT_CONVERSATION.equals(existing.getEventType())
+                                || !sameContent(
+                                        existing.getContentJson(), entity.getContentJson())) {
+                            throw new IllegalStateException("MEMORY_SOURCE_ID_CONTENT_CONFLICT");
+                        }
+                    }
                     return Optional.of(new MemoryEventRef(eventId, tenant.orgId()));
                 });
     }
 
-    @Override
-    public void markSynced(MemoryEventRef ref) {
-        if (ref == null) {
-            return;
-        }
-        withTenantOrg(
-                ref.orgId(),
-                () -> {
-                    repository
-                            .findById(ref.id())
-                            .ifPresent(
-                                    entity -> {
-                                        entity.setSyncStatus(STATUS_SYNCED);
-                                        entity.setSyncAttempts(entity.getSyncAttempts() + 1);
-                                        entity.setSyncedAt(OffsetDateTime.now());
-                                        entity.setLastError(null);
-                                        entity.setUpdatedAt(OffsetDateTime.now());
-                                        repository.save(entity);
-                                    });
-                    return null;
-                });
+    private UUID sourceId(
+            TenantContext tenant, String agent, String session, Map<String, Object> metadata) {
+        Object ids = metadata == null ? null : metadata.get("source_message_ids");
+        if (!(ids instanceof List<?> list) || list.isEmpty()) return UUID.randomUUID();
+        var identity = new LinkedHashMap<String, Object>();
+        identity.put("schema", "memory-source-v1");
+        identity.put("org", tenant.orgId());
+        identity.put("user", tenant.userId());
+        identity.put("agent", agent);
+        identity.put("session", session);
+        identity.put("ids", list);
+        return UUID.nameUUIDFromBytes(toJson(identity).getBytes(StandardCharsets.UTF_8));
     }
 
-    @Override
-    public void markFailed(MemoryEventRef ref, Throwable error) {
-        if (ref == null) {
-            return;
+    private boolean sameContent(String left, String right) {
+        try {
+            return objectMapper.readTree(left).equals(objectMapper.readTree(right));
+        } catch (JsonProcessingException error) {
+            throw new IllegalStateException("Invalid persisted memory source", error);
         }
-        withTenantOrg(
-                ref.orgId(),
-                () -> {
-                    repository
-                            .findById(ref.id())
-                            .ifPresent(
-                                    entity -> {
-                                        entity.setSyncStatus(STATUS_FAILED);
-                                        entity.setSyncAttempts(entity.getSyncAttempts() + 1);
-                                        entity.setLastError(truncate(errorMessage(error)));
-                                        entity.setUpdatedAt(OffsetDateTime.now());
-                                        repository.save(entity);
-                                    });
-                    return null;
-                });
     }
 
     private static Map<String, Object> contentPayload(List<Mem0Message> messages) {
@@ -187,20 +175,6 @@ public class PgMemoryLedger implements MemoryLedger {
         } catch (IllegalArgumentException e) {
             return Optional.empty();
         }
-    }
-
-    private static String errorMessage(Throwable error) {
-        if (error == null) {
-            return null;
-        }
-        return error.getMessage() != null ? error.getMessage() : error.getClass().getName();
-    }
-
-    private static String truncate(String value) {
-        if (value == null || value.length() <= MAX_ERROR_LENGTH) {
-            return value;
-        }
-        return value.substring(0, MAX_ERROR_LENGTH);
     }
 
     private static <T> T withTenantOrg(String orgId, TenantOperation<T> operation) {

@@ -318,7 +318,20 @@ public abstract class AgentBase implements Agent {
                                                 .onErrorResume(
                                                         createErrorHandler(
                                                                 msgs.toArray(new Msg[0]))));
-        return scope == null ? body : body.contextWrite(c -> c.put(CALL_SCOPE_KEY, scope));
+        Mono<Msg> bounded =
+                body.doOnSuccess(
+                                result ->
+                                        io.agentscope.core.state.ConversationCommitter
+                                                .freezeBoundary(rc))
+                        .doOnError(
+                                error ->
+                                        io.agentscope.core.state.ConversationCommitter
+                                                .freezeBoundary(rc))
+                        .doOnCancel(
+                                () ->
+                                        io.agentscope.core.state.ConversationCommitter
+                                                .freezeBoundary(rc));
+        return scope == null ? bounded : bounded.contextWrite(c -> c.put(CALL_SCOPE_KEY, scope));
     }
 
     /**

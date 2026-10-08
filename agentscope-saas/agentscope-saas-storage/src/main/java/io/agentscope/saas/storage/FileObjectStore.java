@@ -29,6 +29,14 @@ public interface FileObjectStore {
     /** Reads an immutable file object after the caller has already passed metadata authorization. */
     byte[] get(UUID orgId, String objectKey) throws Exception;
 
+    /** Reads at most the caller's authorized byte budget; production adapters bound allocation. */
+    default byte[] getBounded(UUID orgId, String objectKey, long maxBytes) throws Exception {
+        byte[] bytes = get(orgId, objectKey);
+        if (bytes == null || bytes.length > maxBytes)
+            throw new IllegalStateException("Object exceeds read budget");
+        return bytes;
+    }
+
     /** Deletes an unreferenced immutable object. Implementations must be idempotent. */
     void delete(UUID orgId, String objectKey) throws Exception;
 

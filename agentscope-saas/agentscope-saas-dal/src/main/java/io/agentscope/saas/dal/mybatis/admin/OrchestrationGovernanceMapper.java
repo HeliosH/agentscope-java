@@ -96,7 +96,7 @@ public interface OrchestrationGovernanceMapper {
 
     @Select(
             """
-            SELECT r.id AS run_id, r.org_id, r.status AS run_status,
+            <script>SELECT r.id AS run_id, r.org_id, r.status AS run_status,
                    r.token_budget AS run_token_budget,
                    r.consumed_tokens AS run_consumed_tokens,
                    r.cost_budget_micros AS run_cost_budget,
@@ -112,10 +112,12 @@ public interface OrchestrationGovernanceMapper {
                    t.consumed_model_calls AS task_consumed_calls,
                    t.deadline_at AS task_deadline
               FROM assistant_runs r
-              JOIN agent_runs ar ON ar.run_id = r.id
-              JOIN task_nodes t ON t.id = ar.task_id
-             WHERE r.id = #{runId} AND r.org_id = #{orgId} AND ar.id = #{agentRunId}
-             FOR UPDATE
+              JOIN task_nodes t ON t.run_id = r.id AND t.org_id = r.org_id
+              <if test="agentRunId != null">JOIN agent_runs ar ON ar.run_id = r.id AND ar.task_id = t.id AND ar.org_id = r.org_id</if>
+             WHERE r.id = #{runId} AND r.org_id = #{orgId}
+             <choose><when test="agentRunId != null">AND ar.id = #{agentRunId}</when>
+             <otherwise>AND t.id = #{taskId}</otherwise></choose>
+             FOR UPDATE</script>
             """)
     @ConstructorArgs({
         @Arg(column = "run_id", javaType = UUID.class),
@@ -140,7 +142,8 @@ public interface OrchestrationGovernanceMapper {
     List<OrchestrationBudgetData> lockBudget(
             @Param("orgId") UUID orgId,
             @Param("runId") UUID runId,
-            @Param("agentRunId") UUID agentRunId);
+            @Param("agentRunId") UUID agentRunId,
+            @Param("taskId") UUID taskId);
 
     @Update(
             """
@@ -149,7 +152,7 @@ public interface OrchestrationGovernanceMapper {
                    consumed_cost_micros = consumed_cost_micros + #{costDelta},
                    consumed_model_calls = consumed_model_calls + #{modelCallDelta},
                    updated_at = #{now}
-             WHERE id = #{runId} AND org_id = #{orgId} AND status = 'RUNNING'
+             WHERE id = #{runId} AND org_id = #{orgId}
             """)
     int recordRunUsage(
             @Param("runId") UUID runId,

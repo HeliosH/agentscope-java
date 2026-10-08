@@ -18,8 +18,8 @@ package io.agentscope.harness.agent.memory;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
-import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.model.Model;
+import io.agentscope.core.model.PurposeBindableModel;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.model.FileInfo;
 import io.agentscope.harness.agent.filesystem.model.GlobResult;
@@ -115,6 +115,7 @@ public class MemoryConsolidator {
     private final String consolidationPrompt;
     private final int maxMemoryTokens;
     private final ConsolidationSink consolidationSink;
+    private final java.time.Duration invocationTimeout;
 
     public MemoryConsolidator(WorkspaceManager workspaceManager, Model model) {
         this(workspaceManager, model, DEFAULT_CONSOLIDATION_PROMPT, 4000);
@@ -150,6 +151,29 @@ public class MemoryConsolidator {
             String consolidationPrompt,
             int maxMemoryTokens,
             ConsolidationSink consolidationSink) {
+        this(
+                workspaceManager,
+                model,
+                consolidationPrompt,
+                maxMemoryTokens,
+                consolidationSink,
+                java.time.Duration.ofSeconds(60));
+    }
+
+    public MemoryConsolidator(
+            WorkspaceManager workspaceManager,
+            Model model,
+            String consolidationPrompt,
+            int maxMemoryTokens,
+            ConsolidationSink consolidationSink,
+            java.time.Duration invocationTimeout) {
+        if (invocationTimeout == null
+                || invocationTimeout.isZero()
+                || invocationTimeout.isNegative()
+                || maxMemoryTokens < 1) {
+            throw new IllegalArgumentException("Memory tokens and timeout must be positive");
+        }
+        this.invocationTimeout = invocationTimeout;
         this.workspaceManager = workspaceManager;
         this.model = model;
         this.consolidationPrompt =
@@ -180,43 +204,50 @@ public class MemoryConsolidator {
         int maxChars = maxMemoryTokens * 4;
         String systemPrompt = String.format(consolidationPrompt, maxMemoryTokens, maxChars);
 
-        StringBuilder userContent = new StringBuilder();
-        userContent.append("Current MEMORY.md:\n");
-        userContent.append(currentMemory.isBlank() ? "(empty)" : currentMemory);
-        userContent
-                .append("\n\nNew daily ledger entries to merge")
-                .append(watermark == Instant.EPOCH ? "" : " (since " + watermark + ")")
-                .append(":\n");
-        userContent.append(dailyEntries);
-
-        List<Msg> messages = new ArrayList<>();
-        messages.add(
-                Msg.builder()
-                        .role(MsgRole.SYSTEM)
-                        .content(TextBlock.builder().text(systemPrompt).build())
-                        .build());
-        messages.add(
-                Msg.builder()
-                        .role(MsgRole.USER)
-                        .content(TextBlock.builder().text(userContent.toString()).build())
-                        .build());
-
-        return model.stream(messages, null, null)
-                .reduce(
-                        new StringBuilder(),
-                        (sb, chatResponse) -> {
-                            if (chatResponse.getContent() != null) {
-                                for (var block : chatResponse.getContent()) {
-                                    if (block instanceof TextBlock tb && tb.getText() != null) {
-                                        sb.append(tb.getText());
-                                    }
-                                }
-                            }
-                            return sb;
+        return Mono.defer(
+                        () -> {
+                            Model bound =
+                                    PurposeTextFold.bind(
+                                            model,
+                                            rc,
+                                            PurposeBindableModel.Purpose.MEMORY_CONSOLIDATE);
+                            // Include oversized legacy MEMORY.md in the paged source, not in every
+                            // request.
+                            String source =
+                                    "Existing curated memory (retain durable facts):\n"
+                                            + currentMemory
+                                            + "\n\nNew daily ledger entries:\n"
+                                            + dailyEntries;
+                            return PurposeTextFold.fold(
+                                    bound,
+                                    rc,
+                                    source,
+                                    "",
+                                    (previous, page) ->
+                                            List.of(
+                                                    Msg.builder()
+                                                            .role(MsgRole.SYSTEM)
+                                                            .textContent(systemPrompt)
+                                                            .build(),
+                                                    Msg.builder()
+                                                            .role(MsgRole.USER)
+                                                            .textContent(
+                                                                    "Current merged memory:\n"
+                                                                            + previous
+                                                                            + "\n\n"
+                                                                            + "Next source page to"
+                                                                            + " merge:\n"
+                                                                            + page)
+                                                            .build()),
+                                    bound instanceof PurposeBindableModel.BoundInvocation
+                                            ? 0
+                                            : 16000,
+                                    maxMemoryTokens,
+                                    invocationTimeout);
                         })
                 .flatMap(
                         sb -> {
-                            String consolidated = sb.toString().strip();
+                            String consolidated = sb.strip();
                             if (consolidated.isBlank()) {
                                 log.warn("Consolidation produced empty output, skipping");
                                 return Mono.empty();

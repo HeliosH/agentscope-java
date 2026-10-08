@@ -32,6 +32,128 @@ import reactor.core.publisher.Flux;
 class ModelCatalogTest {
 
     @Test
+    void helperScopePinsOrganizationEvenWhenSyntheticMessagesCarryConflictingMetadata() {
+        var orgA = java.util.UUID.randomUUID();
+        var orgB = java.util.UUID.randomUUID();
+        var definitions =
+                org.mockito.Mockito.mock(
+                        io.agentscope.saas.domain.repository.ModelDefinitionRepository.class);
+        var factory = org.mockito.Mockito.mock(ModelRouteFactory.class);
+        var definitionA =
+                org.mockito.Mockito.mock(
+                        io.agentscope.saas.domain.model.ModelDefinitionEntity.class);
+        var definitionB =
+                org.mockito.Mockito.mock(
+                        io.agentscope.saas.domain.model.ModelDefinitionEntity.class);
+        for (var definition : List.of(definitionA, definitionB)) {
+            org.mockito.Mockito.when(definition.getModelId()).thenReturn("chosen");
+            org.mockito.Mockito.when(definition.isEnabled()).thenReturn(true);
+        }
+        org.mockito.Mockito.when(definitions.findByOrgIdOrderByModelId(orgA))
+                .thenReturn(List.of(definitionA));
+        org.mockito.Mockito.when(definitions.findByOrgIdOrderByModelId(orgB))
+                .thenReturn(List.of(definitionB));
+        var providerA = new CapturingModel("org-a");
+        var providerB = new CapturingModel("org-b");
+        var fallback = new CapturingModel("global");
+        org.mockito.Mockito.when(factory.managedRoute(definitionA, null, null))
+                .thenReturn(route("chosen", 8192, 1024, providerA, false));
+        org.mockito.Mockito.when(factory.managedRoute(definitionB, null, null))
+                .thenReturn(route("chosen", 32768, 4096, providerB, false));
+        var catalog =
+                new ModelCatalog(
+                        "default",
+                        List.of(route("default", 8192, 1024, fallback, true)),
+                        definitions,
+                        org.mockito.Mockito.mock(ModelCredentialCipher.class),
+                        factory,
+                        null);
+        for (var org : List.of(orgA, orgB)) {
+            var context =
+                    RuntimeContext.builder()
+                            .put(ModelCatalog.ORG_ID_KEY, org.toString())
+                            .put(ContextWindowAwareModel.MODEL_ID_KEY, "chosen")
+                            .build();
+            var conflicting =
+                    Msg.builder()
+                            .role(MsgRole.USER)
+                            .textContent("synthetic helper")
+                            .metadata(
+                                    Map.of(
+                                            ModelCatalog.ORG_ID_KEY,
+                                            java.util.UUID.randomUUID().toString(),
+                                            ContextWindowAwareModel.MODEL_ID_KEY,
+                                            "default"))
+                            .build();
+            catalog.bindToContext(context).stream(List.of(conflicting), null, null).blockLast();
+        }
+        assertEquals(1, providerA.calls.get());
+        assertEquals(1, providerB.calls.get());
+        assertEquals(0, fallback.calls.get());
+        org.mockito.Mockito.verify(definitions).findByOrgIdOrderByModelId(orgA);
+        org.mockito.Mockito.verify(definitions).findByOrgIdOrderByModelId(orgB);
+    }
+
+    @Test
+    void memoryHelpersUseTrustedSelectedRouteWithoutMessageMetadata(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        CapturingModel small = new CapturingModel("small-provider");
+        CapturingModel large = new CapturingModel("large-provider");
+        large.reply = "User prefers concise answers";
+        ModelCatalog catalog =
+                new ModelCatalog(
+                        "small",
+                        List.of(
+                                route("small", 8192, 1024, small, true),
+                                route("large", 32768, 4096, large, false)));
+        RuntimeContext context =
+                RuntimeContext.builder().put(ContextWindowAwareModel.MODEL_ID_KEY, "large").build();
+        try (var manager =
+                new io.agentscope.harness.agent.workspace.WorkspaceManager(
+                        workspace,
+                        new io.agentscope.harness.agent.filesystem.remote.RemoteFilesystem(
+                                new io.agentscope.harness.agent.filesystem.remote.store
+                                        .InMemoryStore(),
+                                List.of("helper-test")))) {
+            new io.agentscope.harness.agent.memory.MemoryFlushManager(manager, catalog)
+                    .flushMemories(
+                            context,
+                            List.of(
+                                    Msg.builder()
+                                            .role(MsgRole.USER)
+                                            .textContent("Prefer concise answers")
+                                            .build()))
+                    .block();
+            manager.writeUtf8WorkspaceRelative(
+                    context, "memory/2026-09-30.md", "User prefers concise answers");
+            new io.agentscope.harness.agent.memory.MemoryConsolidator(manager, catalog)
+                    .consolidate(context)
+                    .block();
+        }
+        assertEquals(0, small.calls.get());
+        assertEquals(2, large.calls.get());
+    }
+
+    @Test
+    void helperBindingCannotChangeTheUserRequestRoutingBoundary() {
+        CapturingModel small = new CapturingModel("small-provider");
+        CapturingModel large = new CapturingModel("large-provider");
+        var catalog =
+                new ModelCatalog(
+                        "small",
+                        List.of(
+                                route("small", 8192, 1024, small, true),
+                                route("large", 32768, 4096, large, false)));
+        var context =
+                RuntimeContext.builder().put(ContextWindowAwareModel.MODEL_ID_KEY, "large").build();
+        catalog.bindToStep(context, List.of(selectedMessage("small", "hello"))).stream(
+                        List.of(selectedMessage("small", "hello")), null, null)
+                .blockLast();
+        assertEquals(1, small.calls.get());
+        assertEquals(0, large.calls.get());
+    }
+
+    @Test
     void routesByMessageMetadataAndCapsOutput() {
         CapturingModel small = new CapturingModel("small-provider");
         CapturingModel large = new CapturingModel("large-provider");
@@ -96,6 +218,60 @@ class ModelCatalogTest {
                 ((ContextWindowAwareModel) bound)
                         .resolveContextProfile(RuntimeContext.empty())
                         .modelId());
+    }
+
+    @Test
+    void otherReplicaDeletionCannotDispatchOldRouteOrSilentlyUseSameIdDeploymentFallback() {
+        var organization = java.util.UUID.randomUUID();
+        var definitions =
+                org.mockito.Mockito.mock(
+                        io.agentscope.saas.domain.repository.ModelDefinitionRepository.class);
+        var cipher = org.mockito.Mockito.mock(ModelCredentialCipher.class);
+        var factory = org.mockito.Mockito.mock(ModelRouteFactory.class);
+        var definition =
+                org.mockito.Mockito.mock(
+                        io.agentscope.saas.domain.model.ModelDefinitionEntity.class);
+        org.mockito.Mockito.when(definition.getModelId()).thenReturn("small");
+        org.mockito.Mockito.when(definition.isEnabled()).thenReturn(true);
+        org.mockito.Mockito.when(definition.getId()).thenReturn(java.util.UUID.randomUUID());
+        org.mockito.Mockito.when(definitions.findByOrgIdOrderByModelId(organization))
+                .thenReturn(List.of(definition));
+        var managed = new CapturingModel("managed");
+        var deployment = new CapturingModel("deployment");
+        org.mockito.Mockito.when(factory.managedRoute(definition, null, null))
+                .thenReturn(route("small", 8192, 1024, managed, true));
+        var replicaA =
+                new ModelCatalog(
+                        "small",
+                        List.of(route("small", 8192, 1024, deployment, true)),
+                        definitions,
+                        cipher,
+                        factory,
+                        null);
+        var replicaB =
+                new ModelCatalog(
+                        "small",
+                        List.of(route("small", 8192, 1024, deployment, true)),
+                        definitions,
+                        cipher,
+                        factory,
+                        null);
+        var oldA = replicaA.bindToOrganization(organization, "small");
+        var oldB = replicaB.bindToOrganization(organization, "small");
+        replicaA.requireCurrentBinding(organization, oldA);
+        org.mockito.Mockito.when(definitions.findByOrgIdOrderByModelId(organization))
+                .thenReturn(List.of());
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> replicaA.requireCurrentBinding(organization, oldA));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> replicaB.requireCurrentBinding(organization, oldB));
+        var next = replicaB.bindToOrganization(organization, "small");
+        replicaB.requireCurrentBinding(organization, next);
+        next.stream(List.of(selectedMessage("small", "hello")), List.of(), null).blockLast();
+        assertEquals(0, managed.calls.get());
+        assertEquals(1, deployment.calls.get());
     }
 
     @Test
@@ -212,6 +388,7 @@ class ModelCatalogTest {
         private final String name;
         private final AtomicInteger calls = new AtomicInteger();
         private final AtomicReference<GenerateOptions> options = new AtomicReference<>();
+        private String reply = "";
 
         private CapturingModel(String name) {
             this.name = name;
@@ -222,7 +399,14 @@ class ModelCatalogTest {
                 List<Msg> messages, List<ToolSchema> tools, GenerateOptions options) {
             calls.incrementAndGet();
             this.options.set(options);
-            return Flux.just(ChatResponse.builder().content(List.of()).build());
+            return Flux.just(
+                    ChatResponse.builder()
+                            .content(
+                                    List.of(
+                                            io.agentscope.core.message.TextBlock.builder()
+                                                    .text(reply)
+                                                    .build()))
+                            .build());
         }
 
         @Override

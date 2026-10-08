@@ -56,6 +56,58 @@ class SandboxBackedFilesystemTest {
     private static final NamespaceFactory NS = rc -> List.of("test", "fs");
 
     @Test
+    void oversizedProjectionFailsClosedAndPreservesPreviousManifest() throws Exception {
+        var remote = new RemoteFilesystem(new InMemoryStore(), NS);
+        var fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        fs.projectSandboxWorkspaceToRemote(
+                contextWithSandbox(new FakeSandbox(tarArchive(Map.of("outputs/old.txt", "old")))));
+        fs.configureTransferPolicy(
+                new io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy(10, 4, 32));
+        var rc =
+                contextWithSandbox(
+                        new FakeSandbox(tarArchive(Map.of("outputs/new.pptx", "12345"))));
+        var receipt = fs.projectSandboxWorkspaceWithReport(rc);
+        assertEquals(0, receipt.projectedFiles());
+        assertFalse(receipt.completeScan());
+        assertEquals(1, receipt.rejectedFiles().size());
+        assertThrows(IllegalStateException.class, receipt::verifyComplete);
+        assertThrows(IllegalStateException.class, () -> fs.projectSandboxWorkspaceToRemote(rc));
+        assertTrue(remote.exists(RC, "/outputs/old.txt"));
+        assertTrue(
+                remote.read(RC, "/.agentscope/sandbox_projection_manifest", 0, 0)
+                        .fileData()
+                        .content()
+                        .contains("/outputs/old.txt"));
+        assertEquals(fs.getTransferPolicy(), fs.fork().getTransferPolicy());
+    }
+
+    @Test
+    void countAndAggregateByteLimitsReturnIncompleteReceipts() throws Exception {
+        for (var policy :
+                List.of(
+                        new io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy(1, 10, 20),
+                        new io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy(
+                                10, 4, 4))) {
+            var fs = new SandboxBackedFilesystem();
+            fs.configureRemoteFallback(new RemoteFilesystem(new InMemoryStore(), NS));
+            fs.configureTransferPolicy(policy);
+            var report =
+                    fs.projectSandboxWorkspaceWithReport(
+                            contextWithSandbox(
+                                    new FakeSandbox(
+                                            tarArchive(
+                                                    Map.of(
+                                                            "outputs/a.txt",
+                                                            "123",
+                                                            "outputs/b.txt",
+                                                            "456")))));
+            assertFalse(report.completeScan());
+            assertThrows(IllegalStateException.class, report::verifyComplete);
+        }
+    }
+
+    @Test
     void outOfCallReadDelegatesToFallbackWhenConfigured() {
         InMemoryStore store = new InMemoryStore();
         // Seed the store with a file via a plain RemoteFilesystem, then read via the sandbox fs.
@@ -207,7 +259,7 @@ class SandboxBackedFilesystemTest {
     }
 
     @Test
-    void releaseProjectionSkipsUnsafeArchiveEntries() throws Exception {
+    void releaseProjectionReportsUnsafeArchiveEntriesAsIncomplete() throws Exception {
         InMemoryStore store = new InMemoryStore();
         SandboxBackedFilesystem fs = new SandboxBackedFilesystem();
         fs.configureRemoteFallback(new RemoteFilesystem(store, NS));
@@ -217,9 +269,10 @@ class SandboxBackedFilesystemTest {
                                 tarArchive(
                                         Map.of("../escape.txt", "bad", "safe/file.txt", "good"))));
 
-        int projected = fs.projectSandboxWorkspaceToRemote(rc);
-
-        assertEquals(1, projected);
+        var receipt = fs.projectSandboxWorkspaceWithReport(rc);
+        assertEquals(1, receipt.projectedFiles());
+        assertFalse(receipt.completeScan());
+        assertThrows(IllegalStateException.class, receipt::verifyComplete);
         fs.setSandbox(null);
         assertFalse(fs.exists(RC, "/escape.txt"));
         ReadResult safe = fs.read(RC, "/safe/file.txt", 0, 0);

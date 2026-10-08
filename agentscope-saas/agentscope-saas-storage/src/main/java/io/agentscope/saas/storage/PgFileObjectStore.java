@@ -72,6 +72,16 @@ public final class PgFileObjectStore implements FileObjectStore {
     }
 
     @Override
+    public byte[] getBounded(UUID orgId, String objectKey, long maxBytes) throws Exception {
+        if (maxBytes < 1 || maxBytes > 33554432)
+            throw new IllegalArgumentException("Invalid object read budget");
+        BinaryBlobData stored = mapper.findBoundedFileObject(table, orgId, objectKey, maxBytes);
+        if (stored == null)
+            throw new FileNotFoundException("Runtime object missing or exceeds budget");
+        return stored.getData();
+    }
+
+    @Override
     public void delete(UUID orgId, String objectKey) throws Exception {
         mapper.deleteFileObject(table, orgId, objectKey);
     }

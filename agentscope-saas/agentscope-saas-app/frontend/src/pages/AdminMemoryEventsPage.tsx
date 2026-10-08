@@ -16,7 +16,7 @@ import {
   StatusBadge,
 } from '../components/ManagementUI';
 
-const STATUSES = ['', 'pending', 'syncing', 'synced', 'failed'];
+const STATUSES = ['', 'pending', 'syncing', 'synced', 'failed', 'dead_letter'];
 
 function formatDate(value?: string | null): string {
   if (!value) return '-';
@@ -31,7 +31,7 @@ function shortId(value?: string | null): string {
 
 function statusTone(status: string): 'success' | 'danger' | 'info' | 'warning' {
   if (status === 'synced') return 'success';
-  if (status === 'failed') return 'danger';
+  if (status === 'failed' || status === 'dead_letter') return 'danger';
   if (status === 'syncing') return 'info';
   return 'warning';
 }
@@ -62,7 +62,7 @@ export default function AdminMemoryEventsPage() {
 
   const totals = useMemo(() => ({
     pending: rows.filter(row => row.syncStatus === 'pending' || row.syncStatus === 'syncing').length,
-    failed: rows.filter(row => row.syncStatus === 'failed').length,
+    failed: rows.filter(row => row.syncStatus === 'failed' || row.syncStatus === 'dead_letter').length,
     synced: rows.filter(row => row.syncStatus === 'synced').length,
     attempts: rows.reduce((sum, row) => sum + row.syncAttempts, 0),
   }), [rows]);
@@ -89,7 +89,7 @@ export default function AdminMemoryEventsPage() {
 
       <MetricStrip items={[
         { label: 'Queued / syncing', value: totals.pending, tone: totals.pending ? 'warning' : 'default' },
-        { label: 'Failed', value: totals.failed, tone: totals.failed ? 'danger' : 'default' },
+        { label: 'Failed / exhausted', value: totals.failed, tone: totals.failed ? 'danger' : 'default' },
         { label: 'Synced', value: totals.synced, tone: 'success' },
         { label: 'Sync attempts', value: totals.attempts },
       ]} />

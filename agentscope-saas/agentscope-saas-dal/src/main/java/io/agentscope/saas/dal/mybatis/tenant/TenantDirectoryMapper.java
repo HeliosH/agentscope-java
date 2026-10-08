@@ -19,6 +19,11 @@ import org.apache.ibatis.annotations.Update;
 /** Tenant mapper for organization, user, and quota policy domain data. */
 public interface TenantDirectoryMapper {
 
+    // Quota serialization need not block foreign-key KEY SHARE checks on these immutable IDs.
+    String QUOTA_LOCK =
+            "FOR <choose><when test=\"_databaseId == 'postgresql'\">NO KEY"
+                    + " UPDATE</when><otherwise>UPDATE</otherwise></choose>";
+
     String ORG_COLUMNS = "SELECT id, name, slug, status, settings, created_at FROM orgs";
 
     @Select(ORG_COLUMNS + " WHERE slug = #{slug}")
@@ -27,7 +32,7 @@ public interface TenantDirectoryMapper {
     @Select(ORG_COLUMNS + " WHERE id = #{id}")
     List<OrgEntity> findOrg(@Param("id") UUID id);
 
-    @Select(ORG_COLUMNS + " WHERE id = #{id} FOR UPDATE")
+    @Select("<script>" + ORG_COLUMNS + " WHERE id = #{id} " + QUOTA_LOCK + "</script>")
     List<OrgEntity> lockOrg(@Param("id") UUID id);
 
     @Insert(
@@ -74,7 +79,12 @@ public interface TenantDirectoryMapper {
     @Select("SELECT COUNT(*) FROM users WHERE org_id = #{orgId} AND role = #{role}")
     long countUsersByRole(@Param("orgId") UUID orgId, @Param("role") String role);
 
-    @Select(USER_COLUMNS + " WHERE org_id = #{orgId} AND id = #{id} FOR UPDATE")
+    @Select(
+            "<script>"
+                    + USER_COLUMNS
+                    + " WHERE org_id = #{orgId} AND id = #{id} "
+                    + QUOTA_LOCK
+                    + "</script>")
     List<UserEntity> lockUser(@Param("orgId") UUID orgId, @Param("id") UUID id);
 
     @Insert(

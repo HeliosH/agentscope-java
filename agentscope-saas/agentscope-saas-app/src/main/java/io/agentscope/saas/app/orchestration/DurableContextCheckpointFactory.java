@@ -5,6 +5,7 @@
  */
 package io.agentscope.saas.app.orchestration;
 
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.tool.ContextCheckpointStore;
 import java.util.UUID;
 import org.springframework.stereotype.Component;
@@ -23,17 +24,34 @@ public class DurableContextCheckpointFactory {
     }
 
     public ContextCheckpointStore create(UUID orgId, UUID runId, UUID agentRunId) {
+        return create(orgId, runId, agentRunId, null, null);
+    }
+
+    public ContextCheckpointStore create(
+            UUID orgId, UUID runId, UUID agentRunId, RuntimeContext context, String label) {
+        var binding = context == null ? null : new CheckpointTailCodec.Binding(context, label);
         return new ContextCheckpointStore() {
             @Override
+            public java.util.List<io.agentscope.core.message.Msg> retainedWindow(
+                    java.util.List<io.agentscope.core.message.Msg> workingWindow) {
+                return binding != null && service.usesLightweightCheckpoints()
+                        ? java.util.List.copyOf(workingWindow)
+                        : ContextCheckpointStore.super.retainedWindow(workingWindow);
+            }
+
+            @Override
             public StoredCheckpoint save(Draft draft) {
-                return service.save(orgId, runId, draft);
+                if (agentRunId != null
+                        && !agentRunId.toString().equals(draft.identity().agentRunId()))
+                    throw new IllegalStateException("CHECKPOINT_SCOPE_MISMATCH");
+                return service.save(orgId, runId, draft, binding);
             }
 
             @Override
             public java.util.Optional<RecoveryCheckpoint> latest() {
                 return agentRunId == null
                         ? java.util.Optional.empty()
-                        : service.latestRecovery(orgId, runId, agentRunId);
+                        : service.latestRecovery(orgId, runId, agentRunId, binding);
             }
         };
     }

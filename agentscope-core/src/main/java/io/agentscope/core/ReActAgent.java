@@ -112,7 +112,9 @@ import io.agentscope.core.skill.SkillBox;
 import io.agentscope.core.skill.SkillFilter;
 import io.agentscope.core.skill.repository.AgentSkillRepository;
 import io.agentscope.core.state.AgentState;
+import io.agentscope.core.state.AgentStateNamespace;
 import io.agentscope.core.state.AgentStateStore;
+import io.agentscope.core.state.ConversationCommitter;
 import io.agentscope.core.state.LegacyStateLoader;
 import io.agentscope.core.tool.AgentTool;
 import io.agentscope.core.tool.RuntimeToolScope;
@@ -145,6 +147,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import reactor.core.publisher.BaseSubscriber;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
 import reactor.core.publisher.Mono;
@@ -268,6 +271,9 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
 
     /** Cache of state per {@code (userId, sessionId)} slot key. */
     private final ConcurrentHashMap<String, AgentState> stateCache = new ConcurrentHashMap<>();
+
+    private final ConcurrentHashMap<String, String> persistedStateNamespaces =
+            new ConcurrentHashMap<>();
 
     /**
      * Per-slot permission engine cache: runtime-added ASK rules accumulate within the owning
@@ -422,14 +428,18 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
      * before writing.
      */
     private Mono<Void> saveStateToSession(CallExecution scope) {
-        if (stateStore == null) {
+        if (stateStore == null && scope.rc.get(ConversationCommitter.class) == null) {
             return Mono.empty();
         }
         syncToolkitToState(scope.state);
         SlotRef ref = SlotRef.parse(scope.slotKey);
         AgentState toSave = scope.state;
         return Mono.<Void>fromRunnable(
-                        () -> stateStore.save(ref.userId, ref.sessionId, "agent_state", toSave))
+                        () -> {
+                            ConversationCommitter.commitCurrent(scope.rc, getName());
+                            if (stateStore != null)
+                                stateStore.save(ref.userId, ref.sessionId, "agent_state", toSave);
+                        })
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
@@ -447,10 +457,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
      * {@code AgentBase.acquireExecution} lock.
      */
     private CallExecution activateSlotForContext(RuntimeContext ctx) {
-        String sid = ctx != null ? ctx.getSessionId() : null;
-        if (sid == null || sid.isBlank()) {
-            sid = defaultSessionId;
-        }
+        String sid = stateSessionId(ctx);
         String uid = ctx != null ? ctx.getUserId() : null;
         String slot = slotKey(uid, sid);
         final String finalUid = uid;
@@ -535,6 +542,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
         // the active session's state via rc.getAgentState() (call-scoped, concurrency-safe)
         // rather than agent.getAgentState() (not call-scoped under concurrency).
         ctx.setAgentState(scope.state);
+        ctx.put(ConversationCommitter.Boundary.class, (ConversationCommitter.Boundary) null);
         this.activeRc = ctx;
         bindRuntimeContextToHooks(ctx);
         // Seed per-call state onto the active execution scope. The system message is initialised
@@ -814,7 +822,23 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                 input ->
                         Flux.<AgentEvent>create(
                                 sink -> {
+                                    // Register before subscribing so even synchronous cancellation
+                                    // owns the call.
+                                    BaseSubscriber<Msg> subscription =
+                                            new BaseSubscriber<>() {
+                                                @Override
+                                                protected void hookOnNext(Msg result) {
+                                                    sink.next(new AgentResultEvent(result));
+                                                }
+
+                                                @Override
+                                                protected void hookOnError(Throwable error) {
+                                                    sink.error(error);
+                                                }
+                                            };
+                                    sink.onCancel(subscription);
                                     sink.next(new AgentStartEvent(null, replyId, getName()));
+                                    if (sink.isCancelled()) return;
                                     reactor.util.context.Context subscriberCtx =
                                             reactor.util.context.Context.of(sink.contextView());
 
@@ -853,11 +877,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                                         sink.complete();
                                                     })
                                             .contextWrite(subscriberCtx)
-                                            .subscribe(
-                                                    finalMsg ->
-                                                            sink.next(
-                                                                    new AgentResultEvent(finalMsg)),
-                                                    sink::error);
+                                            .subscribe(subscription);
                                 },
                                 FluxSink.OverflowStrategy.BUFFER);
         return MiddlewareChain.build(middlewares, this, context, MiddlewareBase::onAgent, core)
@@ -1979,7 +1999,20 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
          * jumps directly into the acting phase without another reasoning step.
          */
         private Mono<Msg> resumeAgent() {
-            return acting(0);
+            return Mono.defer(
+                    () -> {
+                        // Confirmation/recovery starts a fresh invocation without a model-call
+                        // snapshot.
+                        beginStep();
+                        captureStep(
+                                "resume-" + UUID.randomUUID(),
+                                new ModelCallInput(
+                                        state.getContext(),
+                                        toolkitForCall().getToolSchemas(),
+                                        buildGenerateOptions(),
+                                        model));
+                        return acting(0);
+                    });
         }
 
         private Mono<Msg> executeIteration(int iter) {
@@ -2211,6 +2244,20 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                 return new ModelCallInput(input.messages(), input.tools(), input.options(), bound);
             }
             return input;
+        }
+
+        private ModelCallInput bindSummaryModelInput(ModelCallInput input) {
+            if (input.model() instanceof io.agentscope.core.model.PurposeBindableModel router) {
+                Model bound =
+                        Objects.requireNonNull(
+                                router.bindToPurpose(
+                                        rc,
+                                        io.agentscope.core.model.PurposeBindableModel.Purpose
+                                                .COMPACTION),
+                                "bound summary model");
+                return new ModelCallInput(input.messages(), input.tools(), input.options(), bound);
+            }
+            return bindModelInput(input);
         }
 
         private Flux<AgentEvent> modelCallStream(
@@ -2578,6 +2625,55 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                             parentCtx ->
                                     Flux.<AgentEvent>create(
                                             sink -> {
+                                                Set<String> chunkedToolIds =
+                                                        ConcurrentHashMap.newKeySet();
+                                                BaseSubscriber<
+                                                                List<
+                                                                        Map.Entry<
+                                                                                ToolUseBlock,
+                                                                                ToolResultBlock>>>
+                                                        subscription =
+                                                                new BaseSubscriber<>() {
+                                                                    @Override
+                                                                    protected void hookOnNext(
+                                                                            List<
+                                                                                            Map
+                                                                                                            .Entry<
+                                                                                                    ToolUseBlock,
+                                                                                                    ToolResultBlock>>
+                                                                                    results) {
+                                                                        var merged =
+                                                                                new ArrayList<>(
+                                                                                        deniedEntries);
+                                                                        merged.addAll(results);
+                                                                        resultHolder.set(merged);
+                                                                        for (var entry : results) {
+                                                                            emitToolResultDelta(
+                                                                                    sink,
+                                                                                    replyId,
+                                                                                    entry,
+                                                                                    chunkedToolIds);
+                                                                            sink.next(
+                                                                                    new ToolResultEndEvent(
+                                                                                            replyId,
+                                                                                            entry.getKey()
+                                                                                                    .getId(),
+                                                                                            entry.getKey()
+                                                                                                    .getName(),
+                                                                                            determineToolResultState(
+                                                                                                    entry
+                                                                                                            .getValue())));
+                                                                        }
+                                                                        sink.complete();
+                                                                    }
+
+                                                                    @Override
+                                                                    protected void hookOnError(
+                                                                            Throwable error) {
+                                                                        sink.error(error);
+                                                                    }
+                                                                };
+                                                sink.onCancel(subscription);
                                                 for (ToolUseBlock tool : approved) {
                                                     sink.next(
                                                             new ToolResultStartEvent(
@@ -2586,8 +2682,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                                                     tool.getName()));
                                                 }
 
-                                                Set<String> chunkedToolIds =
-                                                        ConcurrentHashMap.newKeySet();
+                                                if (sink.isCancelled()) return;
 
                                                 toolkitForCall()
                                                         .setInternalChunkCallback(
@@ -2633,42 +2728,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
 
                                                 executeToolCalls(approved)
                                                         .contextWrite(ctx -> ctx.putAll(parentCtx))
-                                                        .subscribe(
-                                                                results -> {
-                                                                    List<
-                                                                                    Map.Entry<
-                                                                                            ToolUseBlock,
-                                                                                            ToolResultBlock>>
-                                                                            merged =
-                                                                                    new ArrayList<>(
-                                                                                            deniedEntries);
-                                                                    merged.addAll(results);
-                                                                    resultHolder.set(merged);
-                                                                    for (Map.Entry<
-                                                                                    ToolUseBlock,
-                                                                                    ToolResultBlock>
-                                                                            entry : results) {
-                                                                        emitToolResultDelta(
-                                                                                sink,
-                                                                                replyId,
-                                                                                entry,
-                                                                                chunkedToolIds);
-                                                                        ToolResultState state =
-                                                                                determineToolResultState(
-                                                                                        entry
-                                                                                                .getValue());
-                                                                        sink.next(
-                                                                                new ToolResultEndEvent(
-                                                                                        replyId,
-                                                                                        entry.getKey()
-                                                                                                .getId(),
-                                                                                        entry.getKey()
-                                                                                                .getName(),
-                                                                                        state));
-                                                                    }
-                                                                    sink.complete();
-                                                                },
-                                                                sink::error);
+                                                        .subscribe(subscription);
                                             }));
 
             return deniedEvents.concatWith(approvedEvents);
@@ -3121,6 +3181,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
         }
 
         private void saveContextCheckpoint() {
+            ConversationCommitter.commitCurrent(rc, getName());
             io.agentscope.core.tool.ContextCheckpointStore store =
                     rc.get(io.agentscope.core.tool.ContextCheckpointStore.class);
             StepSnapshot step = rc.get(StepSnapshot.class);
@@ -3128,7 +3189,6 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                 return;
             }
             List<Msg> history = state.getContext();
-            int tailStart = Math.max(0, history.size() - 20);
             String operationScope = step.identity().runId();
             List<String> pendingOperations =
                     extractPendingToolCalls().stream()
@@ -3143,7 +3203,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                             step.stepId(),
                             StepSnapshot.fingerprint(history),
                             state.getSummary(),
-                            history.subList(tailStart, history.size()),
+                            store.retainedWindow(history),
                             null,
                             pendingOperations,
                             environment == null ? null : environment.workspaceVersion()));
@@ -3241,7 +3301,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
             beginStep();
 
             Function<ModelCallInput, Flux<AgentEvent>> summaryModelCallCore =
-                    mci -> summaryModelCallStream(context, bindModelInput(mci), options);
+                    mci -> summaryModelCallStream(context, bindSummaryModelInput(mci), options);
 
             return MiddlewareChain.build(
                             middlewares,
@@ -3600,10 +3660,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
      */
     public AgentState getAgentState(RuntimeContext ctx) {
         String uid = ctx != null ? ctx.getUserId() : null;
-        String sid = ctx != null ? ctx.getSessionId() : null;
-        if (sid == null || sid.isBlank()) {
-            sid = defaultSessionId;
-        }
+        String sid = stateSessionId(ctx);
         return getAgentState(uid, sid);
     }
 
@@ -3667,7 +3724,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
      */
     public void setPermissionMode(RuntimeContext ctx, PermissionMode mode) {
         String uid = ctx != null ? ctx.getUserId() : null;
-        String sid = ctx != null ? ctx.getSessionId() : null;
+        String sid = stateSessionId(ctx);
         setPermissionMode(uid, sid, mode);
     }
 
@@ -3680,8 +3737,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
     public void setPermissionContext(RuntimeContext ctx, PermissionContextState permissionContext) {
         Objects.requireNonNull(permissionContext, "permissionContext must not be null");
         String userId = ctx != null ? ctx.getUserId() : null;
-        String sessionId = ctx != null ? ctx.getSessionId() : null;
-        String sid = (sessionId == null || sessionId.isBlank()) ? defaultSessionId : sessionId;
+        String sid = stateSessionId(ctx);
         String slot = slotKey(userId, sid);
         AgentState state = getAgentState(userId, sid);
         state.setPermissionContext(permissionContext);
@@ -3710,11 +3766,29 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
      */
     public void saveAgentState(RuntimeContext ctx) {
         String uid = ctx != null ? ctx.getUserId() : null;
-        String sid = ctx != null ? ctx.getSessionId() : null;
-        if (sid == null || sid.isBlank()) {
-            sid = defaultSessionId;
-        }
+        String sid = stateSessionId(ctx);
         saveAgentState(uid, sid);
+    }
+
+    private String stateSessionId(RuntimeContext ctx) {
+        String logical = ctx == null ? null : ctx.getSessionId();
+        if (logical == null || logical.isBlank()) logical = defaultSessionId;
+        AgentStateNamespace namespace = ctx == null ? null : ctx.get(AgentStateNamespace.class);
+        if (namespace == null) return logical;
+        String physical = namespace.sessionKey(logical);
+        if (stateStore != null) {
+            String user = ctx.getUserId();
+            String base = slotKey(user, logical), current = slotKey(user, physical);
+            String prior = persistedStateNamespaces.put(base, current);
+            // Persistent storage remains authoritative; discard superseded local cache entries.
+            stateCache.remove(base);
+            permissionEngineCache.remove(base);
+            if (prior != null && !prior.equals(current)) {
+                stateCache.remove(prior);
+                permissionEngineCache.remove(prior);
+            }
+        }
+        return physical;
     }
 
     /**

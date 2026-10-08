@@ -70,6 +70,8 @@ class DurableTaskWorkerIntegrationTest {
 
         assertThat(database.taskState(taskId).status()).isEqualTo("SUCCEEDED");
         assertThat(database.taskState(taskId).outputJson()).contains("durable worker integration");
+        assertThat(database.runState(runId).consumedModelCalls()).isEqualTo(1);
+        assertThat(database.runState(runId).consumedTokens()).isPositive();
         assertThat(database.runEventTypes(runId))
                 .containsExactly(
                         "TASK_CLAIMED",

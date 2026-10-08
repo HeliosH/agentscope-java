@@ -24,9 +24,13 @@ import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.model.ContextWindowAwareModel;
 import io.agentscope.core.model.Model;
+import io.agentscope.core.model.PurposeBindableModel;
 import io.agentscope.harness.agent.memory.MemoryFlushManager;
+import io.agentscope.harness.agent.memory.PurposeTextFold;
 import io.agentscope.harness.agent.memory.compaction.CompactionConfig.TruncateArgsConfig;
+import io.agentscope.harness.agent.memory.session.SessionArchiveStore;
 import io.agentscope.harness.agent.middleware.CompactionMiddleware;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -97,6 +101,9 @@ public class ConversationCompactor {
             return Mono.just(Optional.empty());
         }
 
+        if (flushManager.hasAuthoritativeArchive()) {
+            flushManager.offloadMessages(rc, conversationMessages, agentId, sessionId);
+        }
         // Step 1: Lightweight arg truncation (non-LLM). Runs at a lower threshold than
         List<Msg> messages = truncateArgs(conversationMessages, config.getTruncateArgsConfig());
 
@@ -111,9 +118,9 @@ public class ConversationCompactor {
             return Mono.just(Optional.empty());
         }
 
-        // Filter previous summary messages from the prefix before offloading to avoid
-        // re-storing already-archived summaries.
-        List<Msg> prefix = filterSummaryMessages(new ArrayList<>(messages.subList(0, cutoff)));
+        // Prior summaries must participate in chained compaction, but not fresh memory extraction.
+        List<Msg> prefix = new ArrayList<>(messages.subList(0, cutoff));
+        List<Msg> rawPrefix = filterSummaryMessages(prefix);
         List<Msg> tail = new ArrayList<>(messages.subList(cutoff, messages.size()));
 
         log.info(
@@ -127,7 +134,7 @@ public class ConversationCompactor {
         Mono<Void> flushStep =
                 config.isFlushBeforeCompact()
                         ? flushManager
-                                .flushMemories(rc, prefix)
+                                .flushMemories(rc, rawPrefix)
                                 .doOnSuccess(v -> log.debug("Memory flush before compaction done"))
                                 .onErrorResume(
                                         e -> {
@@ -159,6 +166,8 @@ public class ConversationCompactor {
                                                     path))
                             .onErrorResume(
                                     e -> {
+                                        if (e instanceof SessionArchiveStore.ArchiveCommitException)
+                                            return Mono.error(e);
                                         log.warn(
                                                 "Message offload before compaction failed: {}",
                                                 e.getMessage());
@@ -174,7 +183,7 @@ public class ConversationCompactor {
                 .then(offloadStep)
                 .flatMap(
                         offloadPath ->
-                                summarizePrefix(prefix, routingMetadata, config)
+                                summarizePrefix(rc, prefix, routingMetadata, config)
                                         .map(
                                                 summary -> {
                                                     String filePath =
@@ -332,65 +341,45 @@ public class ConversationCompactor {
     // -------------------------------------------------------------------------
 
     private Mono<String> summarizePrefix(
-            List<Msg> prefix, Map<String, Object> routingMetadata, CompactionConfig config) {
+            RuntimeContext rc,
+            List<Msg> prefix,
+            Map<String, Object> routingMetadata,
+            CompactionConfig config) {
         if (prefix.isEmpty()) {
             return Mono.just("No previous conversation history.");
         }
 
-        String formatted = formatMessagesForSummary(prefix);
-        formatted = boundSummaryText(formatted, config);
-        String prompt = config.getSummaryPrompt().replace("{messages}", formatted);
-
-        List<Msg> summarizationInput =
-                List.of(
-                        Msg.builder()
-                                .role(MsgRole.USER)
-                                .content(TextBlock.builder().text(prompt).build())
-                                .metadata(routingMetadata)
-                                .build());
-
-        return model.stream(summarizationInput, null, null)
-                .reduce(
-                        new StringBuilder(),
-                        (sb, resp) -> {
-                            if (resp.getContent() != null) {
-                                for (ContentBlock block : resp.getContent()) {
-                                    if (block instanceof TextBlock tb && tb.getText() != null) {
-                                        sb.append(tb.getText());
-                                    }
-                                }
-                            }
-                            return sb;
-                        })
-                .map(StringBuilder::toString)
-                .map(String::strip)
-                .filter(s -> !s.isBlank())
-                .defaultIfEmpty("(Summary unavailable)")
-                .onErrorResume(
-                        e -> {
-                            log.warn("Summarization LLM call failed: {}", e.getMessage());
-                            return Mono.just("(Summarization failed: " + e.getMessage() + ")");
-                        });
-    }
-
-    private static String boundSummaryText(String formatted, CompactionConfig config) {
-        int maxInputTokens = config.getMaxSummaryInputTokens();
-        if (maxInputTokens <= 0) {
-            return formatted;
-        }
-        String promptWithoutMessages = config.getSummaryPrompt().replace("{messages}", "");
-        int availableTokens =
-                Math.max(
-                        128,
-                        maxInputTokens
-                                - TokenCounterUtil.calculateTextToken(promptWithoutMessages));
-        if (TokenCounterUtil.calculateTextToken(formatted) <= availableTokens) {
-            return formatted;
-        }
-        int maxCharacters = Math.max(256, (int) Math.floor(availableTokens * 2.5));
-        int start = Math.max(0, formatted.length() - maxCharacters);
-        return "[Earlier details were offloaded; showing the newest compactable history.]\n"
-                + formatted.substring(start);
+        return Mono.defer(
+                () -> {
+                    Model summaryModel =
+                            PurposeTextFold.bind(
+                                    model, rc, PurposeBindableModel.Purpose.COMPACTION);
+                    return PurposeTextFold.fold(
+                            summaryModel,
+                            rc,
+                            formatMessagesForSummary(prefix),
+                            "",
+                            (previous, page) -> {
+                                String history =
+                                        previous.isBlank()
+                                                ? page
+                                                : "Summary of earlier pages (retain its facts):\n"
+                                                        + previous
+                                                        + "\n\nNext conversation page:\n"
+                                                        + page;
+                                return List.of(
+                                        Msg.builder()
+                                                .role(MsgRole.USER)
+                                                .textContent(
+                                                        config.getSummaryPrompt()
+                                                                .replace("{messages}", history))
+                                                .metadata(routingMetadata)
+                                                .build());
+                            },
+                            config.getMaxSummaryInputTokens(),
+                            2048,
+                            Duration.ofSeconds(60));
+                });
     }
 
     private static Map<String, Object> routingMetadata(List<Msg> messages) {
@@ -476,7 +465,16 @@ public class ConversationCompactor {
     private static Msg buildSummaryMessage(
             String summary, String filePath, Map<String, Object> routingMetadata) {
         String content;
-        if (filePath != null) {
+        if (filePath != null && filePath.startsWith("runtime-archive:")) {
+            content =
+                    "The original conversation is committed to "
+                            + filePath
+                            + ". Use session_history or session_search to retrieve it; this is not"
+                            + " a filesystem path.\n\n"
+                            + "<summary>\n"
+                            + summary
+                            + "\n</summary>";
+        } else if (filePath != null) {
             content =
                     "You are in the middle of a conversation that has been summarized.\n\n"
                             + "The full conversation history has been saved to "
@@ -548,6 +546,9 @@ public class ConversationCompactor {
             Msg msg = messages.get(i);
             if (i < cutoff && msg.getRole() == MsgRole.ASSISTANT) {
                 Msg truncated = truncateToolUseArgs(msg, truncateConfig);
+                if (truncated != msg && flushManager.hasAuthoritativeArchive()) {
+                    SessionArchiveStore.projection(msg, truncated);
+                }
                 result.add(truncated);
                 if (truncated != msg) {
                     anyModified = true;

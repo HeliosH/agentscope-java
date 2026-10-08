@@ -17,12 +17,31 @@ import org.springframework.stereotype.Component;
 public class RunRecoveryCoordinator {
 
     private final SaasProperties.ModelStreamRecovery policy;
+    private final boolean durableRecoveryAvailable;
 
     public RunRecoveryCoordinator(SaasProperties properties) {
         this.policy =
                 properties != null && properties.getModel() != null
                         ? properties.getModel().getStreamRecovery()
                         : new SaasProperties.ModelStreamRecovery();
+        boolean workerEnabled =
+                properties != null
+                        && properties.getOrchestration().isEnabled()
+                        && properties.getOrchestration().isSchedulerEnabled();
+        this.durableRecoveryAvailable =
+                policy.isEnabled()
+                        && policy.getMode() == SaasProperties.ModelStreamRecovery.Mode.DURABLE
+                        && workerEnabled;
+        if (policy.isEnabled()
+                && policy.getMode() == SaasProperties.ModelStreamRecovery.Mode.DURABLE
+                && !workerEnabled) {
+            throw new IllegalArgumentException(
+                    "DURABLE model recovery requires orchestration and scheduler enabled");
+        }
+    }
+
+    public boolean canScheduleDurableRecovery() {
+        return durableRecoveryAvailable;
     }
 
     public Decision decide(Throwable error, int currentAttempt) {

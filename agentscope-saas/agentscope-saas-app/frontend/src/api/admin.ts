@@ -323,3 +323,31 @@ export async function testAdminModel(modelId: string): Promise<AdminModelTestRes
     { method: 'POST' },
   ), 'Failed to test model');
 }
+
+export type ModelInvocationPurpose = 'COMPACTION' | 'MEMORY_EXTRACT' | 'MEMORY_CONSOLIDATE' | 'VERIFY';
+
+export interface ModelInvocationPolicy {
+  orgId: string;
+  purpose: ModelInvocationPurpose;
+  modelId: string | null;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  timeoutSeconds: number;
+  version: string;
+}
+
+export type ModelInvocationPolicyWrite = Omit<ModelInvocationPolicy, 'orgId' | 'purpose'>;
+
+export async function listModelInvocationPolicies(): Promise<ModelInvocationPolicy[]> {
+  return adminModelResponse(await fetch('/api/admin/model-invocations/policies'), 'Failed to load invocation policies');
+}
+
+export async function updateModelInvocationPolicy(
+  purpose: ModelInvocationPurpose, body: ModelInvocationPolicyWrite,
+): Promise<ModelInvocationPolicy> {
+  const response = await fetch(`/api/admin/model-invocations/policies/${encodeURIComponent(purpose)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (response.status === 409) throw new Error('Policy changed by another administrator. Refresh before saving again.');
+  return adminModelResponse(response, 'Failed to update invocation policy');
+}

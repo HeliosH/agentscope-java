@@ -13,6 +13,7 @@ import io.agentscope.saas.app.workspace.WorkspaceCheckpointContext;
 import io.agentscope.saas.domain.orchestration.RunArtifactRepository;
 import io.agentscope.saas.domain.orchestration.RunArtifactRepository.NewRunArtifact;
 import io.agentscope.saas.domain.orchestration.RunArtifactRepository.RunArtifact;
+import io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException;
 import io.agentscope.saas.sandbox.SandboxLeaseContext;
 import io.agentscope.saas.sandbox.SandboxLeaseService;
 import java.nio.charset.StandardCharsets;
@@ -66,6 +67,8 @@ public class WorkspaceArtifactService {
             WorkspaceCheckpointContext checkpoint,
             Map<String, UUID> baselineVersions) {
         checkpoint.verifyReady();
+        if (!artifactRepository.lockCurrentPublicationScope(orgId, runId, taskId, attemptId))
+            throw new SessionExecutionRevokedException();
         List<FileRecord> files =
                 checkpoint.files().stream()
                         .sorted(Comparator.comparing(FileRecord::logicalPath))

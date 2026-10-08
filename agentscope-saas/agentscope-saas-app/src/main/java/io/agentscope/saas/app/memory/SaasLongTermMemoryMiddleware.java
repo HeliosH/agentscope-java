@@ -18,7 +18,7 @@ package io.agentscope.saas.app.memory;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
-import io.agentscope.core.memory.mem0.Mem0AddRequest;
+import io.agentscope.core.event.AgentResultEvent;
 import io.agentscope.core.memory.mem0.Mem0ApiType;
 import io.agentscope.core.memory.mem0.Mem0Client;
 import io.agentscope.core.memory.mem0.Mem0Message;
@@ -36,6 +36,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
@@ -46,7 +47,7 @@ import reactor.core.scheduler.Schedulers;
 
 /**
  * SaaS long-term memory middleware: retrieves semantically relevant memories from Mem0 before each
- * agent call and records the conversation after the call completes, scoped per-tenant by user id
+ * agent call and commits a source receipt after successful completion, scoped per-tenant by user id
  * and org id.
  *
  * <p>This is the application-layer replacement for the framework's deprecated {@code
@@ -70,9 +71,10 @@ import reactor.core.scheduler.Schedulers;
  *       {@code mem0.search}, and if results come back, append a {@code <long_term_memory>} user
  *       message to the input so the model sees recalled context. Retrieval errors are logged and
  *       swallowed — a Mem0 outage never breaks the chat.
- *   <li><b>Post-call</b> (in {@code doFinally}): record the input messages to Mem0 asynchronously
- *       on {@code boundedElastic} so the response stream is never blocked. Record errors are
- *       logged and swallowed.
+ *   <li><b>Post-call</b>: commit only this completed turn to PG on {@code boundedElastic}.
+ *       The background projection worker is the only Mem0 writer. No projection is started for
+ *       failed, cancelled or suspended calls. Source-commit failures are logged without sending
+ *       uncommitted data to Mem0.
  * </ul>
  *
  * <p>When Mem0 is not configured ({@code saas.ltm.enabled=false}), this middleware is not wired
@@ -93,7 +95,7 @@ public class SaasLongTermMemoryMiddleware implements MiddlewareBase {
     /**
      * @param mem0Client shared Mem0 client (owns the underlying HTTP client; reuse one instance)
      * @param agentName agent identifier stored with each memory ({@code agent_id})
-     * @param topK max memories to retrieve per call
+     * @param topK max memories to retrieve per call; without a ledger this is retrieval-only
      */
     public SaasLongTermMemoryMiddleware(Mem0Client mem0Client, String agentName, int topK) {
         this(mem0Client, agentName, topK, MemoryLedger.noop());
@@ -146,20 +148,52 @@ public class SaasLongTermMemoryMiddleware implements MiddlewareBase {
                                             log.warn(
                                                     "LTM retrieve failed for user {}: {}",
                                                     tc.userId(),
-                                                    e.getMessage());
+                                                    e.getClass().getSimpleName());
                                             return Mono.just(input);
                                         })
                                 .defaultIfEmpty(input);
 
-        return enhancedInput
-                .flatMapMany(next::apply)
-                .doFinally(
-                        signal ->
-                                recordConversation(
-                                        originalMsgs,
-                                        tc,
-                                        filters,
-                                        ctx == null ? null : ctx.getSessionId()));
+        return Flux.defer(
+                () -> {
+                    AtomicReference<Msg> result = new AtomicReference<>();
+                    return enhancedInput
+                            .flatMapMany(next::apply)
+                            .doOnNext(
+                                    event -> {
+                                        if (event instanceof AgentResultEvent completed
+                                                && (event.getSource() == null
+                                                        || event.getSource().isBlank())) {
+                                            result.set(completed.getResult());
+                                        }
+                                    })
+                            .concatWith(
+                                    Flux.defer(
+                                            () -> {
+                                                if (result.get() == null) return Flux.empty();
+                                                return Mono.fromRunnable(
+                                                                () ->
+                                                                        recordConversation(
+                                                                                originalMsgs,
+                                                                                result.get(),
+                                                                                tc,
+                                                                                filters,
+                                                                                ctx == null
+                                                                                        ? null
+                                                                                        : ctx
+                                                                                                .getSessionId()))
+                                                        .subscribeOn(Schedulers.boundedElastic())
+                                                        .onErrorResume(
+                                                                error -> {
+                                                                    log.warn(
+                                                                            "Memory source commit"
+                                                                                    + " failed: {}",
+                                                                            error.getClass()
+                                                                                    .getSimpleName());
+                                                                    return Mono.empty();
+                                                                })
+                                                        .thenMany(Flux.<AgentEvent>empty());
+                                            }));
+                });
     }
 
     /** Searches Mem0 for memories relevant to the query, returning the joined memory text. */
@@ -206,76 +240,23 @@ public class SaasLongTermMemoryMiddleware implements MiddlewareBase {
         return new AgentInput(enhanced);
     }
 
-    /** Asynchronously records the conversation messages to Mem0 (fire-and-forget). */
+    /** Commits a bounded turn, not the full session or retrieved/system/tool content. */
     private void recordConversation(
-            List<Msg> msgs, TenantContext tenant, Map<String, Object> filters, String sessionId) {
-        List<Mem0Message> mem0Messages = toMem0Messages(msgs);
+            List<Msg> msgs,
+            Msg result,
+            TenantContext tenant,
+            Map<String, Object> filters,
+            String sessionId) {
+        Msg user = lastUserMessage(msgs);
+        if (user == null) return;
+        List<Msg> turn = List.of(user, result);
+        List<Mem0Message> mem0Messages = toMem0Messages(turn);
         if (mem0Messages.isEmpty()) {
             return;
         }
-        String userId = tenant.userId();
-        Mem0AddRequest request =
-                Mem0AddRequest.builder()
-                        .messages(mem0Messages)
-                        .agentId(agentName)
-                        .userId(userId)
-                        .runId(sessionId)
-                        .metadata(filters)
-                        .infer(true)
-                        .build();
-        MemoryLedger.MemoryEventRef eventRef =
-                recordPendingSafely(tenant, sessionId, mem0Messages, filters);
-        mem0Client
-                .add(request)
-                .subscribeOn(Schedulers.boundedElastic())
-                .doOnSuccess(ignored -> markSyncedSafely(eventRef))
-                .doOnError(
-                        e -> {
-                            markFailedSafely(eventRef, e);
-                            log.warn("LTM record failed for user {}: {}", userId, e.getMessage());
-                        })
-                .onErrorComplete()
-                .subscribe();
-    }
-
-    private MemoryLedger.MemoryEventRef recordPendingSafely(
-            TenantContext tenant,
-            String sessionId,
-            List<Mem0Message> mem0Messages,
-            Map<String, Object> filters) {
-        try {
-            return memoryLedger
-                    .recordPending(tenant, agentName, sessionId, mem0Messages, filters)
-                    .orElse(null);
-        } catch (RuntimeException e) {
-            log.warn("LTM ledger record failed for user {}: {}", tenant.userId(), e.getMessage());
-            return null;
-        }
-    }
-
-    private void markSyncedSafely(MemoryLedger.MemoryEventRef eventRef) {
-        if (eventRef == null) {
-            return;
-        }
-        try {
-            memoryLedger.markSynced(eventRef);
-        } catch (RuntimeException e) {
-            log.warn("LTM ledger sync mark failed for event {}: {}", eventRef.id(), e.getMessage());
-        }
-    }
-
-    private void markFailedSafely(MemoryLedger.MemoryEventRef eventRef, Throwable error) {
-        if (eventRef == null) {
-            return;
-        }
-        try {
-            memoryLedger.markFailed(eventRef, error);
-        } catch (RuntimeException e) {
-            log.warn(
-                    "LTM ledger failure mark failed for event {}: {}",
-                    eventRef.id(),
-                    e.getMessage());
-        }
+        Map<String, Object> metadata = new HashMap<>(filters);
+        metadata.put("source_message_ids", List.of(user.getId()));
+        memoryLedger.recordPending(tenant, agentName, sessionId, mem0Messages, metadata);
     }
 
     /** Converts agent messages to Mem0 messages, filtering out empty/compressed content. */
@@ -289,13 +270,18 @@ public class SaasLongTermMemoryMiddleware implements MiddlewareBase {
                 continue;
             }
             String text = msg.getTextContent();
-            if (text == null || text.isEmpty() || text.contains("<compressed_history>")) {
+            if (text == null
+                    || text.isEmpty()
+                    || text.contains("<compressed_history>")
+                    || text.contains("<long_term_memory>")
+                    || (msg.getRole() != MsgRole.USER && msg.getRole() != MsgRole.ASSISTANT)) {
                 continue;
             }
             String role =
                     switch (msg.getRole()) {
-                        case USER, SYSTEM -> "user";
-                        case ASSISTANT, TOOL -> "assistant";
+                        case USER -> "user";
+                        case ASSISTANT -> "assistant";
+                        default -> throw new IllegalStateException("Unsupported memory role");
                     };
             out.add(Mem0Message.builder().role(role).content(text).build());
         }

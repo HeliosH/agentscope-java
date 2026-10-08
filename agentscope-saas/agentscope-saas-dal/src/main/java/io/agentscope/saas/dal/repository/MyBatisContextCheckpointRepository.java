@@ -7,6 +7,7 @@ package io.agentscope.saas.dal.repository;
 
 import io.agentscope.saas.dal.mybatis.admin.ContextCheckpointData;
 import io.agentscope.saas.dal.mybatis.admin.ContextCheckpointMapper;
+import io.agentscope.saas.domain.memory.RuntimeMessageRepository.Scope;
 import io.agentscope.saas.domain.orchestration.ContextCheckpoint;
 import io.agentscope.saas.domain.orchestration.ContextCheckpointRepository;
 import java.time.OffsetDateTime;
@@ -21,6 +22,21 @@ public class MyBatisContextCheckpointRepository implements ContextCheckpointRepo
 
     public MyBatisContextCheckpointRepository(ContextCheckpointMapper mapper) {
         this.mapper = mapper;
+    }
+
+    @Override
+    public boolean lockArchiveScope(UUID orgId, UUID runId, Scope scope) {
+        return mapper.lockArchiveScope(orgId, runId, scope).size() == 1;
+    }
+
+    @Override
+    public int attachBody(Scope scope, UUID bodyId, OffsetDateTime eligibleAt) {
+        return mapper.attachBody(scope, bodyId, eligibleAt);
+    }
+
+    @Override
+    public int insertBodyReference(UUID checkpointId, UUID orgId, UUID bodyId) {
+        return mapper.insertBodyReference(checkpointId, orgId, bodyId);
     }
 
     @Override

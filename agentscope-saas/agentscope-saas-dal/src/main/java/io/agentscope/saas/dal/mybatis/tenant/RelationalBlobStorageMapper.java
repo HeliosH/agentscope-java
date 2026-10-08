@@ -58,6 +58,15 @@ public interface RelationalBlobStorageMapper {
             @Param("orgId") UUID orgId,
             @Param("objectKey") String objectKey);
 
+    @Select(
+            "SELECT data FROM ${table} WHERE org_id = #{orgId} AND object_key = #{objectKey} AND"
+                    + " size_bytes <= #{maxBytes} AND OCTET_LENGTH(data) <= #{maxBytes}")
+    BinaryBlobData findBoundedFileObject(
+            @Param("table") String table,
+            @Param("orgId") UUID orgId,
+            @Param("objectKey") String objectKey,
+            @Param("maxBytes") long maxBytes);
+
     @Delete("DELETE FROM ${table} WHERE org_id = #{orgId} AND object_key = #{objectKey}")
     int deleteFileObject(
             @Param("table") String table,

@@ -98,6 +98,7 @@ public class DurableTaskLeaseService {
                             if (ref == null) {
                                 return false;
                             }
+                            if (!repository.lockRun(ref.runId())) return false;
                             int updated =
                                     repository.startAttempt(
                                             attemptId, workerId, now, leaseExpiry(now));
@@ -214,6 +215,7 @@ public class DurableTaskLeaseService {
     }
 
     private TaskLease claimCandidate(TaskCandidate candidate, String workerId, OffsetDateTime now) {
+        if (!repository.lockRun(candidate.runId())) return null;
         int attemptNo = candidate.lastAttemptNo() + 1;
         if (attemptNo > candidate.maxAttempts()) {
             return null;
@@ -312,6 +314,7 @@ public class DurableTaskLeaseService {
                             if (ref == null) {
                                 return false;
                             }
+                            if (!repository.lockRun(ref.runId())) return false;
                             String finalStatus = attemptStatus;
                             String finalErrorCode = errorCode;
                             String finalErrorMessage = errorMessage;

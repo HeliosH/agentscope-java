@@ -764,11 +764,7 @@ public class HarnessAgent implements Agent, AutoCloseable {
                             return effective;
                         },
                         eff -> inner.get(),
-                        eff -> {
-                            if (sandboxLifecycleMw != null) {
-                                sandboxLifecycleMw.releaseForCall(eff);
-                            }
-                        });
+                        this::releaseAfterCommit);
         if (compactionHook != null) {
             return base.onErrorResume(
                     e -> {
@@ -795,11 +791,7 @@ public class HarnessAgent implements Agent, AutoCloseable {
                     return effective;
                 },
                 eff -> inner.get(),
-                eff -> {
-                    if (sandboxLifecycleMw != null) {
-                        sandboxLifecycleMw.releaseForCall(eff);
-                    }
-                });
+                this::releaseAfterCommit);
     }
 
     private Flux<AgentEvent> wrappedStreamEvents(
@@ -812,11 +804,21 @@ public class HarnessAgent implements Agent, AutoCloseable {
                     return effective;
                 },
                 eff -> inner.get(),
-                eff -> {
-                    if (sandboxLifecycleMw != null) {
-                        sandboxLifecycleMw.releaseForCall(eff);
-                    }
-                });
+                this::releaseAfterCommit);
+    }
+
+    private void releaseAfterCommit(RuntimeContext context) {
+        try {
+            io.agentscope.core.state.ConversationCommitter.commitBoundary(
+                    context, delegate.getName());
+        } catch (RuntimeException error) {
+            log.warn(
+                    "Critical conversation commit failed before resource cleanup ({})",
+                    error.getClass().getSimpleName());
+            throw error;
+        } finally {
+            if (sandboxLifecycleMw != null) sandboxLifecycleMw.releaseForCall(context);
+        }
     }
 
     /**
@@ -890,7 +892,8 @@ public class HarnessAgent implements Agent, AutoCloseable {
                         ? memoryConfig.flushPrompt()
                         : MemoryFlushManager.DEFAULT_FLUSH_PROMPT;
         MemoryFlushManager fm =
-                new MemoryFlushManager(workspaceManager, getModel(), effectiveFlushPrompt);
+                new MemoryFlushManager(workspaceManager, getModel(), effectiveFlushPrompt)
+                        .withArchive(memoryConfig.sessionArchiveStore());
         ConversationCompactor compactor = new ConversationCompactor(getModel(), fm);
 
         return compactor
@@ -1945,6 +1948,8 @@ public class HarnessAgent implements Agent, AutoCloseable {
             SandboxBackedFilesystem capturedSandboxFs = null;
             if (sandboxFilesystemSpec != null) {
                 capturedSandboxFs = new SandboxBackedFilesystem();
+                capturedSandboxFs.configureTransferPolicy(
+                        sandboxFilesystemSpec.getWorkspaceTransferPolicy());
                 capturedSandboxFs.configureProjectionSink(
                         sandboxFilesystemSpec.getWorkspaceProjectionSink());
                 // F3-S2: wire the remote projection so out-of-call file IO (MEMORY.md, skills, …)
@@ -2021,6 +2026,11 @@ public class HarnessAgent implements Agent, AutoCloseable {
                     };
 
             // ---- Middlewares ----
+            if (memoryConfig.sessionArchiveStore() != null) {
+                inner.middleware(
+                        new io.agentscope.harness.agent.middleware.SessionArchiveMiddleware(
+                                memoryConfig.sessionArchiveStore()));
+            }
             if (sandboxLifecycleMw != null) {
                 inner.middleware(sandboxLifecycleMw);
             }
@@ -2039,7 +2049,9 @@ public class HarnessAgent implements Agent, AutoCloseable {
                 inner.middleware(markdownMw);
             }
             if (!disableAtPathExpansion) {
-                inner.middleware(new AtPathExpansionMiddleware(wsManager));
+                inner.middleware(
+                        new AtPathExpansionMiddleware(
+                                wsManager, memoryConfig.sessionArchiveStore()));
             }
             Model memoryModel = memoryConfig.model() != null ? memoryConfig.model() : model;
             if (memoryModel != null && !disableMemoryHooks) {
@@ -2062,7 +2074,8 @@ public class HarnessAgent implements Agent, AutoCloseable {
                                 memoryModel,
                                 effectiveFlushPrompt,
                                 memoryConfig.flushTrigger(),
-                                effectiveIsolationScope));
+                                effectiveIsolationScope,
+                                memoryConfig.sessionArchiveStore()));
 
                 String effectiveConsolidationPrompt =
                         memoryConfig.consolidationPrompt() != null
@@ -2090,13 +2103,20 @@ public class HarnessAgent implements Agent, AutoCloseable {
                         compactionConfig.getModel() != null ? compactionConfig.getModel() : model;
                 if (compactionModel != null) {
                     compactionHook =
-                            new CompactionMiddleware(wsManager, compactionModel, compactionConfig);
+                            new CompactionMiddleware(
+                                    wsManager,
+                                    compactionModel,
+                                    compactionConfig,
+                                    memoryConfig.sessionArchiveStore());
                     inner.middleware(compactionHook);
                 }
             }
             if (toolResultEvictionConfig != null) {
                 inner.middleware(
-                        new ToolResultEvictionMiddleware(filesystem, toolResultEvictionConfig));
+                        new ToolResultEvictionMiddleware(
+                                filesystem,
+                                toolResultEvictionConfig,
+                                memoryConfig.sessionArchiveStore()));
             }
             Object capturedSubagentMw = null;
             if (!leafSubagent && !disableSubagents && model != null) {
@@ -2129,7 +2149,8 @@ public class HarnessAgent implements Agent, AutoCloseable {
             if (!disableMemoryTools) {
                 agentToolkit.registerTool(new MemorySearchTool(wsManager));
                 agentToolkit.registerTool(new MemoryGetTool(wsManager));
-                agentToolkit.registerTool(new SessionSearchTool(wsManager));
+                agentToolkit.registerTool(
+                        new SessionSearchTool(wsManager, memoryConfig.sessionArchiveStore()));
             }
             WorkspacePathNormalizer pathNormalizer;
             if (filesystem instanceof AbstractSandboxFilesystem) {

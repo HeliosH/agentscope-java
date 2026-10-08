@@ -12,14 +12,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
+import io.agentscope.core.message.ToolResultState;
 import io.agentscope.core.message.ToolUseBlock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
+import reactor.test.StepVerifier;
 
 class ToolExecutionJournalTest {
     private static final Duration TIMEOUT = Duration.ofSeconds(3);
@@ -112,6 +118,107 @@ class ToolExecutionJournalTest {
         assertEquals(List.of("prepare", "running", "tool", "OUTCOME_UNKNOWN"), events);
     }
 
+    @Test
+    void revokedJournalLeaseDoesNotDropErrorsOrPreventToolCancellation() {
+        assertCancellationSurvivesJournalFailure(
+                ToolRetrySafety.READ_ONLY,
+                new ToolLeaseLostException("lease revoked"),
+                ToolExecutionJournal.TerminalStatus.CANCELLED);
+    }
+
+    @Test
+    void unavailableJournalDoesNotPreventUnknownSideEffectCancellation() {
+        assertCancellationSurvivesJournalFailure(
+                ToolRetrySafety.NEVER,
+                new IllegalStateException("journal unavailable"),
+                ToolExecutionJournal.TerminalStatus.OUTCOME_UNKNOWN);
+    }
+
+    @Test
+    void successfulToolStillCannotPublishWhenJournalCommitLosesLease() {
+        var journal =
+                failingJournal(
+                        new ToolLeaseLostException("lease revoked"), new AtomicReference<>());
+        Toolkit toolkit =
+                toolkit(
+                        new TestTool(
+                                new AtomicInteger(),
+                                new ArrayList<>(),
+                                false,
+                                ToolRetrySafety.NEVER));
+
+        ToolResultBlock result = call(toolkit, journal);
+
+        assertEquals(ToolResultState.ERROR, result.getState());
+        assertTrue(text(result).contains("lease revoked"));
+    }
+
+    private static void assertCancellationSurvivesJournalFailure(
+            ToolRetrySafety safety,
+            RuntimeException failure,
+            ToolExecutionJournal.TerminalStatus expectedStatus) {
+        CountDownLatch subscribed = new CountDownLatch(1);
+        AtomicBoolean cancelled = new AtomicBoolean();
+        AtomicReference<ToolExecutionJournal.TerminalStatus> terminal = new AtomicReference<>();
+        TestTool tool =
+                new TestTool(new AtomicInteger(), new ArrayList<>(), false, safety) {
+                    @Override
+                    public Mono<ToolResultBlock> callAsync(ToolCallParam param) {
+                        return Mono.<ToolResultBlock>never()
+                                .doOnSubscribe(ignored -> subscribed.countDown())
+                                .doOnCancel(() -> cancelled.set(true));
+                    }
+                };
+        RuntimeContext context =
+                RuntimeContext.builder()
+                        .sessionId("session-1")
+                        .put(ToolExecutionJournal.class, failingJournal(failure, terminal))
+                        .build();
+
+        StepVerifier.create(toolkit(tool).callTools(List.of(toolUse()), null, null, context))
+                .then(
+                        () -> {
+                            try {
+                                assertTrue(
+                                        subscribed.await(
+                                                TIMEOUT.toMillis(), TimeUnit.MILLISECONDS));
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                throw new AssertionError(interrupted);
+                            }
+                        })
+                .thenCancel()
+                .verifyThenAssertThat(TIMEOUT)
+                .hasNotDroppedErrors();
+
+        assertTrue(cancelled.get());
+        assertEquals(expectedStatus, terminal.get());
+    }
+
+    private static ToolExecutionJournal failingJournal(
+            RuntimeException failure,
+            AtomicReference<ToolExecutionJournal.TerminalStatus> terminal) {
+        return new ToolExecutionJournal() {
+            @Override
+            public PrepareResult prepare(Invocation invocation) {
+                return PrepareResult.execute();
+            }
+
+            @Override
+            public void markRunning(Invocation invocation) {}
+
+            @Override
+            public void complete(
+                    Invocation invocation,
+                    TerminalStatus status,
+                    ToolResultBlock result,
+                    Throwable error) {
+                terminal.set(status);
+                throw failure;
+            }
+        };
+    }
+
     private static Toolkit toolkit(AgentTool tool) {
         Toolkit toolkit = new Toolkit();
         toolkit.registerAgentTool(tool);
@@ -128,21 +235,23 @@ class ToolExecutionJournalTest {
     }
 
     private static ToolResultBlock call(Toolkit toolkit, RuntimeContext context) {
-        ToolUseBlock use =
-                ToolUseBlock.builder()
-                        .id("call-1")
-                        .name("journal_tool")
-                        .input(Map.of("value", "alpha"))
-                        .content("{\"value\":\"alpha\"}")
-                        .build();
-        return toolkit.callTools(List.of(use), null, null, context).block(TIMEOUT).get(0);
+        return toolkit.callTools(List.of(toolUse()), null, null, context).block(TIMEOUT).get(0);
+    }
+
+    private static ToolUseBlock toolUse() {
+        return ToolUseBlock.builder()
+                .id("call-1")
+                .name("journal_tool")
+                .input(Map.of("value", "alpha"))
+                .content("{\"value\":\"alpha\"}")
+                .build();
     }
 
     private static String text(ToolResultBlock block) {
         return ((TextBlock) block.getOutput().get(0)).getText();
     }
 
-    private static final class TestTool implements AgentTool {
+    private static class TestTool implements AgentTool {
         private final AtomicInteger calls;
         private final List<String> events;
         private final boolean fail;

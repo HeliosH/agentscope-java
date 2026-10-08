@@ -288,6 +288,18 @@ public class SessionTree {
      * @return the entry (for chaining)
      */
     public SessionEntry append(SessionEntry entry) {
+        SessionEntry existing = entriesById.get(entry.getId());
+        if (existing != null) {
+            if (existing instanceof SessionEntry.MessageEntry oldMessage
+                    && entry instanceof SessionEntry.MessageEntry newMessage
+                    && java.util.Objects.equals(oldMessage.getRole(), newMessage.getRole())
+                    && java.util.Objects.equals(oldMessage.getContent(), newMessage.getContent())
+                    && java.util.Objects.equals(
+                            oldMessage.getToolCallId(), newMessage.getToolCallId())) {
+                return existing;
+            }
+            throw new IllegalStateException("Conflicting session entry ID: " + entry.getId());
+        }
         entriesById.put(entry.getId(), entry);
         appendOrder.add(entry);
         pendingWrites.add(entry);

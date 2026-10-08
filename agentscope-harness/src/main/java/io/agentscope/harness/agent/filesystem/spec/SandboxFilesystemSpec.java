@@ -24,6 +24,7 @@ import io.agentscope.harness.agent.sandbox.SandboxClientOptions;
 import io.agentscope.harness.agent.sandbox.SandboxContext;
 import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
 import io.agentscope.harness.agent.sandbox.WorkspaceSpec;
+import io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy;
 import io.agentscope.harness.agent.sandbox.layout.WorkspaceEntry;
 import io.agentscope.harness.agent.sandbox.layout.WorkspaceProjectionEntry;
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
@@ -62,6 +63,16 @@ public abstract class SandboxFilesystemSpec {
     private NamespaceFactory remoteProjectionNamespaceFactory;
 
     private WorkspaceProjectionSink workspaceProjectionSink = WorkspaceProjectionSink.noop();
+    private WorkspaceTransferPolicy workspaceTransferPolicy = WorkspaceTransferPolicy.DEFAULT;
+
+    public SandboxFilesystemSpec workspaceTransferPolicy(WorkspaceTransferPolicy policy) {
+        this.workspaceTransferPolicy = Objects.requireNonNull(policy, "policy");
+        return this;
+    }
+
+    public WorkspaceTransferPolicy getWorkspaceTransferPolicy() {
+        return workspaceTransferPolicy;
+    }
 
     protected abstract SandboxClient<?> createClient();
 

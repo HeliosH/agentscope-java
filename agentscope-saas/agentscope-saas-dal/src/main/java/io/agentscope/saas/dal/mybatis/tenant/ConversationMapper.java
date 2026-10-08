@@ -164,6 +164,17 @@ public interface ConversationMapper {
             """)
     int updateSession(ChatSessionEntity session);
 
+    @org.apache.ibatis.annotations.Update(
+            """
+            UPDATE chat_sessions SET unread = FALSE
+             WHERE id = #{id} AND org_id = #{orgId} AND user_id = #{userId} AND agent_id = #{agentId}
+            """)
+    int markReadOwned(
+            @Param("id") UUID id,
+            @Param("orgId") UUID orgId,
+            @Param("userId") UUID userId,
+            @Param("agentId") UUID agentId);
+
     @Delete("DELETE FROM chat_sessions WHERE id = #{id}")
     int deleteSession(@Param("id") UUID id);
 

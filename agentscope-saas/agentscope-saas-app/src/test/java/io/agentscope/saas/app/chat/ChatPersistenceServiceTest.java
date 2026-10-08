@@ -17,6 +17,7 @@ package io.agentscope.saas.app.chat;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -49,7 +50,8 @@ class ChatPersistenceServiceTest {
                     messageRepository,
                     runRepository,
                     new ObjectMapper(),
-                    mock(io.agentscope.saas.app.workspace.FileCatalogService.class));
+                    mock(io.agentscope.saas.app.workspace.FileCatalogService.class),
+                    mock(io.agentscope.saas.domain.memory.RuntimeMessageRepository.class));
 
     @Test
     void assignsSessionScopedMonotonicSeq() {
@@ -92,10 +94,14 @@ class ChatPersistenceServiceTest {
         when(sessionRepository.findByOrgIdAndUserIdAndAgentIdOrderByUpdatedAtDesc(
                         orgId, userId, agentId))
                 .thenReturn(java.util.List.of(session));
+        when(sessionRepository.lockById(sessionId)).thenReturn(Optional.of(session));
 
         service.deleteAgentCascade(agent);
 
         var order = inOrder(runRepository, messageRepository, sessionRepository, agentRepository);
+        order.verify(sessionRepository).lockById(sessionId);
+        order.verify(runRepository)
+                .revokeSessionExecution(eq(sessionId), eq(orgId), eq("AGENT_DELETED"), any());
         order.verify(runRepository).detachMessageReferencesForSession(sessionId, orgId);
         order.verify(messageRepository).deleteBySessionId(sessionId);
         order.verify(runRepository).deleteBySessionId(sessionId, orgId);

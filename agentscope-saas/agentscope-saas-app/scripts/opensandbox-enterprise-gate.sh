@@ -76,6 +76,16 @@ else
   ok "OpenSandbox user task smoke skipped by SANDBOX_GATE_RUN_SMOKE=false"
 fi
 
+if [ "${SANDBOX_GATE_SESSION_GENERATION:-false}" = "true" ]; then
+  BASE="$BASE" python3 "$SCRIPT_DIR/session-generation-smoke.py"
+  if [ $? -eq 0 ]; then
+    ok "session generation revocation smoke passed"
+  else
+    bad "session generation revocation smoke failed"
+    exit 1
+  fi
+fi
+
 ADMIN_BODY="$(EMAIL="$ADMIN_EMAIL" PASSWORD="$ADMIN_PASSWORD" python3 - <<'PY'
 import json
 import os

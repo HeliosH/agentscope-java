@@ -111,6 +111,11 @@ public class MyBatisConversationRepository
     }
 
     @Override
+    public boolean markReadOwned(UUID id, UUID orgId, UUID userId, UUID agentId) {
+        return mapper.markReadOwned(id, orgId, userId, agentId) == 1;
+    }
+
+    @Override
     public ChatSessionEntity save(ChatSessionEntity session) {
         if (mapper.updateSession(session) == 0) {
             requireOne(mapper.insertSession(session), "insert Session " + session.getId());

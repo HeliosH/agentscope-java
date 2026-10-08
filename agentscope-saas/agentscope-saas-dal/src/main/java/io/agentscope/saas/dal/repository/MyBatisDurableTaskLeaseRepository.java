@@ -35,6 +35,11 @@ public class MyBatisDurableTaskLeaseRepository implements DurableTaskLeaseReposi
     }
 
     @Override
+    public boolean lockRun(UUID runId) {
+        return !mapper.lockRun(runId).isEmpty();
+    }
+
+    @Override
     public List<TaskCandidate> findReadyCandidates(OffsetDateTime readyAt, int limit) {
         return mapper.findReadyCandidates(readyAt, limit).stream()
                 .map(MyBatisDurableTaskLeaseRepository::toDomain)

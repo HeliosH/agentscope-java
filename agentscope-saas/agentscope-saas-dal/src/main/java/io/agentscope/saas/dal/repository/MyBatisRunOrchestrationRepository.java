@@ -28,6 +28,42 @@ public class MyBatisRunOrchestrationRepository implements RunOrchestrationReposi
     }
 
     @Override
+    public Optional<SessionFence> findSessionFence(
+            UUID sessionId, UUID orgId, UUID userId, UUID agentId) {
+        return first(mapper.findSessionFence(sessionId, orgId, userId, agentId));
+    }
+
+    @Override
+    public Optional<Long> lockSessionGeneration(
+            UUID sessionId, UUID orgId, UUID userId, UUID agentId) {
+        return first(mapper.lockSessionGeneration(sessionId, orgId, userId, agentId));
+    }
+
+    @Override
+    public Optional<SessionFence> findCurrentSessionFence(
+            UUID runId, UUID orgId, UUID userId, UUID agentId) {
+        return first(mapper.findCurrentSessionFence(runId, orgId, userId, agentId));
+    }
+
+    @Override
+    public Optional<SessionFence> lockCurrentSessionFence(
+            UUID runId, UUID orgId, UUID userId, UUID agentId) {
+        return first(mapper.lockCurrentSessionFence(runId, orgId, userId, agentId));
+    }
+
+    @Override
+    public void revokeSessionExecution(
+            UUID sessionId, UUID orgId, String reason, OffsetDateTime now) {
+        requireOne(mapper.advanceSessionGeneration(sessionId, orgId), "revoke session generation");
+        mapper.revokeSessionRuns(sessionId, orgId, reason, now);
+        mapper.revokeSessionTasks(sessionId, orgId, reason, now);
+        mapper.revokeSessionAgents(sessionId, orgId, now);
+        mapper.revokeSessionAttempts(sessionId, orgId, reason, now);
+        mapper.revokeSessionPublications(sessionId, orgId);
+        mapper.deleteSessionCheckpoints(sessionId, orgId);
+    }
+
+    @Override
     public Optional<AssistantRun> findOwnedRun(UUID runId, UUID orgId, UUID userId, UUID agentId) {
         return first(mapper.findOwnedRun(runId, orgId, userId, agentId));
     }

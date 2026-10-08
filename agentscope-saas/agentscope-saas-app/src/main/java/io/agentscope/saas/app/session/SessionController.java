@@ -317,10 +317,10 @@ public class SessionController {
         UUID sessionUuid = parseUuid(sessionKey);
         return Mono.fromCallable(
                         () -> {
-                            ChatSessionEntity session =
-                                    requireSession(orgId, userId, agentUuid, sessionUuid);
-                            session.setUnread(false);
-                            sessionRepository.save(session);
+                            if (!sessionRepository.markReadOwned(
+                                    sessionUuid, orgId, userId, agentUuid))
+                                throw new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND, "Session not found");
                             return new ReadStateResult(
                                     sessionKey, System.currentTimeMillis(), false);
                         })

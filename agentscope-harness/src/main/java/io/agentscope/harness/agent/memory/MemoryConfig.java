@@ -18,6 +18,7 @@ package io.agentscope.harness.agent.memory;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ModelRegistry;
 import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
+import io.agentscope.harness.agent.memory.session.SessionArchiveStore;
 import java.time.Duration;
 import java.util.Objects;
 
@@ -148,6 +149,7 @@ public final class MemoryConfig {
     private final int sessionRetentionDays;
     private final FlushTrigger flushTrigger;
     private final MemoryConsolidator.ConsolidationSink consolidationSink;
+    private final SessionArchiveStore sessionArchiveStore;
 
     private MemoryConfig(Builder b) {
         this.model = b.model;
@@ -159,6 +161,7 @@ public final class MemoryConfig {
         this.sessionRetentionDays = b.sessionRetentionDays;
         this.flushTrigger = b.flushTrigger;
         this.consolidationSink = b.consolidationSink;
+        this.sessionArchiveStore = b.sessionArchiveStore;
     }
 
     /**
@@ -216,6 +219,10 @@ public final class MemoryConfig {
         return consolidationSink;
     }
 
+    public SessionArchiveStore sessionArchiveStore() {
+        return sessionArchiveStore;
+    }
+
     /** Returns a config equivalent to the harness's historical defaults. */
     public static MemoryConfig defaults() {
         return new Builder().build();
@@ -236,6 +243,12 @@ public final class MemoryConfig {
         private int sessionRetentionDays = DEFAULT_SESSION_RETENTION_DAYS;
         private FlushTrigger flushTrigger = FlushTrigger.always();
         private MemoryConsolidator.ConsolidationSink consolidationSink = null;
+        private SessionArchiveStore sessionArchiveStore;
+
+        public Builder sessionArchiveStore(SessionArchiveStore store) {
+            this.sessionArchiveStore = store;
+            return this;
+        }
 
         /**
          * Sets a dedicated model for memory operations (flush + consolidation),

@@ -37,10 +37,6 @@ public interface MemoryLedger {
             List<Mem0Message> messages,
             Map<String, Object> metadata);
 
-    void markSynced(MemoryEventRef ref);
-
-    void markFailed(MemoryEventRef ref, Throwable error);
-
     static MemoryLedger noop() {
         return NoopMemoryLedger.INSTANCE;
     }
@@ -60,11 +56,5 @@ public interface MemoryLedger {
                 Map<String, Object> metadata) {
             return Optional.empty();
         }
-
-        @Override
-        public void markSynced(MemoryEventRef ref) {}
-
-        @Override
-        public void markFailed(MemoryEventRef ref, Throwable error) {}
     }
 }

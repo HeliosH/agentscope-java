@@ -209,7 +209,8 @@ class OrchestrationGovernanceMiddlewareTest {
         when(journalFactory.create(ORG_ID, RUN_ID)).thenReturn(journal);
         var checkpointFactory = mock(DurableContextCheckpointFactory.class);
         var checkpointStore = mock(ContextCheckpointStore.class);
-        when(checkpointFactory.create(ORG_ID, RUN_ID, AGENT_RUN_ID)).thenReturn(checkpointStore);
+        when(checkpointFactory.create(ORG_ID, RUN_ID, AGENT_RUN_ID, ctx, null))
+                .thenReturn(checkpointStore);
         String taskId = UUID.randomUUID().toString();
         String attemptId = UUID.randomUUID().toString();
         String leaseOwner = "worker-" + UUID.randomUUID();
@@ -238,7 +239,7 @@ class OrchestrationGovernanceMiddlewareTest {
                         })
                 .blockLast();
         verify(journalFactory).create(ORG_ID, RUN_ID);
-        verify(checkpointFactory).create(ORG_ID, RUN_ID, AGENT_RUN_ID);
+        verify(checkpointFactory).create(ORG_ID, RUN_ID, AGENT_RUN_ID, ctx, null);
     }
 
     @Test

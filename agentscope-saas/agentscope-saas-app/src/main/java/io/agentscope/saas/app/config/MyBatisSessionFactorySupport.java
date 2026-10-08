@@ -10,8 +10,10 @@
 package io.agentscope.saas.app.config;
 
 import io.agentscope.saas.dal.mybatis.type.UuidTypeHandler;
+import java.util.Properties;
 import java.util.UUID;
 import javax.sql.DataSource;
+import org.apache.ibatis.mapping.VendorDatabaseIdProvider;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.mybatis.spring.SqlSessionFactoryBean;
 
@@ -29,6 +31,12 @@ final class MyBatisSessionFactorySupport {
         SqlSessionFactoryBean factory = new SqlSessionFactoryBean();
         factory.setDataSource(dataSource);
         factory.setConfiguration(configuration);
+        var dialects = new VendorDatabaseIdProvider();
+        var names = new Properties();
+        names.setProperty("PostgreSQL", "postgresql");
+        names.setProperty("H2", "h2");
+        dialects.setProperties(names);
+        factory.setDatabaseIdProvider(dialects);
         return factory.getObject();
     }
 }

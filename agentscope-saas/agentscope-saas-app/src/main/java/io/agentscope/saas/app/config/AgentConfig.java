@@ -114,12 +114,16 @@ public class AgentConfig {
             McpClientRegistry mcpClientRegistry,
             OrgToolsConfigService orgToolsConfigService,
             ObjectProvider<MemoryLedger> memoryLedgerProvider,
+            ObjectProvider<io.agentscope.harness.agent.memory.session.SessionArchiveStore>
+                    sessionArchiveProvider,
             ObjectProvider<WorkspaceProjectionCatalogSink> workspaceProjectionCatalogSinkProvider,
             ObjectProvider<MemoryConsolidator.ConsolidationSink> consolidationSinkProvider,
             ObjectProvider<AgentRunMetrics> agentRunMetricsProvider,
             OrchestrationGovernanceService orchestrationGovernance,
             DurableToolExecutionJournalFactory toolJournalFactory,
             DurableContextCheckpointFactory contextCheckpointFactory,
+            io.agentscope.saas.app.orchestration.SessionGenerationMiddleware
+                    sessionGenerationMiddleware,
             ExecutionPlanService executionPlanService,
             ObjectProvider<PgTaskRepository> pgTaskRepositoryProvider,
             LlamaFirewallClient llamaFirewallClient,
@@ -152,6 +156,7 @@ public class AgentConfig {
                         .enableTaskList(agentCfg.isTaskListEnabled())
                         .enablePlanMode(agentCfg.isPlanModeEnabled())
                         .middleware(new TenantContextMiddleware())
+                        .middleware(sessionGenerationMiddleware)
                         .middleware(
                                 new AgentTelemetryMiddleware(
                                         chatModel.getModelName(),
@@ -166,8 +171,11 @@ public class AgentConfig {
                                         objectMapper,
                                         toolJournalFactory,
                                         contextCheckpointFactory))
-                        .middleware(new LlamaFirewallSecurityMiddleware(llamaFirewallClient))
-                        .middleware(new UsageMeteringMiddleware(usageService));
+                        .middleware(new LlamaFirewallSecurityMiddleware(llamaFirewallClient));
+        if (!(chatModel instanceof io.agentscope.core.model.PurposeBindableModel governed)
+                || !governed.managesUsage()) {
+            builder.middleware(new UsageMeteringMiddleware(usageService));
+        }
 
         if (!agentCfg.isMemoryHooksEnabled()) {
             builder.disableMemoryHooks();
@@ -214,9 +222,14 @@ public class AgentConfig {
 
         MemoryConsolidator.ConsolidationSink consolidationSink =
                 consolidationSinkProvider.getIfAvailable();
-        if (consolidationSink != null) {
-            builder.memory(MemoryConfig.builder().consolidationSink(consolidationSink).build());
+        var memoryBuilder = MemoryConfig.builder().consolidationSink(consolidationSink);
+        if (properties.getRuntimeArchive().isEnabled()) {
+            memoryBuilder.sessionArchiveStore(
+                    java.util.Objects.requireNonNull(
+                            sessionArchiveProvider.getIfAvailable(),
+                            "Runtime archive requires a durable store"));
         }
+        builder.memory(memoryBuilder.build());
 
         // When sandbox is enabled, wire the SandboxFilesystemSpec which drives the framework's
         // internal sandbox lifecycle (SandboxManager, SessionSandboxStateStore,
@@ -225,6 +238,11 @@ public class AgentConfig {
         // does not attempt to exec in an unconfigured environment.
         SandboxFilesystemSpec sandboxSpec = sandboxSpecProvider.getIfAvailable();
         if (properties.getSandbox().isEnabled() && sandboxSpec != null) {
+            sandboxSpec.workspaceTransferPolicy(
+                    new io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy(
+                            properties.getSandbox().getTransferMaxFiles(),
+                            properties.getFileStore().getMaxFileBytes(),
+                            properties.getSandbox().getTransferMaxBytes()));
             SandboxMetrics sandboxMetrics =
                     sandboxMetricsProvider.getIfAvailable(SandboxMetrics::noop);
             SandboxBroker broker = sandboxBrokerProvider.getIfAvailable();
@@ -330,7 +348,9 @@ public class AgentConfig {
                             mem0Client,
                             agentCfg.getName(),
                             ltmCfg.getTopK(),
-                            memoryLedgerProvider.getIfAvailable(MemoryLedger::noop)));
+                            java.util.Objects.requireNonNull(
+                                    memoryLedgerProvider.getIfAvailable(),
+                                    "LTM requires a durable memory source ledger")));
             log.info(
                     "LTM middleware enabled: mem0BaseUrl={} topK={} agentName={}",
                     ltmCfg.getMem0BaseUrl(),

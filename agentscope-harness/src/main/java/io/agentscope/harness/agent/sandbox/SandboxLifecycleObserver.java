@@ -34,6 +34,12 @@ public interface SandboxLifecycleObserver {
     default void onWorkspaceProjectionSucceeded(
             RuntimeContext runtimeContext, int projectedFiles) {}
 
+    default void onWorkspaceProjectionSucceeded(
+            RuntimeContext runtimeContext, WorkspaceProjectionReport report) {
+        report.verifyComplete();
+        onWorkspaceProjectionSucceeded(runtimeContext, report.projectedFiles());
+    }
+
     default void onWorkspaceProjectionFailed(RuntimeContext runtimeContext, Exception error) {}
 
     default void onStatePersistSucceeded(RuntimeContext runtimeContext) {}

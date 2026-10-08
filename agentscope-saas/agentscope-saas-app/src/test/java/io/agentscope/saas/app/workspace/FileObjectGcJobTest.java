@@ -17,6 +17,7 @@ package io.agentscope.saas.app.workspace;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -24,19 +25,86 @@ import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.support.MyBatisRepositoryTestSupport;
 import io.agentscope.saas.app.support.TestDatabaseMapper;
 import io.agentscope.saas.dal.mybatis.admin.FileObjectGcMapper;
+import io.agentscope.saas.dal.mybatis.tenant.FilePublicationMapper;
 import io.agentscope.saas.dal.repository.MyBatisFileObjectGcRepository;
 import io.agentscope.saas.domain.workspace.FileObjectGcRepository;
+import io.agentscope.saas.domain.workspace.FilePublicationRepository.Publication;
 import io.agentscope.saas.storage.FileObjectStore;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
+import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import org.springframework.transaction.support.TransactionTemplate;
 
 class FileObjectGcJobTest {
+    private final List<SingleConnectionDataSource> sources = new ArrayList<>();
+
+    @AfterEach
+    void closeSources() {
+        sources.forEach(SingleConnectionDataSource::destroy);
+    }
+
+    @Test
+    void temporaryPublicationPinIsRetriedAfterAbortInsteadOfBecomingTerminal() throws Exception {
+        DataSource ds = dataSource("publication-pin-gc");
+        TestDatabaseMapper database =
+                MyBatisRepositoryTestSupport.mapper(ds, TestDatabaseMapper.class);
+        database.createFileGcSchema();
+        publicationSchema(ds);
+        UUID org = UUID.randomUUID(),
+                user = UUID.randomUUID(),
+                file = UUID.randomUUID(),
+                publication = UUID.randomUUID();
+        database.insertGcFile(file, org, user, null, "deleted", OffsetDateTime.now().minusDays(2));
+        database.insertGcVersion(UUID.randomUUID(), file, org, user, 1, "files/pinned");
+        var reservations = MyBatisRepositoryTestSupport.mapper(ds, FilePublicationMapper.class);
+        OffsetDateTime until = OffsetDateTime.now().plusHours(1);
+        reservations.stage(
+                new Publication(
+                        publication,
+                        org,
+                        user,
+                        null,
+                        null,
+                        null,
+                        null,
+                        "outputs/pinned.txt",
+                        "files/pinned",
+                        "pg",
+                        "0".repeat(64),
+                        3,
+                        3,
+                        false,
+                        "STAGED",
+                        until,
+                        until,
+                        null,
+                        0,
+                        null));
+        FileObjectStore store = mock(FileObjectStore.class);
+        when(store.backend()).thenReturn("pg");
+        @SuppressWarnings("unchecked")
+        ObjectProvider<FileObjectStore> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(store);
+        SaasProperties cfg = new SaasProperties();
+        cfg.getFileStore().setDeletedRetentionDays(1);
+        var gc = job(ds, provider, cfg);
+        assertThat(gc.collectOnce().objectsRetained()).isEqualTo(1);
+        assertThat(database.gcQueueStatus()).isEqualTo("pending");
+        verify(store, never()).delete(org, "files/pinned");
+        reservations.abort(org, user, publication, OffsetDateTime.now());
+        assertThat(gc.collectOnce().objectsDeleted()).isEqualTo(1);
+        verify(store).delete(org, "files/pinned");
+    }
 
     @Test
     void queuesMetadataDeletionBeforeRemovingUnreferencedObject() throws Exception {
@@ -44,6 +112,7 @@ class FileObjectGcJobTest {
         TestDatabaseMapper database =
                 MyBatisRepositoryTestSupport.mapper(dataSource, TestDatabaseMapper.class);
         database.createFileGcSchema();
+        publicationSchema(dataSource);
         UUID orgId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         UUID fileId = UUID.randomUUID();
@@ -76,6 +145,7 @@ class FileObjectGcJobTest {
         TestDatabaseMapper database =
                 MyBatisRepositoryTestSupport.mapper(dataSource, TestDatabaseMapper.class);
         database.createFileGcSchema();
+        publicationSchema(dataSource);
         UUID orgId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         UUID fileId = UUID.randomUUID();
@@ -117,7 +187,16 @@ class FileObjectGcJobTest {
                 properties);
     }
 
-    private static DataSource dataSource(String name) {
+    private static void publicationSchema(DataSource dataSource) {
+        new ResourceDatabasePopulator(
+                        new ClassPathResource(
+                                "db/migration/h2/V41__file_publication_reservations.sql"),
+                        new ClassPathResource(
+                                "db/migration/h2/V42__file_publication_recovery_intents.sql"))
+                .execute(dataSource);
+    }
+
+    private DataSource dataSource(String name) throws java.sql.SQLException {
         JdbcDataSource dataSource = new JdbcDataSource();
         dataSource.setURL(
                 "jdbc:h2:mem:"
@@ -125,6 +204,9 @@ class FileObjectGcJobTest {
                         + "-"
                         + UUID.randomUUID()
                         + ";DB_CLOSE_DELAY=-1;MODE=PostgreSQL");
-        return dataSource;
+        // H2's optimized CHECK IN comparator retains its schema-creating session.
+        var shared = new SingleConnectionDataSource(dataSource.getConnection(), true);
+        sources.add(shared);
+        return shared;
     }
 }

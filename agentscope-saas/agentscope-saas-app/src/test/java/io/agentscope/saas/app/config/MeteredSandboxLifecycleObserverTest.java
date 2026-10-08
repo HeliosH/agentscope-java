@@ -38,6 +38,26 @@ import org.junit.jupiter.api.Test;
 class MeteredSandboxLifecycleObserverTest {
 
     @Test
+    void projectionFailurePreventsFalseSuccessWithoutAffectingCleanupReceipt() {
+        var checkpoint = new io.agentscope.saas.app.workspace.WorkspaceCheckpointContext(true);
+        var context =
+                RuntimeContext.builder()
+                        .put(
+                                io.agentscope.saas.app.workspace.WorkspaceCheckpointContext.class,
+                                checkpoint)
+                        .build();
+        var observer = new MeteredSandboxLifecycleObserver("opensandbox", SandboxMetrics.noop());
+        observer.onWorkspaceProjectionFailed(
+                context, new IllegalStateException("outputs/report.pptx exceeds limit"));
+        observer.onStatePersistSucceeded(context);
+        observer.onSandboxStopSucceeded(context);
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class, checkpoint::verifyReady);
+        assertThat(checkpoint.stateWasPersisted()).isTrue();
+        assertThat(checkpoint.sandboxWasStopped()).isTrue();
+    }
+
+    @Test
     void recordsAcquireStartDurationWithSourceTag() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
         MeteredSandboxLifecycleObserver observer =

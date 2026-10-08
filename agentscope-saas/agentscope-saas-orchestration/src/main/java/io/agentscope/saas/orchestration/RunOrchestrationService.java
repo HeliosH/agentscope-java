@@ -23,6 +23,7 @@ import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.NewTas
 import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.RunAttempt;
 import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.RunEvent;
 import io.agentscope.saas.domain.orchestration.RunOrchestrationRepository.TaskNode;
+import io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException;
 import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
@@ -143,6 +144,9 @@ public class RunOrchestrationService {
             String executionInputJson) {
         UUID orgId = uuid(tenant.orgId(), "orgId");
         UUID userId = uuid(tenant.userId(), "userId");
+        repository
+                .lockSessionGeneration(sessionId, orgId, userId, agentId)
+                .orElseThrow(SessionExecutionRevokedException::new);
         RunPolicy policy = requestedPolicy != null ? requestedPolicy : RunPolicy.unlimited();
         String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
         if (normalizedKey != null) {
@@ -150,6 +154,9 @@ public class RunOrchestrationService {
                     repository.findByIdempotencyKey(orgId, userId, agentId, normalizedKey);
             if (existing.isPresent()) {
                 AssistantRun run = existing.get();
+                repository
+                        .findCurrentSessionFence(run.id(), orgId, userId, agentId)
+                        .orElseThrow(SessionExecutionRevokedException::new);
                 return new RunHandle(
                         run.id(), null, null, null, run.agentId(), run.sessionId(), true);
             }
@@ -268,7 +275,14 @@ public class RunOrchestrationService {
                         uuid(tenant.userId(), "userId"),
                         agentId,
                         normalizedKey)
-                .map(this::toView);
+                .map(
+                        run -> {
+                            repository
+                                    .findCurrentSessionFence(
+                                            run.id(), run.orgId(), run.userId(), run.agentId())
+                                    .orElseThrow(SessionExecutionRevokedException::new);
+                            return toView(run);
+                        });
     }
 
     @Transactional(readOnly = true)
@@ -405,7 +419,8 @@ public class RunOrchestrationService {
                                 () -> new IllegalStateException("Run has no coordinator task"));
         List<AgentRun> agentRuns = repository.findAgentRuns(run.id(), run.orgId());
         AgentRun parentAgentRun = resolveParentAgentRun(agentRuns, parentAgentRunId);
-        validateSubagentPolicy(tasks, agentRuns, parentAgentRun, policy);
+        SubagentPolicy effectivePolicy = policy == null ? new SubagentPolicy(3, 8, 32) : policy;
+        validateSubagentPolicy(tasks, agentRuns, parentAgentRun, effectivePolicy);
 
         OffsetDateTime now = OffsetDateTime.now();
         UUID taskId = UUID.randomUUID();
@@ -430,10 +445,10 @@ public class RunOrchestrationService {
                         3,
                         "IDEMPOTENT",
                         2,
-                        positiveLimit(policy.taskTokenBudget()),
-                        positiveLimit(policy.taskCostBudgetMicros()),
-                        positiveLimit(policy.taskModelCallBudget()),
-                        deadline(now, policy.taskTimeoutSeconds()),
+                        positiveLimit(effectivePolicy.taskTokenBudget()),
+                        positiveLimit(effectivePolicy.taskCostBudgetMicros()),
+                        positiveLimit(effectivePolicy.taskModelCallBudget()),
+                        deadline(now, effectivePolicy.taskTimeoutSeconds()),
                         now));
         repository.insertAgentRun(
                 new NewAgentRun(

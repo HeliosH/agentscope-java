@@ -57,6 +57,46 @@ import org.junit.jupiter.api.Test;
 class SandboxLifecycleMiddlewareTest {
 
     @Test
+    void restoresFilesAboveLegacyFourMiBLimit() throws Exception {
+        var sandbox = new RecordingSandbox("restore-large");
+        var middleware =
+                new SandboxLifecycleMiddleware(
+                        new RecordingSandboxManager(sandbox), new SandboxBackedFilesystem());
+        var context = RuntimeContext.empty();
+        context.put(SandboxContext.class, SandboxContext.builder().build());
+        byte[] content = new byte[5 * 1024 * 1024];
+        content[0] = 42;
+        context.put(
+                WorkspaceRestorePlan.class,
+                new WorkspaceRestorePlan(
+                        "workspace-catalog://attempt/previous",
+                        "version-1",
+                        List.of(new WorkspaceFile("outputs/accepted.pptx", content))));
+        middleware.acquireForCall(context);
+        assertTrue(sandbox.hydratedArchive.length > content.length);
+        middleware.releaseForCall(context);
+    }
+
+    @Test
+    void rejectsRestoreUsingTheSameConfiguredTransferPolicy() {
+        var sandbox = new RecordingSandbox("restore-bounded");
+        var fs = new SandboxBackedFilesystem();
+        fs.configureTransferPolicy(
+                new io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy(10, 4, 32));
+        var middleware = new SandboxLifecycleMiddleware(new RecordingSandboxManager(sandbox), fs);
+        var context = RuntimeContext.empty();
+        context.put(SandboxContext.class, SandboxContext.builder().build());
+        context.put(
+                WorkspaceRestorePlan.class,
+                new WorkspaceRestorePlan(
+                        "workspace-catalog://attempt/previous",
+                        "version-1",
+                        List.of(new WorkspaceFile("outputs/large.bin", new byte[5]))));
+        assertThrows(Exception.class, () -> middleware.acquireForCall(context));
+        assertNull(context.get(Sandbox.class));
+    }
+
+    @Test
     void hydratesPreparedCheckpointAfterStartAndBeforeCallBecomesVisible() throws Exception {
         RecordingSandbox sandbox = new RecordingSandbox("restore");
         SandboxLifecycleMiddleware middleware =
@@ -288,7 +328,8 @@ class SandboxLifecycleMiddlewareTest {
     private static final class FailingProjectionFilesystem extends SandboxBackedFilesystem {
 
         @Override
-        public int projectSandboxWorkspaceToRemote(RuntimeContext runtimeContext) {
+        public io.agentscope.harness.agent.sandbox.WorkspaceProjectionReport
+                projectSandboxWorkspaceWithReport(RuntimeContext runtimeContext) {
             throw new IllegalStateException("projection down");
         }
     }

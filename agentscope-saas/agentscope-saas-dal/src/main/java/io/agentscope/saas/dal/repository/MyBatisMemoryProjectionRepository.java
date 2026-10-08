@@ -30,26 +30,64 @@ public class MyBatisMemoryProjectionRepository implements MemoryProjectionReposi
 
     @Override
     public List<MemoryProjectionEvent> findReplayable(
-            int batchSize, int maxAttempts, OffsetDateTime staleBefore) {
-        return mapper.findReplayable(batchSize, maxAttempts, staleBefore).stream()
+            int batchSize, OffsetDateTime now, OffsetDateTime legacyStaleBefore) {
+        if (batchSize < 1 || batchSize > 1000) {
+            throw new IllegalArgumentException("Memory projection batch must be in 1..1000");
+        }
+        return mapper.findReplayable(batchSize, now, legacyStaleBefore).stream()
                 .map(MyBatisMemoryProjectionRepository::toDomain)
                 .toList();
     }
 
     @Override
     public boolean claim(
-            UUID id, int maxAttempts, OffsetDateTime staleBefore, OffsetDateTime claimedAt) {
-        return mapper.claim(id, maxAttempts, staleBefore, claimedAt) == 1;
+            MemoryProjectionEvent event,
+            UUID token,
+            int maxAttempts,
+            OffsetDateTime now,
+            OffsetDateTime leaseUntil,
+            OffsetDateTime legacyStaleBefore) {
+        if (token == null || maxAttempts < 1 || !leaseUntil.isAfter(now)) {
+            throw new IllegalArgumentException("Invalid memory projection lease");
+        }
+        return mapper.claim(
+                        event.orgId(),
+                        event.id(),
+                        token,
+                        event.attempts(),
+                        maxAttempts,
+                        now,
+                        leaseUntil,
+                        legacyStaleBefore)
+                == 1;
     }
 
     @Override
-    public void markSynced(UUID id, OffsetDateTime syncedAt) {
-        mapper.markSynced(id, syncedAt);
+    public boolean markSynced(UUID orgId, UUID id, UUID token, OffsetDateTime syncedAt) {
+        return mapper.markSynced(orgId, id, token, syncedAt) == 1;
     }
 
     @Override
-    public void markFailed(UUID id, String error, OffsetDateTime failedAt) {
-        mapper.markFailed(id, error, failedAt);
+    public boolean markFailed(
+            UUID orgId,
+            UUID id,
+            UUID token,
+            String error,
+            int maxAttempts,
+            OffsetDateTime failedAt,
+            OffsetDateTime nextAttemptAt) {
+        return mapper.markFailed(orgId, id, token, error, maxAttempts, failedAt, nextAttemptAt)
+                == 1;
+    }
+
+    @Override
+    public boolean exhaust(
+            UUID orgId,
+            UUID id,
+            int maxAttempts,
+            OffsetDateTime now,
+            OffsetDateTime legacyStaleBefore) {
+        return mapper.exhaust(orgId, id, maxAttempts, now, legacyStaleBefore) == 1;
     }
 
     private static MemoryProjectionEvent toDomain(MemoryProjectionData row) {
@@ -60,6 +98,7 @@ public class MyBatisMemoryProjectionRepository implements MemoryProjectionReposi
                 row.agentId(),
                 row.sessionId(),
                 row.contentJson(),
-                row.metadataJson());
+                row.metadataJson(),
+                row.attempts());
     }
 }

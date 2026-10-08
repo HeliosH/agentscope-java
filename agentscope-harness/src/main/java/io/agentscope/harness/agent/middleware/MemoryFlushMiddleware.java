@@ -27,6 +27,7 @@ import io.agentscope.core.state.AgentState;
 import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.memory.MemoryConfig;
 import io.agentscope.harness.agent.memory.MemoryFlushManager;
+import io.agentscope.harness.agent.memory.session.SessionArchiveStore;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
 import java.time.Duration;
 import java.time.Instant;
@@ -76,6 +77,7 @@ public class MemoryFlushMiddleware implements MiddlewareBase {
     private final String flushPrompt;
     private final MemoryConfig.FlushTrigger flushTrigger;
     private final IsolationScope isolationScope;
+    private final SessionArchiveStore archiveStore;
 
     /**
      * Per-isolation-key flush timestamps. The key is derived from {@link #isolationScope} and the
@@ -109,6 +111,16 @@ public class MemoryFlushMiddleware implements MiddlewareBase {
             String flushPrompt,
             MemoryConfig.FlushTrigger flushTrigger,
             IsolationScope isolationScope) {
+        this(workspaceManager, model, flushPrompt, flushTrigger, isolationScope, null);
+    }
+
+    public MemoryFlushMiddleware(
+            WorkspaceManager workspaceManager,
+            Model model,
+            String flushPrompt,
+            MemoryConfig.FlushTrigger flushTrigger,
+            IsolationScope isolationScope,
+            SessionArchiveStore archiveStore) {
         this.workspaceManager = workspaceManager;
         this.model = model;
         this.flushPrompt =
@@ -116,6 +128,7 @@ public class MemoryFlushMiddleware implements MiddlewareBase {
         this.flushTrigger =
                 flushTrigger != null ? flushTrigger : MemoryConfig.FlushTrigger.always();
         this.isolationScope = isolationScope != null ? isolationScope : IsolationScope.USER;
+        this.archiveStore = archiveStore;
     }
 
     @Override
@@ -144,7 +157,8 @@ public class MemoryFlushMiddleware implements MiddlewareBase {
         }
 
         MemoryFlushManager flushManager =
-                new MemoryFlushManager(workspaceManager, model, flushPrompt);
+                new MemoryFlushManager(workspaceManager, model, flushPrompt)
+                        .withArchive(archiveStore);
 
         boolean shouldFlush = shouldFlushNow(rc);
         reactor.core.publisher.Mono<Void> flushMono;
@@ -175,11 +189,13 @@ public class MemoryFlushMiddleware implements MiddlewareBase {
                         .doOnSuccess(v -> log.debug("Message offload completed"))
                         .onErrorResume(
                                 e -> {
+                                    if (archiveStore != null)
+                                        return reactor.core.publisher.Mono.error(e);
                                     log.warn("Message offload failed: {}", e.getMessage());
                                     return reactor.core.publisher.Mono.empty();
                                 });
 
-        return flushMono.then(offloadMono);
+        return archiveStore != null ? offloadMono.then(flushMono) : flushMono.then(offloadMono);
     }
 
     /**

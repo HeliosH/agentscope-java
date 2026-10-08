@@ -17,6 +17,21 @@ import java.util.UUID;
 /** Tenant-scoped persistence port for the durable Run aggregate. */
 public interface RunOrchestrationRepository {
 
+    record SessionFence(UUID sessionId, long generation) {}
+
+    Optional<SessionFence> findSessionFence(UUID sessionId, UUID orgId, UUID userId, UUID agentId);
+
+    Optional<Long> lockSessionGeneration(UUID sessionId, UUID orgId, UUID userId, UUID agentId);
+
+    Optional<SessionFence> findCurrentSessionFence(
+            UUID runId, UUID orgId, UUID userId, UUID agentId);
+
+    Optional<SessionFence> lockCurrentSessionFence(
+            UUID runId, UUID orgId, UUID userId, UUID agentId);
+
+    /** Called under the owned session lock, in the reset/delete transaction. */
+    void revokeSessionExecution(UUID sessionId, UUID orgId, String reason, OffsetDateTime now);
+
     Optional<AssistantRun> findOwnedRun(UUID runId, UUID orgId, UUID userId, UUID agentId);
 
     List<AssistantRun> findRecentOwnedRuns(UUID orgId, UUID userId, UUID agentId, int limit);

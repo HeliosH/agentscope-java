@@ -14,6 +14,13 @@ public interface ContextCheckpointStore {
 
     StoredCheckpoint save(Draft draft);
 
+    /** Backends with bounded reference storage may retain the complete working window. */
+    default List<Msg> retainedWindow(List<Msg> workingWindow) {
+        return List.copyOf(
+                workingWindow.subList(
+                        Math.max(0, workingWindow.size() - 20), workingWindow.size()));
+    }
+
     /** Returns the latest committed conversation boundary for the current durable Agent Run. */
     default Optional<RecoveryCheckpoint> latest() {
         return Optional.empty();

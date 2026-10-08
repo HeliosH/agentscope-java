@@ -50,6 +50,8 @@ class RunOrchestrationServiceTest {
         UUID userId = UUID.randomUUID();
         UUID agentId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
+        when(repository.lockSessionGeneration(sessionId, orgId, userId, agentId))
+                .thenReturn(Optional.of(0L));
         AtomicReference<NewRun> insertedRun = new AtomicReference<>();
         doAnswer(
                         invocation -> {
@@ -197,12 +199,17 @@ class RunOrchestrationServiceTest {
         AssistantRun existing = runningRun(runId, orgId, userId, agentId, sessionId);
         when(repository.findByIdempotencyKey(orgId, userId, agentId, "request-1"))
                 .thenReturn(Optional.of(existing));
+        UUID duplicateSessionId = UUID.randomUUID();
+        when(repository.lockSessionGeneration(duplicateSessionId, orgId, userId, agentId))
+                .thenReturn(Optional.of(0L));
+        when(repository.findCurrentSessionFence(runId, orgId, userId, agentId))
+                .thenReturn(Optional.of(new RunOrchestrationRepository.SessionFence(sessionId, 0)));
 
         RunOrchestrationService.RunHandle handle =
                 service.createDirectRun(
                         tenant(orgId, userId),
                         agentId,
-                        UUID.randomUUID(),
+                        duplicateSessionId,
                         UUID.randomUUID(),
                         "duplicate",
                         " request-1 ");

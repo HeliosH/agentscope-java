@@ -157,7 +157,13 @@ public class FileObjectGcJob {
             long references =
                     repository.countObjectReferences(candidate.orgId(), candidate.objectKey());
             if (references > 0) {
-                markTerminal(candidate.id(), "referenced", null);
+                // A temporary publication pin must be revisited, not become a terminal leak.
+                markTerminal(
+                        candidate.id(),
+                        repository.hasPendingPublication(candidate.orgId(), candidate.objectKey())
+                                ? "pending"
+                                : "referenced",
+                        null);
                 retained++;
                 continue;
             }

@@ -10,12 +10,94 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 import org.apache.ibatis.annotations.Insert;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 /** MyBatis-only database fixtures and assertions shared by persistence integration tests. */
 public interface TestDatabaseMapper {
+    @org.apache.ibatis.annotations.Update(
+            "UPDATE file_publications SET lease_until = #{past}, eligible_at = #{past},"
+                    + " recovery_due_at = #{past} WHERE id = #{id}")
+    int readyFilePublicationRecovery(
+            @org.apache.ibatis.annotations.Param("id") UUID id,
+            @org.apache.ibatis.annotations.Param("past") java.time.OffsetDateTime past);
+
+    @org.apache.ibatis.annotations.Update(
+            "UPDATE file_publications SET lease_until = #{past}, eligible_at = #{past} WHERE id ="
+                    + " #{id}")
+    int expireFilePublication(
+            @org.apache.ibatis.annotations.Param("id") UUID id,
+            @org.apache.ibatis.annotations.Param("past") java.time.OffsetDateTime past);
+
+    @org.apache.ibatis.annotations.Delete(
+            "DELETE FROM context_checkpoints WHERE org_id = #{orgId} AND run_id = #{runId}")
+    int deleteRuntimeCheckpoints(@Param("orgId") UUID orgId, @Param("runId") UUID runId);
+
+    @Insert(
+            "INSERT INTO agents(id, org_id, user_id, name) VALUES (#{id}, #{orgId}, #{userId},"
+                    + " 'archive-test')")
+    int insertRuntimeArchiveAgent(
+            @Param("id") UUID id, @Param("orgId") UUID orgId, @Param("userId") UUID userId);
+
+    @Insert(
+            "INSERT INTO chat_sessions(id, org_id, user_id, agent_id) VALUES (#{id}, #{orgId},"
+                    + " #{userId}, #{agentId})")
+    int insertRuntimeArchiveSession(
+            @Param("id") UUID id,
+            @Param("orgId") UUID orgId,
+            @Param("userId") UUID userId,
+            @Param("agentId") UUID agentId);
+
+    @Update(
+            "CREATE ALIAS IF NOT EXISTS ARCHIVE_TEST_DIGEST FOR"
+                    + " 'io.agentscope.saas.app.memory.PgSessionArchiveStoreTest.digest'")
+    void createArchiveDigestFixture();
+
+    @Insert(
+            """
+            INSERT INTO runtime_messages(stream_id, org_id, user_id, seq, message_id, parent_message_id,
+                role, payload_json, content_hash, content_bytes, created_at)
+            SELECT #{streamId}, #{orgId}, #{userId}, x, CONCAT('load-', x), NULL, 'USER',
+                REPLACE(#{payload}, '_archive_seed_', CONCAT('load-', x)),
+                ARCHIVE_TEST_DIGEST(REPLACE(#{payload}, '_archive_seed_', CONCAT('load-', x))),
+                OCTET_LENGTH(REPLACE(#{payload}, '_archive_seed_', CONCAT('load-', x))), CURRENT_TIMESTAMP
+              FROM SYSTEM_RANGE(2, #{count})
+            """)
+    @Options(timeout = 120)
+    int insertArchiveCapacityFixture(
+            @Param("streamId") UUID streamId,
+            @Param("orgId") UUID orgId,
+            @Param("userId") UUID userId,
+            @Param("payload") String payload,
+            @Param("count") int count);
+
+    @Insert("INSERT INTO orgs(id, name, slug) VALUES (#{id}, 'invocation-test', #{slug})")
+    int insertInvocationOrg(@Param("id") UUID id, @Param("slug") String slug);
+
+    @Update("UPDATE orgs SET status = 'inactive' WHERE id = #{orgId}")
+    int deactivateInvocationOrg(UUID orgId);
+
+    @Update(
+            "UPDATE model_invocations SET deadline_at = #{deadline} WHERE org_id = #{orgId} AND id"
+                    + " = #{id}")
+    int expireModelInvocation(
+            @Param("orgId") UUID orgId,
+            @Param("id") UUID id,
+            @Param("deadline") OffsetDateTime deadline);
+
+    @Insert("INSERT INTO users(id, org_id, email) VALUES (#{id}, #{orgId}, #{email})")
+    int insertInvocationUser(
+            @Param("id") UUID id, @Param("orgId") UUID orgId, @Param("email") String email);
+
+    @Select(
+            "SELECT COALESCE(SUM(metric_value), 0) FROM usage_records WHERE org_id = #{orgId} AND"
+                    + " user_id = #{userId} AND metric = #{metric}")
+    long invocationMetric(
+            @Param("orgId") UUID orgId,
+            @Param("userId") UUID userId,
+            @Param("metric") String metric);
 
     @Update(
             "CREATE TABLE tier_policies (tier VARCHAR(20) PRIMARY KEY, max_sandboxes INTEGER, "
@@ -313,9 +395,12 @@ public interface TestDatabaseMapper {
                 metadata_json VARCHAR(4000),
                 sync_status VARCHAR(20) NOT NULL,
                 sync_attempts INTEGER NOT NULL DEFAULT 0,
+                sync_claim_token UUID,
+                sync_lease_until TIMESTAMP WITH TIME ZONE,
+                sync_next_attempt_at TIMESTAMP WITH TIME ZONE,
                 synced_at TIMESTAMP WITH TIME ZONE,
                 last_error VARCHAR(4000),
-                created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL)
             """)
     void createMemoryEvents();

@@ -109,6 +109,11 @@ public class MyBatisFileObjectGcRepository implements FileObjectGcRepository {
     }
 
     @Override
+    public boolean hasPendingPublication(UUID orgId, String objectKey) {
+        return mapper.countPendingPublications(orgId, objectKey) > 0;
+    }
+
+    @Override
     public int recordDeletion(UUID queueId, String status, String error, OffsetDateTime changedAt) {
         return mapper.recordDeletion(queueId, status, error, changedAt);
     }

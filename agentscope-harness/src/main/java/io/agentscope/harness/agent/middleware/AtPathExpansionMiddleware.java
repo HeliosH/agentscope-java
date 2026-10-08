@@ -29,6 +29,7 @@ import io.agentscope.harness.agent.filesystem.OverlayFilesystem;
 import io.agentscope.harness.agent.filesystem.local.LocalFilesystemWithShell;
 import io.agentscope.harness.agent.filesystem.model.ReadResult;
 import io.agentscope.harness.agent.filesystem.sandbox.AbstractSandboxFilesystem;
+import io.agentscope.harness.agent.memory.session.SessionArchiveStore;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -87,9 +88,16 @@ public class AtPathExpansionMiddleware implements MiddlewareBase {
     private static final int MAX_ATTACHED_LINES = 1000;
 
     private final WorkspaceManager workspaceManager;
+    private final SessionArchiveStore archiveStore;
 
     public AtPathExpansionMiddleware(WorkspaceManager workspaceManager) {
+        this(workspaceManager, null);
+    }
+
+    public AtPathExpansionMiddleware(
+            WorkspaceManager workspaceManager, SessionArchiveStore archiveStore) {
         this.workspaceManager = workspaceManager;
+        this.archiveStore = archiveStore;
     }
 
     @Override
@@ -163,7 +171,8 @@ public class AtPathExpansionMiddleware implements MiddlewareBase {
                     .append(e.getValue().endsWith("\n") ? "" : "\n")
                     .append("</attached_file>");
         }
-        return msg.withContent(List.of(TextBlock.builder().text(sb.toString()).build()));
+        Msg expanded = msg.withContent(List.of(TextBlock.builder().text(sb.toString()).build()));
+        return archiveStore != null ? SessionArchiveStore.projection(msg, expanded) : expanded;
     }
 
     private String tryRead(AbstractFilesystem fs, RuntimeContext rc, String ref) {

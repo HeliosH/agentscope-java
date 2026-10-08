@@ -17,11 +17,31 @@ import java.util.UUID;
 public interface MemoryProjectionRepository {
 
     List<MemoryProjectionEvent> findReplayable(
-            int batchSize, int maxAttempts, OffsetDateTime staleBefore);
+            int batchSize, OffsetDateTime now, OffsetDateTime legacyStaleBefore);
 
-    boolean claim(UUID id, int maxAttempts, OffsetDateTime staleBefore, OffsetDateTime claimedAt);
+    boolean claim(
+            MemoryProjectionEvent event,
+            UUID token,
+            int maxAttempts,
+            OffsetDateTime now,
+            OffsetDateTime leaseUntil,
+            OffsetDateTime legacyStaleBefore);
 
-    void markSynced(UUID id, OffsetDateTime syncedAt);
+    boolean markSynced(UUID orgId, UUID id, UUID token, OffsetDateTime syncedAt);
 
-    void markFailed(UUID id, String error, OffsetDateTime failedAt);
+    boolean markFailed(
+            UUID orgId,
+            UUID id,
+            UUID token,
+            String error,
+            int maxAttempts,
+            OffsetDateTime failedAt,
+            OffsetDateTime nextAttemptAt);
+
+    boolean exhaust(
+            UUID orgId,
+            UUID id,
+            int maxAttempts,
+            OffsetDateTime now,
+            OffsetDateTime legacyStaleBefore);
 }
