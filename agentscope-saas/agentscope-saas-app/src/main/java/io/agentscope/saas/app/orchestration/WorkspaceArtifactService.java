@@ -6,22 +6,21 @@
  */
 package io.agentscope.saas.app.orchestration;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.saas.app.workspace.FileCatalogService.FileRecord;
 import io.agentscope.saas.app.workspace.WorkspaceCheckpointContext;
+import io.agentscope.saas.app.workspace.WorkspaceManifestService;
 import io.agentscope.saas.domain.orchestration.RunArtifactRepository;
-import io.agentscope.saas.domain.orchestration.RunArtifactRepository.NewRunArtifact;
 import io.agentscope.saas.domain.orchestration.RunArtifactRepository.RunArtifact;
 import io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException;
+import io.agentscope.saas.domain.workspace.FilePublicationRepository;
+import io.agentscope.saas.domain.workspace.FilePublicationRepository.ArtifactReceipt;
 import io.agentscope.saas.sandbox.SandboxLeaseContext;
 import io.agentscope.saas.sandbox.SandboxLeaseService;
-import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -35,15 +34,18 @@ public class WorkspaceArtifactService {
 
     private final RunArtifactRepository artifactRepository;
     private final SandboxLeaseService sandboxLeaseService;
-    private final ObjectMapper objectMapper;
+    private final FilePublicationRepository publications;
+    private final WorkspaceManifestService manifests;
 
     public WorkspaceArtifactService(
             RunArtifactRepository artifactRepository,
             SandboxLeaseService sandboxLeaseService,
-            ObjectMapper objectMapper) {
+            FilePublicationRepository publications,
+            WorkspaceManifestService manifests) {
         this.artifactRepository = artifactRepository;
         this.sandboxLeaseService = sandboxLeaseService;
-        this.objectMapper = objectMapper;
+        this.publications = publications;
+        this.manifests = manifests;
     }
 
     @Transactional
@@ -54,18 +56,6 @@ public class WorkspaceArtifactService {
             UUID attemptId,
             SandboxLeaseContext lease,
             WorkspaceCheckpointContext checkpoint) {
-        return publish(orgId, runId, taskId, attemptId, lease, checkpoint, null);
-    }
-
-    @Transactional
-    public Publication publish(
-            UUID orgId,
-            UUID runId,
-            UUID taskId,
-            UUID attemptId,
-            SandboxLeaseContext lease,
-            WorkspaceCheckpointContext checkpoint,
-            Map<String, UUID> baselineVersions) {
         checkpoint.verifyReady();
         if (!artifactRepository.lockCurrentPublicationScope(orgId, runId, taskId, attemptId))
             throw new SessionExecutionRevokedException();
@@ -73,32 +63,27 @@ public class WorkspaceArtifactService {
                 checkpoint.files().stream()
                         .sorted(Comparator.comparing(FileRecord::logicalPath))
                         .toList();
-        OffsetDateTime now = OffsetDateTime.now();
+        var receipts = new HashMap<UUID, ArtifactReceipt>();
+        for (var receipt : publications.artifactReceipts(orgId, runId, taskId, attemptId)) {
+            if (receipts.putIfAbsent(receipt.versionId(), receipt) != null)
+                throw new IllegalStateException("FILE_ARTIFACT_RECEIPT_CONFLICT");
+        }
+        var paths = new HashSet<String>();
         for (FileRecord file : files) {
-            UUID artifactId = artifactId(attemptId, file.versionId());
-            if (artifactRepository.existsById(artifactId, orgId)) {
-                continue;
-            }
-            int inserted =
-                    artifactRepository.insert(
-                            new NewRunArtifact(
-                                    artifactId,
-                                    orgId,
-                                    runId,
-                                    taskId,
-                                    attemptId,
-                                    file.fileId(),
-                                    file.versionId(),
-                                    file.logicalPath(),
-                                    ARTIFACT_TYPE_WORKSPACE_FILE,
-                                    evidence(file, checkpoint, baselineVersions),
-                                    now));
-            if (inserted != 1) {
-                throw new IllegalStateException(
-                        "Run artifact " + artifactId + " insert affected " + inserted + " rows");
-            }
+            if (!paths.add(file.logicalPath()))
+                throw new IllegalStateException("WORKSPACE_CHECKPOINT_DUPLICATE_FILE");
+            ArtifactReceipt receipt = receipts.get(file.versionId());
+            if (receipt == null
+                    || !Objects.equals(receipt.fileId(), file.fileId())
+                    || !Objects.equals(receipt.logicalPath(), file.logicalPath())
+                    || !Objects.equals(receipt.objectKey(), file.objectKey())
+                    || !Objects.equals(receipt.backend(), file.storageBackend())
+                    || !Objects.equals(receipt.sha256(), file.sha256())
+                    || receipt.sizeBytes() != file.sizeBytes())
+                throw new IllegalStateException("FILE_ARTIFACT_RECEIPT_MISSING_OR_MISMATCHED");
         }
 
+        manifests.verifyAndReady(orgId, runId, taskId, attemptId, checkpoint.manifest(), files);
         String version =
                 WorkspaceManifestVersion.compute(
                         files.stream()
@@ -109,10 +94,19 @@ public class WorkspaceArtifactService {
                                                         file.versionId(),
                                                         file.sha256()))
                                 .toList());
-        String uri = "workspace-catalog://runs/" + runId + "/attempts/" + attemptId;
-        if (lease != null && !sandboxLeaseService.checkpoint(lease, uri, version)) {
+        String uri =
+                WorkspaceCheckpointReference.pinned(runId, attemptId, checkpoint.manifest().id());
+        if (!sandboxLeaseService.checkpointForAttempt(
+                lease,
+                orgId,
+                checkpoint.manifest().scope().userId(),
+                runId,
+                taskId,
+                attemptId,
+                uri,
+                version)) {
             throw new IllegalStateException(
-                    "Sandbox lease " + lease.leaseId() + " rejected workspace checkpoint");
+                    "Sandbox lease rejected workspace checkpoint for attempt " + attemptId);
         }
         return new Publication(uri, version, files.size());
     }
@@ -122,39 +116,6 @@ public class WorkspaceArtifactService {
         return artifactRepository.findByRunId(runId, orgId).stream()
                 .map(WorkspaceArtifactService::toView)
                 .toList();
-    }
-
-    private String evidence(
-            FileRecord file,
-            WorkspaceCheckpointContext checkpoint,
-            Map<String, UUID> baselineVersions) {
-        try {
-            Map<String, Object> fields =
-                    new LinkedHashMap<>(
-                            Map.of(
-                                    "logicalPath", file.logicalPath(),
-                                    "versionNo", file.versionNo(),
-                                    "sha256", file.sha256(),
-                                    "sizeBytes", file.sizeBytes(),
-                                    "storageBackend", file.storageBackend(),
-                                    "sandboxStatePersisted", checkpoint.stateWasPersisted(),
-                                    "sandboxStopped", checkpoint.sandboxWasStopped()));
-            if (baselineVersions != null) {
-                fields.put(
-                        "producedInRun",
-                        !Objects.equals(
-                                baselineVersions.get(file.logicalPath()), file.versionId()));
-            }
-            return objectMapper.writeValueAsString(fields);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Failed to serialize workspace artifact evidence", e);
-        }
-    }
-
-    private static UUID artifactId(UUID attemptId, UUID fileVersionId) {
-        return UUID.nameUUIDFromBytes(
-                ("workspace-file:" + attemptId + ":" + fileVersionId)
-                        .getBytes(StandardCharsets.UTF_8));
     }
 
     private static ArtifactView toView(RunArtifact artifact) {

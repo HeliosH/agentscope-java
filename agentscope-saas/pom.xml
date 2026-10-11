@@ -56,6 +56,12 @@
 
     <dependencyManagement>
         <dependencies>
+            <!-- Keep runtime tar APIs aligned with agentscope-harness, not MinIO's older transitives. -->
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-compress</artifactId>
+                <version>1.27.1</version>
+            </dependency>
             <dependency>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-dependencies</artifactId>

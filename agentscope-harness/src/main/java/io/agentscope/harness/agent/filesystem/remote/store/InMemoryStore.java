@@ -97,6 +97,20 @@ public class InMemoryStore implements BaseStore {
         store.remove(compoundKey(namespace, key));
     }
 
+    @Override
+    public List<String> listKeys(List<String> namespace, String prefix, int limit, int offset) {
+        if (limit <= 0 || offset < 0 || prefix == null || prefix.isEmpty())
+            throw new IllegalArgumentException("Invalid key page");
+        String ns = namespacePrefix(namespace);
+        return store.entrySet().stream()
+                .filter(e -> e.getKey().startsWith(ns) && e.getValue().key().startsWith(prefix))
+                .map(e -> e.getValue().key())
+                .sorted()
+                .skip(offset)
+                .limit(limit)
+                .toList();
+    }
+
     /** Returns the number of items currently stored. */
     public int size() {
         return store.size();

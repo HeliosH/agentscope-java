@@ -8,6 +8,7 @@ package io.agentscope.saas.dal.repository;
 import io.agentscope.saas.dal.mybatis.admin.FilePublicationGcMapper;
 import io.agentscope.saas.dal.mybatis.tenant.FilePublicationMapper;
 import io.agentscope.saas.domain.workspace.FilePublicationRepository;
+import io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository.Authority;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -55,6 +56,47 @@ public class MyBatisFilePublicationRepository implements FilePublicationReposito
                 || (i.execution() != null
                         && !tenant.lockExecutionRun(p).isEmpty()
                         && !tenant.lockExecutionAttempt(p, i, now).isEmpty());
+    }
+
+    @Override
+    public boolean lockArchiveExecution(Publication p, Intent i, Authority a, OffsetDateTime now) {
+        return p.runId() != null
+                && i.execution() != null
+                && !tenant.lockExecutionRun(p).isEmpty()
+                && !tenant.lockArchiveAttempt(p, i).isEmpty()
+                && !tenant.lockArchiveAuthority(p, i, a, now).isEmpty();
+    }
+
+    @Override
+    public int reclaimArchive(
+            Publication p, Authority a, OffsetDateTime now, OffsetDateTime until) {
+        return tenant.reclaimArchive(p, a, now, until);
+    }
+
+    @Override
+    public boolean bindArchivePublication(
+            Publication p, Intent i, Authority a, OffsetDateTime now) {
+        return p.runId() != null
+                && i.execution() != null
+                && !tenant.lockExecutionRun(p).isEmpty()
+                && !tenant.lockArchiveAttempt(p, i).isEmpty()
+                && tenant.bindArchivePublication(p, i, a, now) == 1
+                && !tenant.lockArchiveAuthority(p, i, a, OffsetDateTime.now()).isEmpty();
+    }
+
+    public int abortArchive(Publication p, Authority a, OffsetDateTime now) {
+        return tenant.abortArchive(p, a, now);
+    }
+
+    public Optional<UUID> archiveReplacement(
+            UUID org, UUID user, String path, Authority authority, OffsetDateTime now) {
+        return tenant.archiveReplacement(org, user, path, authority, now).stream().findFirst();
+    }
+
+    @Override
+    public boolean pathBusyExcept(
+            UUID org, UUID user, String path, UUID excluding, OffsetDateTime now) {
+        return tenant.pathBusyExcept(org, user, path, excluding, now) > 0;
     }
 
     @Override
@@ -114,6 +156,16 @@ public class MyBatisFilePublicationRepository implements FilePublicationReposito
     @Override
     public int published(UUID org, UUID user, UUID id, UUID version, OffsetDateTime now) {
         return tenant.published(org, user, id, version, now);
+    }
+
+    @Override
+    public int linkArtifactReceipt(Publication p, UUID artifactId, UUID eventId) {
+        return tenant.linkArtifactReceipt(p, artifactId, eventId);
+    }
+
+    @Override
+    public List<ArtifactReceipt> artifactReceipts(UUID org, UUID run, UUID task, UUID attempt) {
+        return tenant.artifactReceipts(org, run, task, attempt);
     }
 
     @Override

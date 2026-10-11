@@ -84,4 +84,8 @@ public interface Sandbox extends AutoCloseable {
     InputStream persistWorkspace() throws Exception;
 
     void hydrateWorkspace(InputStream archive) throws Exception;
+
+    /** Shared worker resources, configured before initialization and archive operations. */
+    default void configureTransfers(
+            WorkspaceTransferResources resources, WorkspaceTransferPolicy policy) {}
 }

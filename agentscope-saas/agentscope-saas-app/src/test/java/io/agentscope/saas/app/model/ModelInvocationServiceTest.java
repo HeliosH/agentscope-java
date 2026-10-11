@@ -48,6 +48,52 @@ import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 
 class ModelInvocationServiceTest {
+    @Test
+    void governedSingleAttemptDoesNotWidenAShorterCallerTimeout() {
+        service.bindToStep(context, messages).stream(
+                        messages,
+                        null,
+                        GenerateOptions.builder()
+                                .executionConfig(
+                                        io.agentscope.core.model.ExecutionConfig.builder()
+                                                .timeout(java.time.Duration.ofSeconds(1))
+                                                .maxAttempts(99)
+                                                .build())
+                                .build())
+                .blockLast();
+        assertThat(large.options.get().getExecutionConfig().getMaxAttempts()).isEqualTo(1);
+        assertThat(large.options.get().getExecutionConfig().getTimeout())
+                .isEqualTo(java.time.Duration.ofSeconds(1));
+    }
+
+    @Test
+    void providerTransportFailuresAreNormalizedOnlyInsideTheGovernedModelBoundary() {
+        var raw =
+                new io.agentscope.core.model.exception.OpenAIException(
+                        "connection closed", new java.io.IOException("closed"));
+        large.responses = Flux.concat(Flux.just(response()), Flux.error(raw));
+        assertThatThrownBy(
+                        () ->
+                                service.bindToStep(context, messages).stream(messages, null, null)
+                                        .blockLast())
+                .isInstanceOf(io.agentscope.core.model.ModelStreamInterruptedException.class)
+                .hasCause(raw);
+    }
+
+    @Test
+    void permanentProviderErrorKeepsItsTypedCauseForTheRecoveryClassifier() {
+        var raw =
+                io.agentscope.core.model.exception.OpenAIException.create(
+                        401, "denied", "auth", "{}");
+        large.responses = Flux.error(raw);
+        assertThatThrownBy(
+                        () ->
+                                service.bindToStep(context, messages).stream(messages, null, null)
+                                        .blockLast())
+                .isInstanceOf(io.agentscope.core.model.ModelException.class)
+                .hasCause(raw);
+    }
+
     private final UUID org = UUID.randomUUID(), user = UUID.randomUUID(), call = UUID.randomUUID();
     private final ModelInvocationRepository repository = mock(ModelInvocationRepository.class);
     private final ModelInvocationLedgerService ledger = mock(ModelInvocationLedgerService.class);
@@ -155,6 +201,7 @@ class ModelInvocationServiceTest {
                 .blockLast();
         assertThat(small.options.get()).isNull();
         assertThat(large.options.get().getMaxTokens()).isEqualTo(50);
+        assertThat(large.options.get().getExecutionConfig().getMaxAttempts()).isEqualTo(1);
         verify(ledger)
                 .admit(
                         any(),

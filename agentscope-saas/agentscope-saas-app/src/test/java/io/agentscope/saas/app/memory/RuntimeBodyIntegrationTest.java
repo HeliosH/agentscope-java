@@ -228,6 +228,254 @@ class RuntimeBodyIntegrationTest {
     }
 
     @Test
+    void minioOutagePublishesBoundedBodyWithStableSequenceAndAuthorizedReads() {
+        store.backend = "minio";
+        store.failPut = true;
+        Msg source = source("outage", "\u504f\u597d-" + "a".repeat(5000));
+        archive.append(context, "assistant", scope.sessionKey(), List.of(source));
+        var row = rows().get(0);
+        assertThat(row.seq()).isEqualTo(1);
+        assertThat(bodies.fallbackUsage(org, user)).isEqualTo(row.contentBytes());
+        assertThat(bodyService.read(scope, row.bodyId(), row.contentBytes()))
+                .isEqualTo(SessionArchiveStore.payload(source));
+        assertThat(
+                        archive.readWindow(context, "assistant", scope.sessionKey(), 0L, null, 10)
+                                .get(0)
+                                .message()
+                                .getTextContent())
+                .isEqualTo(source.getTextContent());
+        assertThat(store.gets.get()).isZero();
+        assertThat(
+                        archive.append(context, "assistant", scope.sessionKey(), List.of(source))
+                                .appended())
+                .isZero();
+        assertThat(store.puts.get()).isEqualTo(1);
+        Scope foreign =
+                new Scope(org, UUID.randomUUID(), agent, session, "assistant", scope.sessionKey());
+        assertThat(bodies.fallbackPayload(foreign, row.bodyId())).isEmpty();
+        assertThatThrownBy(() -> bodyService.read(foreign, row.bodyId(), row.contentBytes()))
+                .hasMessage("RUNTIME_BODY_UNAVAILABLE");
+        assertThatThrownBy(() -> bodyService.read(scope, row.bodyId(), row.contentBytes() - 1))
+                .hasMessage("RUNTIME_BODY_INTEGRITY_FAILED");
+    }
+
+    @Test
+    void fallbackIsDisabledOrOversizedWithoutAllocatingSequence() {
+        store.backend = "minio";
+        store.failPut = true;
+        Msg source = source("outage", "a".repeat(4000));
+        properties.getRuntimeArchive().setBodyFallbackEnabled(false);
+        assertThatThrownBy(
+                        () ->
+                                archive.append(
+                                        context, "assistant", scope.sessionKey(), List.of(source)))
+                .hasMessage("RUNTIME_BODY_WRITE_FAILED");
+        properties.getRuntimeArchive().setBodyFallbackEnabled(true);
+        properties.getRuntimeArchive().setBodyFallbackMaxBytes(3000);
+        assertThatThrownBy(
+                        () ->
+                                archive.append(
+                                        context, "assistant", scope.sessionKey(), List.of(source)))
+                .hasMessage("RUNTIME_BODY_WRITE_FAILED");
+        assertThat(rows()).isEmpty();
+        assertThat(bodies.fallbackUsage(org, user)).isZero();
+    }
+
+    @Test
+    void fallbackQuotaAndOrdinaryQuotaBothApply() {
+        store.backend = "minio";
+        store.failPut = true;
+        String json = SessionArchiveStore.payload(source("outage", "a".repeat(4000)));
+        long size = json.getBytes(StandardCharsets.UTF_8).length;
+        properties.getRuntimeArchive().setBodyFallbackMaxUserBytes(size);
+        bodyService.stage(scope, json);
+        assertThatThrownBy(() -> bodyService.stage(scope, json))
+                .hasMessage("RUNTIME_BODY_FALLBACK_QUOTA_EXCEEDED");
+        assertThat(bodies.fallbackUsage(org, user)).isEqualTo(size);
+        properties.getRuntimeArchive().setBodyFallbackMaxUserBytes(size * 3);
+        properties.getRuntimeArchive().setMaxBodyUserBytes(size * 3 - 1);
+        assertThatThrownBy(() -> bodyService.stage(scope, json))
+                .hasMessage("RUNTIME_BODY_QUOTA_EXCEEDED");
+        assertThat(store.puts.get()).isEqualTo(2);
+    }
+
+    @Test
+    void fallbackOrganizationQuotaIncludesOtherEmployees() {
+        store.backend = "minio";
+        store.failPut = true;
+        String json = SessionArchiveStore.payload(source("outage", "a".repeat(4000)));
+        long size = json.getBytes(StandardCharsets.UTF_8).length;
+        properties.getRuntimeArchive().setBodyFallbackMaxOrgBytes(size * 2 - 1);
+        bodyService.stage(scope, json);
+        UUID otherUser = UUID.randomUUID(),
+                otherAgent = UUID.randomUUID(),
+                otherSession = UUID.randomUUID();
+        database.insertInvocationUser(otherUser, org, otherUser + "@body.test");
+        database.insertRuntimeArchiveAgent(otherAgent, org, otherUser);
+        database.insertRuntimeArchiveSession(otherSession, org, otherUser, otherAgent);
+        Scope other =
+                new Scope(
+                        org,
+                        otherUser,
+                        otherAgent,
+                        otherSession,
+                        "assistant",
+                        otherSession.toString());
+        assertThatThrownBy(() -> bodyService.stage(other, json))
+                .hasMessage("RUNTIME_BODY_FALLBACK_QUOTA_EXCEEDED");
+        assertThat(bodies.fallbackUsage(org, null)).isEqualTo(size);
+    }
+
+    @Test
+    void recoveryVerifiesObjectBeforeRemovingFallbackAndDoesNotReplaceId() {
+        store.backend = "minio";
+        store.failPut = true;
+        Msg source = source("outage", "a".repeat(4000));
+        archive.append(context, "assistant", scope.sessionKey(), List.of(source));
+        var row = rows().get(0);
+        var recovery = recovery();
+        assertThat(recovery.recoverOnce(OffsetDateTime.now())).isZero();
+        assertThat(bodies.fallbackPayload(scope, row.bodyId())).isPresent();
+        store.failPut = false;
+        store.failGet = true;
+        assertThat(recovery.recoverOnce(OffsetDateTime.now().plusSeconds(31))).isZero();
+        assertThat(bodies.fallbackPayload(scope, row.bodyId())).isPresent();
+        store.failGet = false;
+        properties.getRuntimeArchive().setBodyFallbackEnabled(false);
+        assertThat(recovery.recoverOnce(OffsetDateTime.now().plusSeconds(62)))
+                .isGreaterThanOrEqualTo(1);
+        assertThat(bodies.fallbackPayload(scope, row.bodyId())).isEmpty();
+        assertThat(bodies.fallbackUsage(org, user)).isZero();
+        assertThat(rows().get(0).bodyId()).isEqualTo(row.bodyId());
+        assertThat(bodyService.read(scope, row.bodyId(), row.contentBytes()))
+                .isEqualTo(SessionArchiveStore.payload(source));
+        assertThat(recovery.recoverOnce(OffsetDateTime.now().plusMinutes(5))).isZero();
+    }
+
+    @Test
+    void activeReferencesKeepFallbackAndRecoveryLeaseFencesGc() {
+        store.backend = "minio";
+        store.failPut = true;
+        archive.append(
+                context,
+                "assistant",
+                scope.sessionKey(),
+                List.of(source("outage", "a".repeat(4000))));
+        var row = rows().get(0);
+        gc(store).collectOnce(OffsetDateTime.now().plusHours(2));
+        assertThat(bodies.fallbackPayload(scope, row.bodyId())).isPresent();
+        new TransactionTemplate(manager)
+                .executeWithoutResult(tx -> messages.deleteSession(org, user, session));
+        var now = OffsetDateTime.now();
+        UUID token = UUID.randomUUID();
+        admin.executeWithoutResult(
+                tx -> {
+                    assertThat(bodies.protectFallback(row.bodyId(), now, now.plusHours(3)))
+                            .isEqualTo(1);
+                    assertThat(bodies.claimFallback(row.bodyId(), token, now, now.plusHours(3)))
+                            .isEqualTo(1);
+                });
+        gc(store).collectOnce(now.plusHours(2));
+        assertThat(bodies.fallbackPayload(scope, row.bodyId())).isPresent();
+        gc(store).collectOnce(now.plusHours(4));
+        assertThat(bodies.fallbackPayload(scope, row.bodyId())).isEmpty();
+        assertThat(body(row).status()).isEqualTo("DELETED");
+        assertThat(bodies.fallbackUsage(org, user)).isZero();
+    }
+
+    @Test
+    void staleOffloadReceiptCannotDeleteNewClaim() {
+        store.backend = "minio";
+        store.failPut = true;
+        UUID id =
+                bodyService.stage(
+                        scope, SessionArchiveStore.payload(source("outage", "a".repeat(4000))));
+        var now = OffsetDateTime.now();
+        UUID first = UUID.randomUUID(), second = UUID.randomUUID();
+        admin.executeWithoutResult(
+                tx -> {
+                    assertThat(bodies.protectFallback(id, now, now.plusSeconds(1))).isEqualTo(1);
+                    assertThat(bodies.claimFallback(id, first, now, now.plusSeconds(1)))
+                            .isEqualTo(1);
+                });
+        assertThat(bodies.claimFallback(id, second, now.plusSeconds(2), now.plusSeconds(120)))
+                .isEqualTo(1);
+        assertThat(bodies.offloaded(id, first, now)).isZero();
+        assertThat(bodies.offloaded(id, second, now.plusSeconds(121))).isZero();
+        assertThat(bodies.fallbackPayload(scope, id)).isPresent();
+    }
+
+    private RuntimeBodyRecoveryJob recovery() {
+        return new RuntimeBodyRecoveryJob(bodies, admin, provider(store), properties);
+    }
+
+    @Test
+    void fallbackMessageRollbackLeavesCollectableOrphan() {
+        store.backend = "minio";
+        store.failPut = true;
+        var failed = mock(RuntimeMessageRepository.class, delegatesTo(messages));
+        doThrow(new IllegalStateException("fixture insert failure"))
+                .when(failed)
+                .insert(any(), any());
+        var failing = new PgSessionArchiveStore(failed, runs, properties, manager, bodyService);
+        assertThatThrownBy(
+                        () ->
+                                failing.append(
+                                        context,
+                                        "assistant",
+                                        scope.sessionKey(),
+                                        List.of(source("orphan", "a".repeat(4000)))))
+                .hasMessage("fixture insert failure");
+        assertThat(rows()).isEmpty();
+        assertThat(bodies.fallbackUsage(org, user)).isPositive();
+        gc(store).collectOnce(OffsetDateTime.now().plusHours(2));
+        assertThat(bodies.fallbackUsage(org, user)).isZero();
+        assertThat(bodies.usage(org, user)).isZero();
+    }
+
+    @Test
+    void concurrentFallbackQuotaAllowsOnlyOneAdmission() throws Exception {
+        store.backend = "minio";
+        store.failPut = true;
+        long size =
+                SessionArchiveStore.payload(source("one", "a".repeat(4000)))
+                        .getBytes(StandardCharsets.UTF_8)
+                        .length;
+        properties.getRuntimeArchive().setBodyFallbackMaxUserBytes(size);
+        var pool = Executors.newFixedThreadPool(2);
+        var start = new CountDownLatch(1);
+        try {
+            java.util.concurrent.Callable<String> call =
+                    () -> {
+                        start.await();
+                        try {
+                            archive.append(
+                                    context,
+                                    "assistant",
+                                    scope.sessionKey(),
+                                    List.of(
+                                            source(
+                                                    UUID.randomUUID().toString(),
+                                                    "a".repeat(3900))));
+                            return "published";
+                        } catch (IllegalStateException error) {
+                            return error.getMessage();
+                        }
+                    };
+            var one = pool.submit(call);
+            var two = pool.submit(call);
+            start.countDown();
+            assertThat(List.of(one.get(20, TimeUnit.SECONDS), two.get(20, TimeUnit.SECONDS)))
+                    .containsExactlyInAnyOrder("published", "RUNTIME_BODY_FALLBACK_QUOTA_EXCEEDED");
+            assertThat(rows()).hasSize(1);
+            assertThat(rows().get(0).seq()).isEqualTo(1);
+            assertThat(bodies.fallbackUsage(org, user)).isLessThanOrEqualTo(size);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
     void messageRollbackLeavesRecoverableOrphanThatGcDeletes() {
         var failed = mock(RuntimeMessageRepository.class, delegatesTo(messages));
         doThrow(new IllegalStateException("fixture insert failure"))
@@ -491,10 +739,12 @@ class RuntimeBodyIntegrationTest {
         final Map<String, byte[]> objects = new ConcurrentHashMap<>();
         final AtomicInteger puts = new AtomicInteger(), gets = new AtomicInteger();
         volatile boolean failPut;
+        volatile boolean failGet;
+        String backend = "pg";
 
         @Override
         public String backend() {
-            return "pg";
+            return backend;
         }
 
         @Override
@@ -510,6 +760,7 @@ class RuntimeBodyIntegrationTest {
         public byte[] get(UUID org, String key) {
             assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
             gets.incrementAndGet();
+            if (failGet) throw new IllegalStateException("fixture read unavailable");
             byte[] bytes = objects.get(key);
             return bytes == null ? null : bytes.clone();
         }

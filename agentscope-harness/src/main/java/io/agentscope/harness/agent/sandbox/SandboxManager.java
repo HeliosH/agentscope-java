@@ -199,6 +199,17 @@ public class SandboxManager {
             return;
         }
 
+        var retained =
+                runtimeContext == null
+                        ? null
+                        : runtimeContext.get(WorkspaceRetentionBackend.Hold.class);
+        if (retained != null && retained.appliesTo(sandbox)) {
+            log.info(
+                    "[sandbox] Sealed workspace handed to bounded provider retention source={}",
+                    retained.sourceId());
+            return;
+        }
+
         if (sandbox.isRunning()) {
             try {
                 sandbox.stop();

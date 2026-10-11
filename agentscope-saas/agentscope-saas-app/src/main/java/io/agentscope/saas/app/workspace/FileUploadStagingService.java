@@ -50,6 +50,14 @@ public class FileUploadStagingService {
 
     private final SaasProperties properties;
     private final FileContentScanner scanner;
+    private io.agentscope.harness.agent.sandbox.WorkspaceTransferResources resources =
+            io.agentscope.harness.agent.sandbox.WorkspaceTransferResources.DEFAULT;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureTransferResources(
+            io.agentscope.harness.agent.sandbox.WorkspaceTransferResources resources) {
+        this.resources = resources;
+    }
 
     public FileUploadStagingService(SaasProperties properties, FileContentScanner scanner) {
         this.properties = properties;
@@ -57,20 +65,101 @@ public class FileUploadStagingService {
     }
 
     public Mono<StagedUpload> stage(FilePart file) {
+        return stage(file.filename(), declaredContentType(file), file.content());
+    }
+
+    public Mono<StagedUpload> stageEvents(
+            Flux<org.springframework.http.codec.multipart.PartEvent> events) {
+        return events.switchOnFirst(
+                        (signal, body) -> {
+                            if (!signal.hasValue())
+                                return Mono.<StagedUpload>error(
+                                        signal.hasError()
+                                                ? signal.getThrowable()
+                                                : new ResponseStatusException(
+                                                        HttpStatus.BAD_REQUEST,
+                                                        "File part is required"));
+                            var first = signal.get();
+                            if (!(first
+                                            instanceof
+                                            org.springframework.http.codec.multipart.FilePartEvent
+                                                    file)
+                                    || !"file".equals(first.name())) {
+                                DataBufferUtils.release(first.content());
+                                return Mono.<StagedUpload>error(
+                                        new ResponseStatusException(
+                                                HttpStatus.BAD_REQUEST,
+                                                "A single file part is required"));
+                            }
+                            var ended = new java.util.concurrent.atomic.AtomicBoolean();
+                            Flux<DataBuffer> buffers =
+                                    body.<DataBuffer>handle(
+                                                    (event, sink) -> {
+                                                        if (ended.get()
+                                                                || !(event
+                                                                        instanceof
+                                                                        org.springframework.http
+                                                                                        .codec
+                                                                                        .multipart
+                                                                                        .FilePartEvent
+                                                                                part)
+                                                                || !"file".equals(event.name())
+                                                                || !file.filename()
+                                                                        .equals(part.filename())) {
+                                                            DataBufferUtils.release(
+                                                                    event.content());
+                                                            sink.error(
+                                                                    new ResponseStatusException(
+                                                                            HttpStatus.BAD_REQUEST,
+                                                                            "Only one file part is"
+                                                                                    + " allowed"));
+                                                        } else {
+                                                            if (event.isLast()) ended.set(true);
+                                                            sink.next(event.content());
+                                                        }
+                                                    })
+                                            .concatWith(
+                                                    Flux.defer(
+                                                            () ->
+                                                                    ended.get()
+                                                                            ? Flux.empty()
+                                                                            : Flux.error(
+                                                                                    new ResponseStatusException(
+                                                                                            HttpStatus
+                                                                                                    .BAD_REQUEST,
+                                                                                            "Incomplete"
+                                                                                                + " file"
+                                                                                                + " part"))));
+                            MediaType type = first.headers().getContentType();
+                            String declared =
+                                    type == null
+                                            ? MediaType.APPLICATION_OCTET_STREAM_VALUE
+                                            : type.toString();
+                            if (declared.length() > 255)
+                                declared = MediaType.APPLICATION_OCTET_STREAM_VALUE;
+                            return stage(file.filename(), declared, buffers);
+                        })
+                .single()
+                .doOnDiscard(
+                        org.springframework.http.codec.multipart.PartEvent.class,
+                        event -> DataBufferUtils.release(event.content()));
+    }
+
+    private Mono<StagedUpload> stage(
+            String originalName, String contentType, Flux<DataBuffer> content) {
         SaasProperties.FileStore cfg = properties.getFileStore();
-        String filename = safeFilename(file.filename());
-        String contentType = declaredContentType(file);
+        String filename = safeFilename(originalName);
         validateDeclaration(filename, contentType, cfg);
         long maxBytes = Math.max(1L, cfg.getMaxFileBytes());
 
-        return Mono.fromCallable(() -> Files.createTempFile("agentscope-upload-", ".part"))
+        return Mono.fromCallable(() -> allocate(maxBytes))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMap(
-                        path -> {
+                        allocation -> {
+                            Path path = allocation.spool.path();
                             AtomicLong size = new AtomicLong();
                             Flux<DataBuffer> bounded =
-                                    file.content()
-                                            .handle(
+                                    content.<DataBuffer>handle(
                                                     (buffer, sink) -> {
                                                         long total =
                                                                 size.addAndGet(
@@ -87,7 +176,9 @@ public class FileUploadStagingService {
                                                         } else {
                                                             sink.next(buffer);
                                                         }
-                                                    });
+                                                    })
+                                            .doOnDiscard(
+                                                    DataBuffer.class, DataBufferUtils::release);
                             return DataBufferUtils.write(bounded, path, WRITE_OPTIONS)
                                     .then(
                                             Mono.fromCallable(
@@ -98,12 +189,42 @@ public class FileUploadStagingService {
                                                                         path,
                                                                         filename,
                                                                         contentType,
-                                                                        size.get());
+                                                                        size.get(),
+                                                                        allocation);
                                                             })
                                                     .subscribeOn(Schedulers.boundedElastic()))
-                                    .doOnError(ignored -> deleteQuietly(path))
-                                    .doOnCancel(() -> deleteQuietly(path));
-                        });
+                                    .doOnError(ignored -> allocation.close())
+                                    .doOnCancel(allocation::close);
+                        })
+                .doOnDiscard(StageAllocation.class, StageAllocation::close)
+                .doOnDiscard(StagedUpload.class, StagedUpload::close);
+    }
+
+    private StageAllocation allocate(long limit) throws Exception {
+        var permit = resources.acquire();
+        try {
+            return new StageAllocation(permit, resources.spool("agentscope-upload-", limit));
+        } catch (Exception error) {
+            permit.close();
+            throw error;
+        }
+    }
+
+    private record StageAllocation(
+            io.agentscope.harness.agent.sandbox.WorkspaceTransferResources.Permit permit,
+            io.agentscope.harness.agent.sandbox.WorkspaceTransferResources.Spool spool)
+            implements AutoCloseable {
+        @Override
+        public void close() {
+            try {
+                spool.close();
+            } catch (IOException error) {
+                org.slf4j.LoggerFactory.getLogger(FileUploadStagingService.class)
+                        .warn("Upload spool cleanup failed ({})", error.getClass().getSimpleName());
+            } finally {
+                permit.close();
+            }
+        }
     }
 
     private static void validateDeclaration(
@@ -189,8 +310,17 @@ public class FileUploadStagingService {
         }
     }
 
-    public record StagedUpload(Path path, String filename, String contentType, long sizeBytes)
+    public record StagedUpload(
+            Path path,
+            String filename,
+            String contentType,
+            long sizeBytes,
+            StageAllocation allocation)
             implements AutoCloseable {
+
+        public StagedUpload(Path path, String filename, String contentType, long sizeBytes) {
+            this(path, filename, contentType, sizeBytes, null);
+        }
 
         public byte[] readAllBytes() throws IOException {
             return Files.readAllBytes(path);
@@ -198,7 +328,8 @@ public class FileUploadStagingService {
 
         @Override
         public void close() {
-            deleteQuietly(path);
+            if (allocation == null) deleteQuietly(path);
+            else allocation.close();
         }
     }
 }

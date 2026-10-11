@@ -12,6 +12,17 @@ import java.util.UUID;
 
 /** Durable capacity reservations and fenced ownership of objects awaiting catalog publication. */
 public interface FilePublicationRepository {
+    record ArtifactReceipt(
+            UUID artifactId,
+            UUID eventId,
+            UUID fileId,
+            UUID versionId,
+            String logicalPath,
+            String objectKey,
+            String backend,
+            String sha256,
+            long sizeBytes) {}
+
     record Execution(UUID taskId, UUID agentRunId, UUID attemptId, String leaseOwner) {
         public Execution {
             java.util.Objects.requireNonNull(taskId);
@@ -77,6 +88,37 @@ public interface FilePublicationRepository {
 
     boolean lockExecution(Publication publication, Intent intent, OffsetDateTime now);
 
+    boolean lockArchiveExecution(
+            Publication publication,
+            Intent intent,
+            WorkspaceArchiveRepository.Authority authority,
+            OffsetDateTime now);
+
+    boolean bindArchivePublication(
+            Publication p,
+            Intent intent,
+            WorkspaceArchiveRepository.Authority authority,
+            OffsetDateTime now);
+
+    int abortArchive(
+            Publication p, WorkspaceArchiveRepository.Authority authority, OffsetDateTime now);
+
+    Optional<UUID> archiveReplacement(
+            UUID orgId,
+            UUID userId,
+            String path,
+            WorkspaceArchiveRepository.Authority authority,
+            OffsetDateTime now);
+
+    int reclaimArchive(
+            Publication publication,
+            WorkspaceArchiveRepository.Authority authority,
+            OffsetDateTime now,
+            OffsetDateTime until);
+
+    boolean pathBusyExcept(
+            UUID orgId, UUID userId, String path, UUID excludingId, OffsetDateTime now);
+
     List<Publication> recoveryCandidates(OffsetDateTime now, int maxAttempts, int limit);
 
     int reclaimRecovery(
@@ -110,6 +152,10 @@ public interface FilePublicationRepository {
     Optional<Publication> lockOwned(UUID orgId, UUID userId, UUID id);
 
     int published(UUID orgId, UUID userId, UUID id, UUID versionId, OffsetDateTime now);
+
+    int linkArtifactReceipt(Publication publication, UUID artifactId, UUID eventId);
+
+    List<ArtifactReceipt> artifactReceipts(UUID orgId, UUID runId, UUID taskId, UUID attemptId);
 
     int abort(UUID orgId, UUID userId, UUID id, OffsetDateTime eligibleAt);
 

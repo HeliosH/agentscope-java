@@ -50,6 +50,15 @@ public class DurableTaskLeaseService {
     private final TransactionOperations transactions;
     private final SaasProperties properties;
     private final CompletionGate completionGate = new CompletionGate();
+    private RunExecutionPolicyService executionPolicies;
+    private RecoveryCapability recoveryCapability;
+
+    @Autowired
+    void configureExecutionPolicies(
+            RunExecutionPolicyService policies, RecoveryCapability capability) {
+        executionPolicies = policies;
+        recoveryCapability = capability;
+    }
 
     @Autowired
     public DurableTaskLeaseService(
@@ -103,6 +112,7 @@ public class DurableTaskLeaseService {
                                     repository.startAttempt(
                                             attemptId, workerId, now, leaseExpiry(now));
                             if (updated != 1) {
+                                status.setRollbackOnly();
                                 return false;
                             }
                             repository.markTaskRunning(ref.taskId(), now);
@@ -120,6 +130,15 @@ public class DurableTaskLeaseService {
         requireWorker(workerId);
         OffsetDateTime now = OffsetDateTime.now();
         return repository.heartbeat(attemptId, workerId, now, leaseExpiry(now)) == 1;
+    }
+
+    public boolean archiveHandover(UUID attemptId, String workerId) {
+        return repository.archiveHandover(attemptId, workerId);
+    }
+
+    public boolean completedSuccessfully(UUID attemptId, String workerId) {
+        requireWorker(workerId);
+        return repository.completedSuccessfully(attemptId, workerId);
     }
 
     /** Activates the lease used by an HTTP chat execution before it begins streaming. */
@@ -186,23 +205,142 @@ public class DurableTaskLeaseService {
                 0L);
     }
 
+    /** Settles archive facts without renewing or running the original execution lease. */
+    public boolean archiveCompletionPassed(
+            io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository.Job job,
+            String outputJson) {
+        AttemptRef ref = findAttempt(job.attemptId(), job.originalOwner());
+        return ref != null
+                && completionGate
+                        .evaluate(
+                                ref.expectedOutputJson(),
+                                ref.acceptanceJson(),
+                                normalizeJson(outputJson))
+                        .passed();
+    }
+
+    public boolean finishArchive(
+            io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository.Job job,
+            UUID token,
+            String outputJson,
+            String failureCode,
+            io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository archives) {
+        return Boolean.TRUE.equals(
+                transactions.execute(
+                        tx -> {
+                            OffsetDateTime now = OffsetDateTime.now();
+                            if (!archives.lockCompletion(
+                                    job,
+                                    token,
+                                    now,
+                                    properties.getFileStore().getWorkspaceArchiveMaxAttempts()))
+                                return false;
+                            AttemptRef ref = findAttempt(job.attemptId(), job.originalOwner());
+                            // Lock acquisition may wait past the deadline; authorize again while
+                            // owned.
+                            now = OffsetDateTime.now();
+                            if (!archives.lockCompletion(
+                                    job,
+                                    token,
+                                    now,
+                                    properties.getFileStore().getWorkspaceArchiveMaxAttempts())) {
+                                tx.setRollbackOnly();
+                                return false;
+                            }
+                            if (ref == null)
+                                throw new IllegalStateException(
+                                        "WORKSPACE_ARCHIVE_ATTEMPT_MISSING");
+                            String code = failureCode;
+                            String normalized = code == null ? normalizeJson(outputJson) : null;
+                            if (code == null) {
+                                if (!archives.manifestReady(job)) return false;
+                                CompletionGate.Decision decision =
+                                        completionGate.evaluate(
+                                                ref.expectedOutputJson(),
+                                                ref.acceptanceJson(),
+                                                normalized);
+                                if (!decision.passed()) code = CompletionGate.ERROR_CODE;
+                                if (decision.verificationRequired())
+                                    appendEvent(
+                                            ref,
+                                            decision.passed()
+                                                    ? "VERIFICATION_PASSED"
+                                                    : "VERIFICATION_FAILED",
+                                            verificationPayload(decision));
+                            }
+                            String status = code == null ? "SUCCEEDED" : "FAILED";
+                            if (archives.finishAttempt(job, status, code, now) != 1)
+                                throw new IllegalStateException("WORKSPACE_ARCHIVE_ATTEMPT_LOST");
+                            appendEvent(
+                                    ref,
+                                    "ATTEMPT_" + status,
+                                    payload(job.attemptId(), null, ref.attemptNo()));
+                            if (code == null) completeTask(ref, now, normalized);
+                            else
+                                retryOrStopTask(
+                                        ref,
+                                        now,
+                                        code,
+                                        "Workspace archive could not be completed",
+                                        false,
+                                        false,
+                                        0L);
+                            if (archives.finishJob(job, code == null ? "COMPLETED" : "FAILED", now)
+                                    != 1)
+                                throw new IllegalStateException(
+                                        "WORKSPACE_ARCHIVE_SETTLEMENT_LOST");
+                            return true;
+                        }));
+    }
+
     /** Reclaims Attempts whose worker stopped heartbeating. Retries always use a new Attempt row. */
     public int recoverExpired(int requestedLimit) {
+        return recoverExpired(requestedLimit, true, true);
+    }
+
+    public int recoverExpired(int requestedLimit, boolean recoverDirect, boolean recoverWorker) {
         int limit = Math.max(1, requestedLimit);
         OffsetDateTime now = OffsetDateTime.now();
-        List<ExpiredAttempt> expired = repository.findExpiredAttempts(now, limit);
+        List<ExpiredAttempt> expired =
+                repository.findScopedExpiredAttempts(
+                        now, limit, properties.getOrchestration().getDeploymentScope());
         int recovered = 0;
         for (ExpiredAttempt attempt : expired) {
+            boolean retry =
+                    attempt.workerId() != null && attempt.workerId().startsWith("direct:")
+                            ? recoverDirect
+                            : recoverWorker;
+            if (executionPolicies != null
+                    && attempt.workerId() != null
+                    && attempt.workerId().startsWith("direct:")) {
+                var ref = findAttempt(attempt.attemptId(), attempt.workerId());
+                var accepted =
+                        ref == null
+                                ? java.util.Optional
+                                        .<io.agentscope.saas.domain.orchestration
+                                                        .RunExecutionPolicy>
+                                                empty()
+                                : executionPolicies.find(ref.orgId(), ref.runId());
+                if (accepted.isPresent()) {
+                    var p = accepted.orElseThrow();
+                    retry =
+                            p.recoveryEnabled()
+                                    && "DURABLE".equals(p.recoveryMode())
+                                    && recoveryCapability.snapshot(p).canEnqueue();
+                }
+            }
             if (finish(
                     attempt.attemptId(),
                     attempt.workerId(),
                     "ABANDONED",
-                    "WORKER_LEASE_EXPIRED",
-                    "Worker heartbeat lease expired",
+                    retry ? "WORKER_LEASE_EXPIRED" : "EXECUTION_PROCESS_LOST",
+                    retry
+                            ? "Worker heartbeat lease expired"
+                            : "Execution process lost; automatic recovery is unavailable",
                     null,
                     true,
-                    true,
-                    true,
+                    retry,
+                    retry,
                     0L)) {
                 recovered++;
             }
@@ -211,7 +349,14 @@ public class DurableTaskLeaseService {
     }
 
     private List<TaskCandidate> loadReadyCandidates(OffsetDateTime now, int limit) {
-        return repository.findReadyCandidates(now, limit);
+        var capability = new RecoveryCapability(properties, null);
+        return repository.findCompatibleReadyCandidates(
+                now,
+                limit,
+                capability.deploymentScope(),
+                capability.capabilityHash(),
+                RunExecutionPolicyService.physicalArchiveLimit(properties),
+                RunExecutionPolicyService.physicalFileLimit(properties));
     }
 
     private TaskLease claimCandidate(TaskCandidate candidate, String workerId, OffsetDateTime now) {
@@ -356,6 +501,7 @@ public class DurableTaskLeaseService {
                                             now,
                                             requireExpired ? now : null);
                             if (updated != 1) {
+                                status.setRollbackOnly();
                                 return false;
                             }
                             appendEvent(
@@ -464,7 +610,17 @@ public class DurableTaskLeaseService {
             appendEvent(
                     ref,
                     recovery ? "RUN_RECOVERY_SCHEDULED" : "TASK_RETRY_SCHEDULED",
-                    payload(null, null, ref.attemptNo() + 1));
+                    JsonUtils.getJsonCodec()
+                            .toJson(
+                                    Map.of(
+                                            "attemptNo",
+                                            ref.attemptNo() + 1,
+                                            "nextRecoveryAt",
+                                            next.toString(),
+                                            "reasonCode",
+                                            errorCode == null ? "" : errorCode,
+                                            "state",
+                                            "SCHEDULED")));
             return;
         }
         String taskStatus = retryCapable ? "FAILED" : "MANUAL_ACTION";

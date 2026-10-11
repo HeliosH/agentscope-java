@@ -7,14 +7,19 @@
 package io.agentscope.saas.sandbox;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.agentscope.saas.domain.sandbox.SandboxLeaseRepository;
 import java.time.OffsetDateTime;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class SandboxLeaseServiceTest {
 
@@ -75,5 +80,112 @@ class SandboxLeaseServiceTest {
                         any(),
                         any(),
                         org.mockito.ArgumentMatchers.eq("provider unavailable"));
+    }
+
+    @Test
+    void checkpointsReleasedAttemptLeaseWhenTheDerivedContextBindingIsAbsent() {
+        var repository = org.mockito.Mockito.mock(SandboxLeaseRepository.class);
+        var lease = storedLease();
+        when(repository.findByAttemptId(lease.attemptId(), lease.orgId()))
+                .thenReturn(Optional.of(lease));
+        when(repository.checkpoint(any(), any(), any(), any())).thenReturn(1);
+        var service = new SandboxLeaseService(repository);
+        assertThat(
+                        service.checkpointForAttempt(
+                                null,
+                                lease.orgId(),
+                                lease.userId(),
+                                lease.runId(),
+                                lease.taskId(),
+                                lease.attemptId(),
+                                "uri",
+                                "version"))
+                .isTrue();
+        verify(repository).checkpoint(lease.id(), lease.orgId(), "uri", "version");
+        verify(repository, never()).activate(any(), any(), any(), any(), any(), any());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"org", "user", "run", "task", "attempt"})
+    void explicitLeaseCannotPublishACheckpointForAnotherExecution(String mismatch) {
+        var repository = org.mockito.Mockito.mock(SandboxLeaseRepository.class);
+        var lease = storedLease();
+        when(repository.findById(lease.id(), lease.orgId())).thenReturn(Optional.of(lease));
+        var service = new SandboxLeaseService(repository);
+        var context = new SandboxLeaseContext(lease.id(), lease.orgId());
+        assertThatThrownBy(
+                        () ->
+                                service.checkpointForAttempt(
+                                        context,
+                                        mismatch.equals("org") ? UUID.randomUUID() : lease.orgId(),
+                                        mismatch.equals("user")
+                                                ? UUID.randomUUID()
+                                                : lease.userId(),
+                                        mismatch.equals("run") ? UUID.randomUUID() : lease.runId(),
+                                        mismatch.equals("task")
+                                                ? UUID.randomUUID()
+                                                : lease.taskId(),
+                                        mismatch.equals("attempt")
+                                                ? UUID.randomUUID()
+                                                : lease.attemptId(),
+                                        "uri",
+                                        "version"))
+                .hasMessageContaining("SCOPE_MISMATCH");
+        verify(repository, never()).checkpoint(any(), any(), any(), any());
+    }
+
+    @Test
+    void missingExplicitBindingIsRejectedButExecutionWithoutAResourceLeaseNeedsNoUpdate() {
+        var repository = org.mockito.Mockito.mock(SandboxLeaseRepository.class);
+        var lease = storedLease();
+        var service = new SandboxLeaseService(repository);
+        assertThat(
+                        service.checkpointForAttempt(
+                                new SandboxLeaseContext(lease.id(), lease.orgId()),
+                                lease.orgId(),
+                                lease.userId(),
+                                lease.runId(),
+                                lease.taskId(),
+                                lease.attemptId(),
+                                "uri",
+                                "version"))
+                .isFalse();
+        assertThat(
+                        service.checkpointForAttempt(
+                                null,
+                                lease.orgId(),
+                                lease.userId(),
+                                lease.runId(),
+                                lease.taskId(),
+                                lease.attemptId(),
+                                "uri",
+                                "version"))
+                .isTrue();
+        verify(repository, never()).checkpoint(any(), any(), any(), any());
+    }
+
+    private static SandboxLeaseRepository.SandboxLease storedLease() {
+        var now = OffsetDateTime.now();
+        return new SandboxLeaseRepository.SandboxLease(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                "opensandbox",
+                "external",
+                "{}",
+                "test",
+                "[]",
+                null,
+                null,
+                "RELEASED",
+                "resource-owner",
+                now,
+                now,
+                now,
+                now,
+                null);
     }
 }

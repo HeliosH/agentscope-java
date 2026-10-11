@@ -656,6 +656,43 @@ public class RemoteFilesystem implements AbstractFilesystem {
         return all;
     }
 
+    /** System-resource inventory without searching user-file bodies. */
+    public List<String> systemFilePaths(RuntimeContext context, int maxFiles) {
+        if (maxFiles < 1) throw new IllegalArgumentException("Invalid system file budget");
+        List<String> ns = getNamespace(context);
+        var paths = new java.util.LinkedHashSet<String>();
+        for (String path : List.of("/AGENTS.md", "/MEMORY.md", "/tools.json")) {
+            if (store.get(ns, path) != null) paths.add(path);
+        }
+        for (String prefix : List.of("/skills/", "/subagents/", "/memory/")) {
+            int offset = 0;
+            while (true) {
+                int limit = Math.min(100, maxFiles + 1 - paths.size());
+                if (limit <= 0)
+                    throw new IllegalStateException("System workspace exceeds file budget");
+                var page = store.listKeys(ns, prefix, limit, offset);
+                for (String path : page) {
+                    if (path == null
+                            || path.length() > 1024
+                            || !path.startsWith(prefix)
+                            || !("/"
+                                            + new io.agentscope.harness.agent.sandbox
+                                                            .WorkspaceRestorePlan.WorkspaceFile(
+                                                            path, new byte[0])
+                                                    .path())
+                                    .equals(path))
+                        throw new IllegalStateException("Invalid system resource key");
+                    paths.add(path);
+                }
+                if (paths.size() > maxFiles)
+                    throw new IllegalStateException("System workspace exceeds file budget");
+                if (page.size() < limit) break;
+                offset = Math.addExact(offset, page.size());
+            }
+        }
+        return List.copyOf(paths);
+    }
+
     private static FileData convertItemToFileData(StoreItem item) {
         if (item == null || item.value() == null) {
             return null;

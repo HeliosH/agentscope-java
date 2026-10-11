@@ -24,24 +24,38 @@ public class DurableTaskLeaseRecoveryJob {
 
     private final DurableTaskLeaseService leases;
     private final SaasProperties properties;
+    private final RecoveryCapability capability;
 
     public DurableTaskLeaseRecoveryJob(DurableTaskLeaseService leases, SaasProperties properties) {
+        this(leases, properties, new RecoveryCapability(properties, null));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public DurableTaskLeaseRecoveryJob(
+            DurableTaskLeaseService leases,
+            SaasProperties properties,
+            RecoveryCapability capability) {
         this.leases = leases;
         this.properties = properties;
+        this.capability = capability;
     }
 
     @Scheduled(
             fixedDelayString = "${saas.orchestration.scheduler-recovery-fixed-delay-seconds:20}",
+            initialDelayString = "${saas.orchestration.scheduler-recovery-fixed-delay-seconds:20}",
             timeUnit = TimeUnit.SECONDS)
     public void recoverScheduled() {
-        if (!properties.getOrchestration().isEnabled()
-                || !properties.getOrchestration().isSchedulerEnabled()) {
+        if (!properties.getOrchestration().isEnabled()) {
             return;
         }
         try {
             int recovered =
                     leases.recoverExpired(
-                            Math.max(1, properties.getOrchestration().getSchedulerBatchSize()));
+                            Math.max(1, properties.getOrchestration().getSchedulerBatchSize()),
+                            capability.durableConfigured() && capability.snapshot().canEnqueue(),
+                            capability.localConsumerEnabled()
+                                    || properties.getOrchestration().getConsumerMode()
+                                            == SaasProperties.Orchestration.ConsumerMode.EXTERNAL);
             if (recovered > 0) {
                 log.warn("Recovered {} expired durable task lease(s)", recovered);
             }

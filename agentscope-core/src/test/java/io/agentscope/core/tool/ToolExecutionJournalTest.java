@@ -158,6 +158,7 @@ class ToolExecutionJournalTest {
             RuntimeException failure,
             ToolExecutionJournal.TerminalStatus expectedStatus) {
         CountDownLatch subscribed = new CountDownLatch(1);
+        CountDownLatch cancellationObserved = new CountDownLatch(1);
         AtomicBoolean cancelled = new AtomicBoolean();
         AtomicReference<ToolExecutionJournal.TerminalStatus> terminal = new AtomicReference<>();
         TestTool tool =
@@ -166,7 +167,11 @@ class ToolExecutionJournalTest {
                     public Mono<ToolResultBlock> callAsync(ToolCallParam param) {
                         return Mono.<ToolResultBlock>never()
                                 .doOnSubscribe(ignored -> subscribed.countDown())
-                                .doOnCancel(() -> cancelled.set(true));
+                                .doOnCancel(
+                                        () -> {
+                                            cancelled.set(true);
+                                            cancellationObserved.countDown();
+                                        });
                     }
                 };
         RuntimeContext context =
@@ -191,6 +196,12 @@ class ToolExecutionJournalTest {
                 .verifyThenAssertThat(TIMEOUT)
                 .hasNotDroppedErrors();
 
+        try {
+            assertTrue(cancellationObserved.await(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS));
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(interrupted);
+        }
         assertTrue(cancelled.get());
         assertEquals(expectedStatus, terminal.get());
     }

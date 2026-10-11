@@ -72,7 +72,8 @@ public interface SandboxReconciliationMapper {
             """
             SELECT id, org_id, user_id, sandbox_type, external_id
               FROM sandboxes
-             WHERE status = 'active'
+             WHERE status = 'active' AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandboxes.org_id AND pr.user_id = sandboxes.user_id AND pr.provider_id = sandboxes.sandbox_type AND pr.resource_id = sandboxes.external_id AND pr.status <> 'CLEANED')
                AND expires_at IS NOT NULL
                AND expires_at < #{staleBefore}
              ORDER BY expires_at ASC
@@ -92,7 +93,8 @@ public interface SandboxReconciliationMapper {
             """
             SELECT id, org_id, user_id, sandbox_type, external_id
               FROM sandboxes
-             WHERE status IN ('evicted', 'released')
+             WHERE status IN ('evicted', 'released') AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandboxes.org_id AND pr.user_id = sandboxes.user_id AND pr.provider_id = sandboxes.sandbox_type AND pr.resource_id = sandboxes.external_id AND pr.status <> 'CLEANED')
                AND external_id IS NOT NULL
                AND TRIM(external_id) <> ''
                AND COALESCE(backend_release_attempts, 0) < #{maxAttempts}
@@ -117,7 +119,8 @@ public interface SandboxReconciliationMapper {
             """
             SELECT id, org_id, user_id, provider_id, provider_sandbox_id
               FROM sandbox_leases
-             WHERE status IN ('PROVISIONING', 'ACTIVE', 'CHECKPOINTING')
+             WHERE status IN ('PROVISIONING', 'ACTIVE', 'CHECKPOINTING') AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandbox_leases.org_id AND pr.user_id = sandbox_leases.user_id AND pr.provider_id = sandbox_leases.provider_id AND pr.resource_id = sandbox_leases.provider_sandbox_id AND pr.status <> 'CLEANED')
                AND lease_expires_at IS NOT NULL
                AND lease_expires_at < #{staleBefore}
              ORDER BY lease_expires_at ASC
@@ -137,7 +140,8 @@ public interface SandboxReconciliationMapper {
             """
             SELECT id, org_id, user_id, provider_id, provider_sandbox_id
               FROM sandbox_leases
-             WHERE status IN ('EXPIRED', 'RELEASE_FAILED')
+             WHERE status IN ('EXPIRED', 'RELEASE_FAILED') AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandbox_leases.org_id AND pr.user_id = sandbox_leases.user_id AND pr.provider_id = sandbox_leases.provider_id AND pr.resource_id = sandbox_leases.provider_sandbox_id AND pr.status <> 'CLEANED')
                AND provider_sandbox_id IS NOT NULL
                AND TRIM(provider_sandbox_id) <> ''
                AND COALESCE(release_attempts, 0) < #{maxAttempts}
@@ -162,7 +166,8 @@ public interface SandboxReconciliationMapper {
                    expires_at = #{changedAt},
                    backend_release_status = 'pending',
                    backend_release_error = NULL
-             WHERE id = #{sandboxId} AND status = 'active'
+             WHERE id = #{sandboxId} AND status = 'active' AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandboxes.org_id AND pr.user_id = sandboxes.user_id AND pr.provider_id = sandboxes.sandbox_type AND pr.resource_id = sandboxes.external_id AND pr.status <> 'CLEANED')
             """)
     int markExpiredActiveEvicted(
             @Param("sandboxId") UUID sandboxId, @Param("changedAt") OffsetDateTime changedAt);
@@ -173,6 +178,8 @@ public interface SandboxReconciliationMapper {
                SET backend_release_status = 'terminating',
                    backend_release_error = NULL
              WHERE id = #{sandboxId}
+               AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandboxes.org_id AND pr.user_id = sandboxes.user_id AND pr.provider_id = sandboxes.sandbox_type AND pr.resource_id = sandboxes.external_id AND pr.status <> 'CLEANED')
                AND status IN ('evicted', 'released')
                AND COALESCE(backend_release_attempts, 0) < #{maxAttempts}
                AND (
@@ -189,11 +196,7 @@ public interface SandboxReconciliationMapper {
                SET backend_release_status = #{status},
                    backend_release_attempts =
                        COALESCE(backend_release_attempts, 0) + #{attemptIncrement},
-                   backend_released_at =
-                       CASE
-                           WHEN #{releasedAt} IS NOT NULL THEN #{releasedAt}
-                           ELSE backend_released_at
-                       END,
+                   backend_released_at = COALESCE(#{releasedAt}, backend_released_at),
                    backend_release_error = #{error}
              WHERE id = #{sandboxId}
             """)
@@ -211,6 +214,8 @@ public interface SandboxReconciliationMapper {
                    lease_expires_at = #{changedAt},
                    release_error = NULL
              WHERE id = #{leaseId}
+               AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandbox_leases.org_id AND pr.user_id = sandbox_leases.user_id AND pr.provider_id = sandbox_leases.provider_id AND pr.resource_id = sandbox_leases.provider_sandbox_id AND pr.status <> 'CLEANED')
                AND status IN ('PROVISIONING', 'ACTIVE', 'CHECKPOINTING')
                AND lease_expires_at IS NOT NULL
                AND lease_expires_at < #{changedAt}
@@ -224,6 +229,8 @@ public interface SandboxReconciliationMapper {
                SET status = 'RELEASING',
                    release_error = NULL
              WHERE id = #{leaseId}
+               AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandbox_leases.org_id AND pr.user_id = sandbox_leases.user_id AND pr.provider_id = sandbox_leases.provider_id AND pr.resource_id = sandbox_leases.provider_sandbox_id AND pr.status <> 'CLEANED')
                AND status IN ('EXPIRED', 'RELEASE_FAILED')
                AND COALESCE(release_attempts, 0) < #{maxAttempts}
             """)
@@ -236,11 +243,7 @@ public interface SandboxReconciliationMapper {
                SET status = #{status},
                    release_attempts =
                        COALESCE(release_attempts, 0) + #{attemptIncrement},
-                   released_at =
-                       CASE
-                           WHEN #{releasedAt} IS NOT NULL THEN #{releasedAt}
-                           ELSE released_at
-                       END,
+                   released_at = COALESCE(#{releasedAt}, released_at),
                    release_error = #{error}
              WHERE id = #{leaseId}
                AND status = 'RELEASING'

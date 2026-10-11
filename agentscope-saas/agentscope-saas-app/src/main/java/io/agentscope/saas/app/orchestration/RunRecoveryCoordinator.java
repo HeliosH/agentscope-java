@@ -17,34 +17,108 @@ import org.springframework.stereotype.Component;
 public class RunRecoveryCoordinator {
 
     private final SaasProperties.ModelStreamRecovery policy;
-    private final boolean durableRecoveryAvailable;
+    private final RecoveryCapability capability;
+    private io.agentscope.saas.domain.modelinvocation.ModelInvocationRepository invocations;
+    private RunExecutionPolicyService executionPolicies;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureExecutionPolicies(RunExecutionPolicyService policies) {
+        executionPolicies = policies;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureInvocationLedger(
+            io.agentscope.saas.domain.modelinvocation.ModelInvocationRepository invocations) {
+        this.invocations = invocations;
+    }
 
     public RunRecoveryCoordinator(SaasProperties properties) {
+        this(properties, new RecoveryCapability(properties, null));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public RunRecoveryCoordinator(SaasProperties properties, RecoveryCapability capability) {
         this.policy =
                 properties != null && properties.getModel() != null
                         ? properties.getModel().getStreamRecovery()
                         : new SaasProperties.ModelStreamRecovery();
-        boolean workerEnabled =
-                properties != null
-                        && properties.getOrchestration().isEnabled()
-                        && properties.getOrchestration().isSchedulerEnabled();
-        this.durableRecoveryAvailable =
-                policy.isEnabled()
-                        && policy.getMode() == SaasProperties.ModelStreamRecovery.Mode.DURABLE
-                        && workerEnabled;
-        if (policy.isEnabled()
-                && policy.getMode() == SaasProperties.ModelStreamRecovery.Mode.DURABLE
-                && !workerEnabled) {
-            throw new IllegalArgumentException(
-                    "DURABLE model recovery requires orchestration and scheduler enabled");
-        }
+        this.capability = capability;
     }
 
     public boolean canScheduleDurableRecovery() {
-        return durableRecoveryAvailable;
+        return capability.durableConfigured() && capability.snapshot().canEnqueue();
+    }
+
+    public boolean canScheduleDurableRecovery(io.agentscope.core.agent.RuntimeContext context) {
+        var accepted =
+                context == null
+                        ? null
+                        : context.get(
+                                io.agentscope.saas.domain.orchestration.RunExecutionPolicy.class);
+        if (accepted != null) return capability.snapshot(accepted).canEnqueue();
+        var effective =
+                context == null || executionPolicies == null
+                        ? policy
+                        : policyFor(
+                                io.agentscope.saas.app.model.ModelInvocationService.scope(context));
+        return effective.isEnabled()
+                && effective.getMode() == SaasProperties.ModelStreamRecovery.Mode.DURABLE
+                && capability.snapshot(true).canEnqueue();
+    }
+
+    public RecoveryCapability.Snapshot consumerStatus() {
+        return capability.snapshot();
+    }
+
+    RecoveryCapability capability() {
+        return capability;
+    }
+
+    public Decision decide(
+            Throwable error, int currentAttempt, io.agentscope.core.agent.RuntimeContext context) {
+        if (context == null) return decide(error, currentAttempt);
+        return decide(
+                error,
+                currentAttempt,
+                io.agentscope.saas.app.model.ModelInvocationService.scope(context));
+    }
+
+    public Decision decide(
+            Throwable error,
+            int currentAttempt,
+            io.agentscope.saas.domain.modelinvocation.ModelInvocationRepository.Scope scope) {
+        var effective = policyFor(scope);
+        if (effective.isEnabled()
+                && invocations != null
+                && scope != null
+                && scope.runId() != null
+                && scope.taskId() != null
+                && !isResultSubmissionBoundary(error)
+                && classify(error) != null) {
+            long failures = invocations.failedReasoningCalls(scope);
+            // Task attempt numbers also include successful coordinator continuations.
+            if (failures > 0) currentAttempt = (int) Math.min(Integer.MAX_VALUE, failures);
+        }
+        return decide(error, currentAttempt, effective);
+    }
+
+    private SaasProperties.ModelStreamRecovery policyFor(
+            io.agentscope.saas.domain.modelinvocation.ModelInvocationRepository.Scope scope) {
+        return executionPolicies == null
+                        || scope == null
+                        || scope.orgId() == null
+                        || scope.runId() == null
+                ? policy
+                : executionPolicies.recoveryPolicy(scope.orgId(), scope.runId());
     }
 
     public Decision decide(Throwable error, int currentAttempt) {
+        return decide(error, currentAttempt, policy);
+    }
+
+    private Decision decide(
+            Throwable error, int currentAttempt, SaasProperties.ModelStreamRecovery policy) {
+        if (isResultSubmissionBoundary(error)) return Decision.notRecoverable();
         Failure failure = classify(error);
         int maxAttempts = Math.max(1, policy.getMaxAttempts());
         if (!policy.isEnabled() || failure == null) {
@@ -68,14 +142,35 @@ public class RunRecoveryCoordinator {
                 failure.message(),
                 nextAttempt,
                 maxAttempts,
-                recoveryDelayMillis(currentAttempt));
+                recoveryDelayMillis(currentAttempt, policy));
+    }
+
+    private boolean isResultSubmissionBoundary(Throwable error) {
+        for (int depth = 0; error != null && depth < 12; depth++, error = error.getCause()) {
+            if (error instanceof io.agentscope.saas.app.workspace.WorkspaceArchiveRejectedException
+                    || error
+                            instanceof
+                            io.agentscope.saas.app.workspace.WorkspaceArchiveDeferredException
+                    || error instanceof io.agentscope.saas.orchestration.TaskResultCommitException)
+                return true;
+            if (error.getCause() == error) break;
+        }
+        return false;
     }
 
     private Failure classify(Throwable error) {
         Throwable current = error;
         int depth = 0;
         while (current != null && depth++ < 12) {
+            if (current
+                            instanceof
+                            io.agentscope.saas.app.workspace.WorkspaceArchiveRejectedException
+                    || current
+                            instanceof
+                            io.agentscope.saas.app.workspace.WorkspaceArchiveDeferredException)
+                return null;
             if (current instanceof ModelStreamInterruptedException) {
+                if (hasPermanentClientError(current)) return null;
                 return new Failure(
                         "MODEL_STREAM_INTERRUPTED", "Model stream ended after partial output");
             }
@@ -120,14 +215,22 @@ public class RunRecoveryCoordinator {
         return false;
     }
 
-    private long recoveryDelayMillis(int failedAttempt) {
+    private long recoveryDelayMillis(int failedAttempt, SaasProperties.ModelStreamRecovery policy) {
         long initial = Math.max(0L, policy.getInitialBackoffMillis());
         long maximum = Math.max(initial, policy.getMaxBackoffMillis());
         long delay = initial;
         for (int i = 1; i < failedAttempt && delay < maximum; i++) {
             delay = delay > maximum / 2 ? maximum : Math.min(maximum, delay * 2);
         }
-        return delay;
+        if (delay <= 0) return 0;
+        return Math.min(
+                maximum,
+                Math.max(
+                        1,
+                        (long)
+                                (delay
+                                        * java.util.concurrent.ThreadLocalRandom.current()
+                                                .nextDouble(0.75, 1.25))));
     }
 
     private static String message(Throwable error) {

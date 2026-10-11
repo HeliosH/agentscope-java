@@ -76,12 +76,62 @@ else
   ok "OpenSandbox user task smoke skipped by SANDBOX_GATE_RUN_SMOKE=false"
 fi
 
+if [ "${SANDBOX_GATE_WORKSPACE_ARCHIVE:-false}" = "true" ]; then
+  BASE="$BASE" python3 "$SCRIPT_DIR/workspace-archive-smoke.py"
+  if [ $? -eq 0 ]; then
+    ok "workspace archive lease recovery smoke passed"
+  else
+    bad "workspace archive lease recovery smoke failed"
+    exit 1
+  fi
+fi
+
+if [ "${SANDBOX_GATE_RESULT_COMMIT:-false}" = "true" ]; then
+  BASE="$BASE" python3 "$SCRIPT_DIR/result-commit-smoke.py"
+  if [ $? -eq 0 ]; then
+    ok "computed result submission recovery smoke passed"
+  else
+    bad "computed result submission recovery smoke failed"
+    exit 1
+  fi
+fi
+
+if [ "${SANDBOX_GATE_WORKSPACE_SOURCE:-false}" = "true" ]; then
+  BASE="$BASE" python3 "$SCRIPT_DIR/workspace-archive-smoke.py" --missing-bytes
+  if [ $? -eq 0 ]; then
+    ok "immutable workspace source recovery smoke passed"
+  else
+    bad "immutable workspace source recovery smoke failed"
+    exit 1
+  fi
+fi
+
 if [ "${SANDBOX_GATE_SESSION_GENERATION:-false}" = "true" ]; then
   BASE="$BASE" python3 "$SCRIPT_DIR/session-generation-smoke.py"
   if [ $? -eq 0 ]; then
     ok "session generation revocation smoke passed"
   else
     bad "session generation revocation smoke failed"
+    exit 1
+  fi
+fi
+
+if [ "${SANDBOX_GATE_WORKSPACE_RETENTION:-false}" = "true" ]; then
+  BASE="$BASE" python3 "$SCRIPT_DIR/workspace-retention-smoke.py"
+  if [ $? -eq 0 ]; then
+    ok "provider retention outage recovery smoke passed"
+  else
+    bad "provider retention outage recovery smoke failed"
+    exit 1
+  fi
+fi
+
+if [ "${SANDBOX_GATE_WORKSPACE_INPUT:-false}" = "true" ]; then
+  BASE="$BASE" python3 "$SCRIPT_DIR/workspace-input-smoke.py"
+  if [ $? -eq 0 ]; then
+    ok "immutable workspace input recovery smoke passed"
+  else
+    bad "immutable workspace input recovery smoke failed"
     exit 1
   fi
 fi

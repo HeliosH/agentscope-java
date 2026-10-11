@@ -9,6 +9,7 @@ import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.domain.workspace.FilePublicationRepository;
 import io.agentscope.saas.domain.workspace.FilePublicationRepository.Intent;
 import io.agentscope.saas.domain.workspace.FilePublicationRepository.Publication;
+import io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository.Authority;
 import java.time.OffsetDateTime;
 import java.util.Objects;
 import java.util.UUID;
@@ -37,13 +38,16 @@ public class FilePublicationCoordinator {
     private final TransactionTemplate shortTransaction;
     private final TransactionTemplate outsideTransaction;
     private final SaasProperties properties;
+    private final FileArtifactReceiptService artifactReceipts;
 
     public FilePublicationCoordinator(
             FilePublicationRepository publications,
             @Qualifier("transactionManager") PlatformTransactionManager manager,
-            SaasProperties properties) {
+            SaasProperties properties,
+            FileArtifactReceiptService artifactReceipts) {
         this.publications = publications;
         this.properties = properties;
+        this.artifactReceipts = Objects.requireNonNull(artifactReceipts);
         if (properties.getFileStore().getPublicationLeaseSeconds() < 1)
             throw new IllegalArgumentException("Invalid file publication lease");
         var cfg = properties.getFileStore();
@@ -69,6 +73,15 @@ public class FilePublicationCoordinator {
             Function<Publication, Intent> intentFactory,
             Consumer<Publication> transfer,
             Function<Publication, FileCatalogService.FileRecord> catalog) {
+        return publish(admission, intentFactory, transfer, catalog, null);
+    }
+
+    public FileCatalogService.FileRecord publish(
+            Supplier<Publication> admission,
+            Function<Publication, Intent> intentFactory,
+            Consumer<Publication> transfer,
+            Function<Publication, FileCatalogService.FileRecord> catalog,
+            Authority authority) {
         if (TransactionSynchronizationManager.isActualTransactionActive())
             throw new IllegalStateException("File publication must start outside a transaction");
         return outsideTransaction.execute(
@@ -147,6 +160,7 @@ public class FilePublicationCoordinator {
                                                     OffsetDateTime.now())
                                             != 1)
                                         throw new IllegalStateException("FILE_PUBLICATION_EXPIRED");
+                                    artifactReceipts.commit(current, receipt);
                                     return receipt;
                                 });
                     } catch (RuntimeException error) {
@@ -177,12 +191,17 @@ public class FilePublicationCoordinator {
                         }
                         try {
                             shortTransaction.executeWithoutResult(
-                                    tx ->
+                                    tx -> {
+                                        if (authority != null)
+                                            publications.abortArchive(
+                                                    publication, authority, OffsetDateTime.now());
+                                        else
                                             publications.abort(
                                                     publication.orgId(),
                                                     publication.userId(),
                                                     publication.id(),
-                                                    publication.leaseUntil()));
+                                                    publication.leaseUntil());
+                                    });
                         } catch (RuntimeException unavailable) {
                             // The durable reservation remains discoverable by expiry after DB
                             // recovery.
@@ -237,6 +256,7 @@ public class FilePublicationCoordinator {
                     if (!p.objectKey().equals(receipt.objectKey())
                             || !p.backend().equals(receipt.storageBackend()))
                         throw new IllegalStateException("FILE_PUBLICATION_SOURCE_CHANGED");
+                    artifactReceipts.commit(p, receipt);
                     return receipt;
                 });
     }
@@ -246,10 +266,39 @@ public class FilePublicationCoordinator {
     }
 
     public void requireExecution(Publication p, Intent i) {
+        requireExecution(p, i, null);
+    }
+
+    public void requireExecution(Publication p, Intent i, Authority authority) {
         if (i != null
                 && i.execution() != null
-                && !publications.lockExecution(p, i, OffsetDateTime.now()))
+                && !(authority == null
+                        ? publications.lockExecution(p, i, OffsetDateTime.now())
+                        : publications.lockArchiveExecution(p, i, authority, OffsetDateTime.now())))
             throw new io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException();
+    }
+
+    public void bindArchive(Publication p, Intent i, Authority authority) {
+        if (!publications.bindArchivePublication(p, i, authority, OffsetDateTime.now()))
+            throw new io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException();
+    }
+
+    public boolean claimArchive(
+            Publication p, Authority authority, OffsetDateTime until, Runnable admission) {
+        return Boolean.TRUE.equals(
+                shortTransaction.execute(
+                        tx -> {
+                            admission.run();
+                            return publications.reclaimArchive(
+                                            p, authority, OffsetDateTime.now(), until)
+                                    == 1;
+                        }));
+    }
+
+    public void requireIdlePathExcept(UUID org, UUID user, String path, UUID excluding) {
+        if (publications.pathBusyExcept(org, user, path, excluding, OffsetDateTime.now()))
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT, "File publication already in progress");
     }
 
     public long reserved(UUID org, UUID user, UUID excluding) {
@@ -260,6 +309,17 @@ public class FilePublicationCoordinator {
         if (publications.pathBusy(org, user, path, OffsetDateTime.now()))
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT, "File publication already in progress");
+    }
+
+    public void requireIdlePath(UUID org, UUID user, String path, Authority authority) {
+        if (authority == null) requireIdlePath(org, user, path);
+        else {
+            var replacing =
+                    publications.archiveReplacement(
+                            org, user, path, authority, OffsetDateTime.now());
+            if (replacing.isPresent()) requireIdlePathExcept(org, user, path, replacing.get());
+            else requireIdlePath(org, user, path);
+        }
     }
 
     public OffsetDateTime leaseUntil() {

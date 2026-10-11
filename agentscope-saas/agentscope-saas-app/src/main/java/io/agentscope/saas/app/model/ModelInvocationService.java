@@ -367,6 +367,29 @@ public class ModelInvocationService
                                                                 "MODEL_INVOCATION_SCOPE_EXPIRED"));
                                             GenerateOptions.Builder capBuilder =
                                                     GenerateOptions.builder();
+                                            Duration providerTimeout = remaining;
+                                            if (options != null
+                                                    && options.getExecutionConfig() != null
+                                                    && options.getExecutionConfig().getTimeout()
+                                                            != null) {
+                                                var requestedTimeout =
+                                                        options.getExecutionConfig().getTimeout();
+                                                if (requestedTimeout.isNegative()
+                                                        || requestedTimeout.isZero())
+                                                    throw new IllegalArgumentException(
+                                                            "Model request timeout must be"
+                                                                    + " positive");
+                                                if (requestedTimeout.compareTo(remaining) < 0)
+                                                    providerTimeout = requestedTimeout;
+                                            }
+                                            // The invocation receipt owns one provider attempt;
+                                            // retries must re-enter the shared durable budget.
+                                            capBuilder.executionConfig(
+                                                    io.agentscope.core.model.ExecutionConfig
+                                                            .builder()
+                                                            .maxAttempts(1)
+                                                            .timeout(providerTimeout)
+                                                            .build());
                                             if (options != null
                                                     && options.getMaxCompletionTokens() != null)
                                                 capBuilder.maxCompletionTokens(
@@ -375,8 +398,19 @@ public class ModelInvocationService
                                             GenerateOptions caps = capBuilder.build();
                                             var requestOptions =
                                                     GenerateOptions.mergeOptions(caps, options);
-                                            return delegate.stream(messages, tools, requestOptions)
-                                                    .doOnNext(usage::add)
+                                            var emitted =
+                                                    new java.util.concurrent.atomic.AtomicBoolean();
+                                            return Flux.defer(
+                                                            () ->
+                                                                    delegate.stream(
+                                                                            messages,
+                                                                            tools,
+                                                                            requestOptions))
+                                                    .doOnNext(
+                                                            response -> {
+                                                                emitted.set(true);
+                                                                usage.add(response);
+                                                            })
                                                     .takeUntilOther(
                                                             Mono.delay(remaining)
                                                                     .then(
@@ -386,7 +420,13 @@ public class ModelInvocationService
                                                                                                 + " invocation"
                                                                                                 + " exceeded"
                                                                                                 + " total"
-                                                                                                + " deadline"))));
+                                                                                                + " deadline"))))
+                                                    .onErrorMap(
+                                                            error ->
+                                                                    providerFailure(
+                                                                            error,
+                                                                            emitted.get(),
+                                                                            profile.modelId()));
                                         },
                                         admitted ->
                                                 settle(admitted, usage, "SUCCEEDED", null)
@@ -453,7 +493,24 @@ public class ModelInvocationService
         }
     }
 
-    private static Scope scope(RuntimeContext context) {
+    private static Throwable providerFailure(Throwable error, boolean emitted, String model) {
+        if (error instanceof io.agentscope.core.model.ModelStreamInterruptedException) return error;
+        if (error instanceof io.agentscope.core.model.exception.OpenAIException
+                || error instanceof io.agentscope.core.model.transport.HttpTransportException
+                || error instanceof ModelException) {
+            if (emitted)
+                return new io.agentscope.core.model.ModelStreamInterruptedException(
+                        "Model stream interrupted after partial output",
+                        error,
+                        model,
+                        "enterprise-runtime");
+            if (!(error instanceof ModelException))
+                return new ModelException("Model provider request failed", error);
+        }
+        return error;
+    }
+
+    public static Scope scope(RuntimeContext context) {
         TenantContext tenant = TenantContext.from(context);
         if (tenant == null || tenant.orgId() == null || tenant.userId() == null)
             throw new IllegalArgumentException("Authenticated model invocation scope is required");

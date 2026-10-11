@@ -9,6 +9,7 @@ package io.agentscope.saas.app.support;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
@@ -17,6 +18,15 @@ import org.apache.ibatis.annotations.Update;
 
 /** MyBatis-only database fixtures and assertions shared by persistence integration tests. */
 public interface TestDatabaseMapper {
+
+    @Update(
+            """
+            CREATE TABLE workspace_archive_jobs (id UUID PRIMARY KEY, org_id UUID NOT NULL,
+                run_id UUID, task_id UUID, attempt_id UUID NOT NULL, original_owner VARCHAR(255),
+                status VARCHAR(32) NOT NULL, prepared BOOLEAN NOT NULL DEFAULT FALSE)
+            """)
+    void createLeaseArchiveSchema();
+
     @org.apache.ibatis.annotations.Update(
             "UPDATE file_publications SET lease_until = #{past}, eligible_at = #{past},"
                     + " recovery_due_at = #{past} WHERE id = #{id}")
@@ -207,6 +217,8 @@ public interface TestDatabaseMapper {
         createTierPolicies();
         createUsers();
         createAssistantRuns();
+        addAcceptedPolicyVersion();
+        createAcceptedPolicyClaimSchema();
         createTaskNodes();
         createTaskEdges();
         createRunArtifacts();
@@ -216,6 +228,21 @@ public interface TestDatabaseMapper {
         createRunEvents();
         createLeaseOutbox();
     }
+
+    @Update(
+            """
+            CREATE TABLE run_execution_policies (run_id UUID PRIMARY KEY, org_id UUID,
+                deployment_scope VARCHAR(128), capability_hash VARCHAR(64), max_files INTEGER,
+                max_file_bytes BIGINT, max_workspace_bytes BIGINT)
+            """)
+    void createAcceptedPolicyClaimSchema();
+
+    @Update("ALTER TABLE assistant_runs ADD COLUMN execution_policy_version INTEGER")
+    void addAcceptedPolicyVersion();
+
+    @org.apache.ibatis.annotations.Delete(
+            "DELETE FROM run_execution_policies WHERE org_id = #{orgId} AND run_id = #{runId}")
+    int deleteAcceptedPolicyForProbe(@Param("orgId") UUID orgId, @Param("runId") UUID runId);
 
     @Insert(
             "INSERT INTO tier_policies (tier, max_sandboxes, monthly_token_quota) "
@@ -443,6 +470,7 @@ public interface TestDatabaseMapper {
                 backend_release_status VARCHAR(32),
                 backend_release_attempts INTEGER NOT NULL DEFAULT 0,
                 backend_released_at TIMESTAMP WITH TIME ZONE,
+                retention_held BOOLEAN NOT NULL DEFAULT FALSE,
                 backend_release_error VARCHAR(2000))
             """)
     void createSandboxes();
@@ -460,9 +488,19 @@ public interface TestDatabaseMapper {
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 released_at TIMESTAMP WITH TIME ZONE,
                 release_error VARCHAR(2000),
+                retention_held BOOLEAN NOT NULL DEFAULT FALSE,
                 release_attempts INTEGER NOT NULL DEFAULT 0)
             """)
     void createReconciliationSandboxLeases();
+
+    @Update(
+            "CREATE TABLE workspace_provider_retentions (org_id UUID NOT NULL, user_id UUID NOT"
+                + " NULL, provider_id VARCHAR(32), resource_id VARCHAR(255), status VARCHAR(32))")
+    void createReconciliationRetentionGuard();
+
+    @Update("UPDATE sandboxes SET agent_id = #{agent}, session_id = #{session} WHERE id = #{id}")
+    int bindMaintenanceSandbox(
+            @Param("id") UUID id, @Param("agent") UUID agent, @Param("session") String session);
 
     @Insert(
             """
@@ -779,6 +817,20 @@ public interface TestDatabaseMapper {
     @Select("SELECT COUNT(*) FROM chat_messages WHERE source_run_id = #{runId}")
     int countRunMessages(UUID runId);
 
+    @Select(
+            "SELECT CAST(content_json AS VARCHAR) FROM chat_messages WHERE source_run_id ="
+                    + " #{runId}")
+    List<String> runMessageContents(UUID runId);
+
+    @Update("UPDATE assistant_runs SET trigger_message_id = #{messageId} WHERE id = #{id}")
+    int setRunTrigger(@Param("id") UUID id, @Param("messageId") UUID messageId);
+
+    @Update("UPDATE file_attachments SET logical_path = #{path} WHERE id = #{id}")
+    int attachmentPath(@Param("id") UUID id, @Param("path") String path);
+
+    @Update("UPDATE workspace_sources SET eligible_at = #{at} WHERE id = #{id}")
+    int sourceEligible(@Param("id") UUID id, @Param("at") OffsetDateTime at);
+
     @Select("SELECT CURRENT_USER")
     String currentUser();
 
@@ -838,6 +890,61 @@ public interface TestDatabaseMapper {
 
     @Update("UPDATE files SET current_version_id = #{versionId} WHERE id = #{id}")
     int updateCurrentFileVersion(@Param("id") UUID id, @Param("versionId") UUID versionId);
+
+    @Select(
+            "SELECT COUNT(*) FROM orchestration_outbox WHERE org_id = #{orgId} AND aggregate_type ="
+                    + " 'run_artifact' AND event_type = 'workspace_file_published'")
+    long countArtifactPublicationEvents(@Param("orgId") UUID orgId);
+
+    @Select(
+            "SELECT COUNT(*) FROM file_publications WHERE org_id = #{orgId} AND run_id = #{runId}"
+                    + " AND artifact_id IS NOT NULL AND receipt_event_id IS NOT NULL")
+    long countLinkedArtifactReceipts(@Param("orgId") UUID orgId, @Param("runId") UUID runId);
+
+    @Delete("DELETE FROM orchestration_outbox WHERE id = #{id} AND org_id = #{orgId}")
+    int deleteArtifactReceiptEvent(@Param("orgId") UUID orgId, @Param("id") UUID id);
+
+    @Update("UPDATE file_versions SET sha256 = #{sha256} WHERE id = #{id} AND org_id = #{orgId}")
+    int corruptArtifactVersionDigest(
+            @Param("orgId") UUID orgId, @Param("id") UUID id, @Param("sha256") String sha256);
+
+    @Select(
+            "SELECT status FROM workspace_publication_manifests WHERE org_id = #{orgId} AND id ="
+                    + " #{id}")
+    String workspaceManifestStatus(@Param("orgId") UUID orgId, @Param("id") UUID id);
+
+    @Update(
+            "UPDATE workspace_archive_jobs SET lease_until = #{now}, next_attempt_at = #{now} WHERE"
+                    + " id = #{id}")
+    int expireArchiveLease(@Param("id") UUID id, @Param("now") OffsetDateTime now);
+
+    @Update(
+            "UPDATE workspace_archive_jobs SET deadline_at = #{now}, next_attempt_at = #{now} WHERE"
+                    + " id = #{id}")
+    int expireArchiveDeadline(@Param("id") UUID id, @Param("now") OffsetDateTime now);
+
+    @Update("UPDATE workspace_archive_jobs SET next_attempt_at = #{now} WHERE id = #{id}")
+    int archiveDue(@Param("id") UUID id, @Param("now") OffsetDateTime now);
+
+    @Update(
+            "UPDATE chat_sessions SET execution_generation = execution_generation + 1 WHERE id ="
+                    + " #{id}")
+    int advanceSessionGeneration(@Param("id") UUID id);
+
+    @Select("SELECT status FROM run_attempts WHERE id = #{id}")
+    String archiveAttemptStatus(@Param("id") UUID id);
+
+    @Select("SELECT COUNT(*) FROM run_attempts WHERE task_id = #{id}")
+    int taskAttemptCount(@Param("id") UUID id);
+
+    @Update(
+            "UPDATE workspace_manifest_entries SET sha256 = #{sha256} WHERE org_id = #{orgId} AND"
+                    + " manifest_id = #{id} AND logical_path = #{path}")
+    int corruptWorkspaceManifestEntry(
+            @Param("orgId") UUID orgId,
+            @Param("id") UUID id,
+            @Param("path") String path,
+            @Param("sha256") String sha256);
 
     record OutboxState(
             int attempts,

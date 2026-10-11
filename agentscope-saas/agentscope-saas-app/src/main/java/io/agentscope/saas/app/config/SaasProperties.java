@@ -91,6 +91,43 @@ public class SaasProperties {
         private int bodyGcMaxAttempts = 10;
         private long maxBodyUserBytes = 5368709120L;
         private long maxBodyOrgBytes = 107374182400L;
+        private boolean bodyFallbackEnabled = true;
+        private long bodyFallbackMaxBytes = 1048576;
+        private long bodyFallbackMaxUserBytes = 16777216;
+        private long bodyFallbackMaxOrgBytes = 134217728;
+
+        public boolean isBodyFallbackEnabled() {
+            return bodyFallbackEnabled;
+        }
+
+        public void setBodyFallbackEnabled(boolean value) {
+            bodyFallbackEnabled = value;
+        }
+
+        public long getBodyFallbackMaxBytes() {
+            return bodyFallbackMaxBytes;
+        }
+
+        public void setBodyFallbackMaxBytes(long value) {
+            bodyFallbackMaxBytes = value;
+        }
+
+        public long getBodyFallbackMaxUserBytes() {
+            return bodyFallbackMaxUserBytes;
+        }
+
+        public void setBodyFallbackMaxUserBytes(long value) {
+            bodyFallbackMaxUserBytes = value;
+        }
+
+        public long getBodyFallbackMaxOrgBytes() {
+            return bodyFallbackMaxOrgBytes;
+        }
+
+        public void setBodyFallbackMaxOrgBytes(long value) {
+            bodyFallbackMaxOrgBytes = value;
+        }
+
         private boolean lightweightCheckpointsEnabled = true;
         private long checkpointInlineMaxBytes = 65536;
         private long checkpointMaxJsonBytes = 1048576;
@@ -780,6 +817,75 @@ public class SaasProperties {
         private long publicationRecoveryDeadlineSeconds = 900L;
         private int publicationRecoveryMaxAttempts = 3;
         private long publicationRecoveryRetrySeconds = 30L;
+        private boolean workspaceArchiveEnabled = true;
+        private boolean workspaceCompletionHandoverEnabled = true;
+
+        public boolean isWorkspaceCompletionHandoverEnabled() {
+            return workspaceCompletionHandoverEnabled;
+        }
+
+        public void setWorkspaceCompletionHandoverEnabled(boolean value) {
+            workspaceCompletionHandoverEnabled = value;
+        }
+
+        private long workspaceArchiveLeaseSeconds = 60L;
+        private long workspaceArchiveDeadlineSeconds = 900L;
+        private int workspaceArchiveMaxAttempts = 8;
+        private long workspaceArchiveRetrySeconds = 5L;
+        private boolean workspaceSourceEnabled = true;
+        private long workspaceSourceMaxBytes = 320L * MIB;
+        private long workspaceSourceMaxOrgBytes = 2L * GIB;
+        private boolean workspaceProviderRetentionEnabled = true;
+        private long workspaceProviderRetentionSeconds = 900;
+        private int workspaceProviderRetentionMaxOrgResources = 4;
+
+        public boolean isWorkspaceProviderRetentionEnabled() {
+            return workspaceProviderRetentionEnabled;
+        }
+
+        public void setWorkspaceProviderRetentionEnabled(boolean value) {
+            workspaceProviderRetentionEnabled = value;
+        }
+
+        public long getWorkspaceProviderRetentionSeconds() {
+            return workspaceProviderRetentionSeconds;
+        }
+
+        public void setWorkspaceProviderRetentionSeconds(long value) {
+            workspaceProviderRetentionSeconds = value;
+        }
+
+        public int getWorkspaceProviderRetentionMaxOrgResources() {
+            return workspaceProviderRetentionMaxOrgResources;
+        }
+
+        public void setWorkspaceProviderRetentionMaxOrgResources(int value) {
+            workspaceProviderRetentionMaxOrgResources = value;
+        }
+
+        public boolean isWorkspaceSourceEnabled() {
+            return workspaceSourceEnabled;
+        }
+
+        public void setWorkspaceSourceEnabled(boolean value) {
+            workspaceSourceEnabled = value;
+        }
+
+        public long getWorkspaceSourceMaxBytes() {
+            return workspaceSourceMaxBytes;
+        }
+
+        public void setWorkspaceSourceMaxBytes(long value) {
+            workspaceSourceMaxBytes = value;
+        }
+
+        public long getWorkspaceSourceMaxOrgBytes() {
+            return workspaceSourceMaxOrgBytes;
+        }
+
+        public void setWorkspaceSourceMaxOrgBytes(long value) {
+            workspaceSourceMaxOrgBytes = value;
+        }
 
         /** Executable containers blocked before they enter the workspace. */
         private List<String> blockedExtensions = List.of("exe", "dll", "com", "msi", "apk", "dmg");
@@ -891,6 +997,46 @@ public class SaasProperties {
 
         public long getPublicationRecoveryRetrySeconds() {
             return publicationRecoveryRetrySeconds;
+        }
+
+        public boolean isWorkspaceArchiveEnabled() {
+            return workspaceArchiveEnabled;
+        }
+
+        public void setWorkspaceArchiveEnabled(boolean value) {
+            workspaceArchiveEnabled = value;
+        }
+
+        public long getWorkspaceArchiveLeaseSeconds() {
+            return workspaceArchiveLeaseSeconds;
+        }
+
+        public void setWorkspaceArchiveLeaseSeconds(long value) {
+            workspaceArchiveLeaseSeconds = value;
+        }
+
+        public long getWorkspaceArchiveDeadlineSeconds() {
+            return workspaceArchiveDeadlineSeconds;
+        }
+
+        public void setWorkspaceArchiveDeadlineSeconds(long value) {
+            workspaceArchiveDeadlineSeconds = value;
+        }
+
+        public int getWorkspaceArchiveMaxAttempts() {
+            return workspaceArchiveMaxAttempts;
+        }
+
+        public void setWorkspaceArchiveMaxAttempts(int value) {
+            workspaceArchiveMaxAttempts = value;
+        }
+
+        public long getWorkspaceArchiveRetrySeconds() {
+            return workspaceArchiveRetrySeconds;
+        }
+
+        public void setWorkspaceArchiveRetrySeconds(long value) {
+            workspaceArchiveRetrySeconds = value;
         }
 
         public void setPublicationRecoveryRetrySeconds(long seconds) {
@@ -1076,6 +1222,33 @@ public class SaasProperties {
     public static class Sandbox {
         private int transferMaxFiles = 5_000;
         private long transferMaxBytes = 256L * 1024L * 1024L;
+        private int transferBufferBytes = 1024 * 1024;
+        private int maxConcurrentTransfers = 2;
+        private long maxSpoolBytes = 1024L * 1024 * 1024;
+
+        public int getTransferBufferBytes() {
+            return transferBufferBytes;
+        }
+
+        public void setTransferBufferBytes(int value) {
+            transferBufferBytes = value;
+        }
+
+        public int getMaxConcurrentTransfers() {
+            return maxConcurrentTransfers;
+        }
+
+        public void setMaxConcurrentTransfers(int value) {
+            maxConcurrentTransfers = value;
+        }
+
+        public long getMaxSpoolBytes() {
+            return maxSpoolBytes;
+        }
+
+        public void setMaxSpoolBytes(long value) {
+            maxSpoolBytes = value;
+        }
 
         public int getTransferMaxFiles() {
             return transferMaxFiles;
@@ -2028,6 +2201,48 @@ public class SaasProperties {
 
     /** Durable Run control-plane settings. Scheduler and durable subagents are phased in separately. */
     public static class Orchestration {
+        public enum ConsumerMode {
+            LOCAL,
+            EXTERNAL
+        }
+
+        private ConsumerMode consumerMode = ConsumerMode.LOCAL;
+        private String deploymentScope = "local";
+        private long consumerHeartbeatTtlSeconds = 90;
+        private long recoveryQueueSlaSeconds = 300;
+
+        public ConsumerMode getConsumerMode() {
+            return consumerMode;
+        }
+
+        public void setConsumerMode(ConsumerMode value) {
+            consumerMode = java.util.Objects.requireNonNull(value);
+        }
+
+        public String getDeploymentScope() {
+            return deploymentScope;
+        }
+
+        public void setDeploymentScope(String value) {
+            deploymentScope = value;
+        }
+
+        public long getConsumerHeartbeatTtlSeconds() {
+            return consumerHeartbeatTtlSeconds;
+        }
+
+        public void setConsumerHeartbeatTtlSeconds(long value) {
+            consumerHeartbeatTtlSeconds = value;
+        }
+
+        public long getRecoveryQueueSlaSeconds() {
+            return recoveryQueueSlaSeconds;
+        }
+
+        public void setRecoveryQueueSlaSeconds(long value) {
+            recoveryQueueSlaSeconds = value;
+        }
+
         /** Creates a persistent Run and root TaskNode for every chat request. */
         private boolean enabled = true;
 

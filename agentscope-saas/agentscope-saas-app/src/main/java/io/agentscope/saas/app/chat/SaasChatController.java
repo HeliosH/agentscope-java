@@ -128,6 +128,7 @@ public class SaasChatController {
     private final AgentRunMetrics metrics;
     private final RunOrchestrationService orchestration;
     private final WorkspaceArtifactService workspaceArtifactService;
+    private final io.agentscope.saas.app.workspace.WorkspaceArchiveService workspaceArchives;
     private final FileCatalogService fileCatalogService;
     private final ModelCatalog modelCatalog;
     private final boolean orchestrationEnabled;
@@ -138,7 +139,22 @@ public class SaasChatController {
     private final TaskComplexityRouter complexityRouter = new TaskComplexityRouter();
     private final String sandboxType;
     private final boolean catalogedSandboxArtifacts;
+    private final io.agentscope.saas.app.workspace.WorkspaceInputService workspaceInputs;
     private final AguiEventEncoder encoder = new AguiEventEncoder();
+    private io.agentscope.saas.app.orchestration.RunRecoveryStatusService recoveryStatus;
+    private io.agentscope.saas.app.orchestration.RunExecutionPolicyService executionPolicies;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureExecutionPolicies(
+            io.agentscope.saas.app.orchestration.RunExecutionPolicyService policies) {
+        executionPolicies = policies;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureRecoveryStatus(
+            io.agentscope.saas.app.orchestration.RunRecoveryStatusService service) {
+        recoveryStatus = service;
+    }
 
     public SaasChatController(
             HarnessAgent agent,
@@ -150,12 +166,14 @@ public class SaasChatController {
             AgentRunMetrics metrics,
             RunOrchestrationService orchestration,
             WorkspaceArtifactService workspaceArtifactService,
+            io.agentscope.saas.app.workspace.WorkspaceArchiveService workspaceArchives,
             FileCatalogService fileCatalogService,
             ModelCatalog modelCatalog,
             RunRecoveryCoordinator recoveryCoordinator,
             DurableTaskLeaseService durableLeases,
             DirectRunLeaseTracker directRunLeases,
             SaasProperties properties,
+            io.agentscope.saas.app.workspace.WorkspaceInputService workspaceInputs,
             Optional<BaseStore> workspaceStore) {
         this.agent = agent;
         this.tenantResolver = tenantResolver;
@@ -166,11 +184,13 @@ public class SaasChatController {
         this.metrics = metrics != null ? metrics : AgentRunMetrics.noop();
         this.orchestration = orchestration;
         this.workspaceArtifactService = workspaceArtifactService;
+        this.workspaceArchives = workspaceArchives;
         this.fileCatalogService = fileCatalogService;
         this.modelCatalog = modelCatalog;
         this.recoveryCoordinator = recoveryCoordinator;
         this.durableLeases = durableLeases;
         this.directRunLeases = directRunLeases;
+        this.workspaceInputs = workspaceInputs;
         this.orchestrationEnabled =
                 properties != null
                         && properties.getOrchestration() != null
@@ -401,12 +421,9 @@ public class SaasChatController {
 
         WorkspaceCheckpointContext workspaceCheckpoint =
                 persist && orchestrationEnabled && catalogedSandboxArtifacts
-                        ? new WorkspaceCheckpointContext(true)
+                        ? new WorkspaceCheckpointContext(
+                                true, fileCatalogService.activeFileVersions(tenant))
                         : null;
-        Map<String, UUID> baselineVersions =
-                workspaceCheckpoint != null
-                        ? fileCatalogService.activeFileVersions(tenant)
-                        : Map.of();
         RuntimeContext.Builder contextBuilder =
                 RuntimeContext.builder()
                         .userId(tenant.userId())
@@ -447,8 +464,19 @@ public class SaasChatController {
                         .put(TenantContext.ATTR_KEY, tenant);
         if (workspaceCheckpoint != null) {
             contextBuilder.put(WorkspaceCheckpointContext.class, workspaceCheckpoint);
+            contextBuilder.put(
+                    io.agentscope.harness.agent.sandbox.InvocationResultObserver.class,
+                    new io.agentscope.saas.app.workspace.WorkspaceComputedResult(
+                            resolved.rootTaskId(),
+                            resolved.rootAttemptId(),
+                            result ->
+                                    new io.agentscope.saas.app.workspace.WorkspaceArchiveService
+                                            .PendingResult(
+                                            "{}", List.copyOf(result.getContent()), true)));
         }
         RuntimeContext ctx = contextBuilder.build();
+        if (persist && orchestrationEnabled && executionPolicies != null)
+            executionPolicies.bind(ctx, UUID.fromString(tenant.orgId()), durableRunId);
         if (persist && plannerEnabled) {
             if (structuredPlanning) {
                 agent.enterPlanMode(ctx);
@@ -473,14 +501,48 @@ public class SaasChatController {
                 resolved.agentId());
 
         Flux<AguiEvent> agentEvents =
-                recoverableAgentEvents(
-                                userMsg,
-                                ctx,
-                                converter,
-                                accumulator,
-                                awaitingConfirmation,
-                                threadId,
-                                runId)
+                Flux.defer(
+                                () -> {
+                                    if (persist
+                                            && orchestrationEnabled
+                                            && catalogedSandboxArtifacts) {
+                                        workspaceInputs
+                                                .prepare(
+                                                        tenant,
+                                                        resolved.runId(),
+                                                        resolved.rootTaskId(),
+                                                        resolved.rootAttemptId(),
+                                                        directLeaseOwner)
+                                                .ifPresent(
+                                                        plan -> {
+                                                            ctx.put(
+                                                                    io.agentscope.harness.agent
+                                                                            .sandbox
+                                                                            .WorkspaceInputPlan
+                                                                            .class,
+                                                                    plan);
+                                                            ctx.put(
+                                                                    io.agentscope.harness.agent
+                                                                            .sandbox
+                                                                            .SandboxIsolationOverride
+                                                                            .class,
+                                                                    new io.agentscope.harness.agent
+                                                                            .sandbox
+                                                                            .SandboxIsolationOverride(
+                                                                            "run/"
+                                                                                    + resolved
+                                                                                            .runId()));
+                                                        });
+                                    }
+                                    return recoverableAgentEvents(
+                                            userMsg,
+                                            ctx,
+                                            converter,
+                                            accumulator,
+                                            awaitingConfirmation,
+                                            threadId,
+                                            runId);
+                                })
                         .subscribeOn(Schedulers.boundedElastic());
 
         Flux<AguiEvent> withPersistence =
@@ -494,30 +556,12 @@ public class SaasChatController {
                                                         return (Object) null;
                                                     }
                                                     if (orchestrationEnabled) {
-                                                        if (workspaceCheckpoint != null) {
-                                                            workspaceArtifactService.publish(
-                                                                    UUID.fromString(tenant.orgId()),
-                                                                    durableRunId,
-                                                                    resolved.rootTaskId(),
-                                                                    resolved.rootAttemptId(),
-                                                                    ctx.get(
-                                                                            io.agentscope.saas
-                                                                                    .sandbox
-                                                                                    .SandboxLeaseContext
-                                                                                    .class),
-                                                                    workspaceCheckpoint,
-                                                                    baselineVersions);
-                                                        }
-                                                        persistence.saveAssistantMessageForRun(
+                                                        commitComputedRun(
                                                                 tenant,
-                                                                resolved.sessionId(),
-                                                                resolved.agentId(),
-                                                                durableRunId,
+                                                                resolved,
+                                                                ctx,
+                                                                workspaceCheckpoint,
                                                                 accumulator.blocks());
-                                                        orchestration.markSucceeded(
-                                                                tenant,
-                                                                resolved.agentId(),
-                                                                durableRunId);
                                                     } else {
                                                         var binding =
                                                                 ctx.get(
@@ -551,6 +595,40 @@ public class SaasChatController {
                         .map(this::toSse)
                         .onErrorResume(
                                 error -> {
+                                    UUID deferredJob =
+                                            error
+                                                            instanceof
+                                                            io.agentscope.saas.app.workspace
+                                                                            .WorkspaceArchiveDeferredException
+                                                                    deferred
+                                                    ? deferred.jobId()
+                                                    : null;
+                                    if (deferredJob == null && workspaceCheckpoint != null) {
+                                        try {
+                                            deferredJob =
+                                                    workspaceArchives.adoptPrepared(
+                                                            workspaceCheckpoint);
+                                        } catch (RuntimeException rejected) {
+                                            if (rejected != error) error.addSuppressed(rejected);
+                                        }
+                                    }
+                                    if (deferredJob != null) {
+                                        streamOutcome.set("archiving");
+                                        return Flux.just(
+                                                toSse(
+                                                        new AguiEvent.Custom(
+                                                                threadId,
+                                                                runId,
+                                                                "run_archiving",
+                                                                Map.of(
+                                                                        "runId",
+                                                                        runId,
+                                                                        "sessionId",
+                                                                        resolved.sessionId()
+                                                                                .toString(),
+                                                                        "archiveJobId",
+                                                                        deferredJob.toString()))));
+                                    }
                                     streamOutcome.set("error");
                                     log.warn("Chat stream error: {}", error.toString());
                                     Map<String, Object> payload = new HashMap<>();
@@ -561,10 +639,10 @@ public class SaasChatController {
                                         return Flux.just(toSse(errorEvent));
                                     }
                                     RunRecoveryCoordinator.Decision decision =
-                                            recoveryCoordinator.decide(error, 1);
+                                            recoveryCoordinator.decide(error, 1, ctx);
                                     if (resolved.rootAttemptId() != null
-                                            && recoveryCoordinator.canScheduleDurableRecovery()
-                                            && (decision.recoverable() || decision.exhausted())) {
+                                            && recoveryCoordinator.canScheduleDurableRecovery(ctx)
+                                            && decision.recoverable()) {
                                         long delayMillis =
                                                 decision.recoverable()
                                                         ? decision.delayMillis()
@@ -584,6 +662,66 @@ public class SaasChatController {
                                                 .subscribeOn(Schedulers.boundedElastic())
                                                 .flatMapMany(
                                                         scheduled -> {
+                                                            if (recoveryStatus != null) {
+                                                                var view =
+                                                                        recoveryStatus.status(
+                                                                                tenant,
+                                                                                resolved.agentId(),
+                                                                                durableRunId);
+                                                                boolean queued =
+                                                                        "RUNNING"
+                                                                                        .equals(
+                                                                                                view
+                                                                                                        .runStatus())
+                                                                                && view
+                                                                                                .recoveryCount()
+                                                                                        > 0;
+                                                                streamOutcome.set(
+                                                                        queued
+                                                                                ? "recovering"
+                                                                                : "error");
+                                                                Map<String, Object> actual =
+                                                                        new HashMap<>();
+                                                                actual.put("runId", runId);
+                                                                actual.put("sessionId", threadId);
+                                                                actual.put("state", view.state());
+                                                                actual.put(
+                                                                        "runStatus",
+                                                                        view.runStatus());
+                                                                actual.put(
+                                                                        "scheduled",
+                                                                        scheduled && queued);
+                                                                actual.put(
+                                                                        "attempt",
+                                                                        view.attemptCount()
+                                                                                + (queued ? 1 : 0));
+                                                                actual.put(
+                                                                        "maxAttempts",
+                                                                        decision.maxAttempts());
+                                                                actual.put(
+                                                                        "nextRecoveryAt",
+                                                                        view.nextRecoveryAt());
+                                                                actual.put(
+                                                                        "message",
+                                                                        !queued
+                                                                                ? "任务恢复状态已更新，请查看任务详情"
+                                                                                : view.state()
+                                                                                                .startsWith(
+                                                                                                        "WAITING_")
+                                                                                        ? "任务已进入恢复队列，正在等待执行资源"
+                                                                                        : "模型连接中断，任务已转入后台恢复");
+                                                                return Flux.just(
+                                                                        toSse(
+                                                                                new AguiEvent
+                                                                                        .Custom(
+                                                                                        threadId,
+                                                                                        runId,
+                                                                                        scheduled
+                                                                                                        && queued
+                                                                                                ? "run_recovery_scheduled"
+                                                                                                : "run_recovery_state",
+                                                                                        actual)));
+                                                            }
                                                             if (!scheduled) {
                                                                 log.warn(
                                                                         "Direct recovery lease was"
@@ -616,7 +754,9 @@ public class SaasChatController {
                                                                     tenant,
                                                                     resolved.agentId(),
                                                                     durableRunId,
-                                                                    "AGENT_ERROR",
+                                                                    decision.exhausted()
+                                                                            ? "MODEL_RECOVERY_EXHAUSTED"
+                                                                            : "AGENT_ERROR",
                                                                     errorMessage(error)))
                                             .subscribeOn(Schedulers.boundedElastic())
                                             .thenMany(Flux.just(toSse(errorEvent)));
@@ -635,6 +775,54 @@ public class SaasChatController {
                                             System.nanoTime() - startedNanos);
                                 });
         return detachClient(execution, runId);
+    }
+
+    private void commitComputedRun(
+            TenantContext tenant,
+            ResolvedRun resolved,
+            RuntimeContext context,
+            WorkspaceCheckpointContext checkpoint,
+            List<io.agentscope.core.message.ContentBlock> answer) {
+        try {
+            if (checkpoint != null) {
+                workspaceArtifactService.publish(
+                        UUID.fromString(tenant.orgId()),
+                        resolved.runId(),
+                        resolved.rootTaskId(),
+                        resolved.rootAttemptId(),
+                        context.get(io.agentscope.saas.sandbox.SandboxLeaseContext.class),
+                        checkpoint);
+            }
+            persistence.saveAssistantMessageForRun(
+                    tenant, resolved.sessionId(), resolved.agentId(), resolved.runId(), answer);
+            orchestration.markSucceeded(tenant, resolved.agentId(), resolved.runId());
+        } catch (RuntimeException error) {
+            // A commit may have succeeded despite a lost acknowledgement; durable facts win.
+            if (computedAttemptCommitted(resolved, error)) return;
+            if (checkpoint == null)
+                throw new io.agentscope.saas.orchestration.TaskResultCommitException(error);
+            UUID job;
+            try {
+                job = workspaceArchives.defer(checkpoint, "{}", answer, true);
+            } catch (RuntimeException rejected) {
+                if (computedAttemptCommitted(resolved, rejected)) return;
+                if (rejected != error) rejected.addSuppressed(error);
+                throw new io.agentscope.saas.app.workspace.WorkspaceArchiveRejectedException(
+                        rejected);
+            }
+            throw new io.agentscope.saas.app.workspace.WorkspaceArchiveDeferredException(job);
+        }
+    }
+
+    private boolean computedAttemptCommitted(ResolvedRun resolved, RuntimeException error) {
+        try {
+            return resolved.rootAttemptId() != null
+                    && durableLeases.completedSuccessfully(
+                            resolved.rootAttemptId(), "direct:" + resolved.runId());
+        } catch (RuntimeException readError) {
+            if (readError != error) error.addSuppressed(readError);
+            return false;
+        }
     }
 
     /**
@@ -691,8 +879,13 @@ public class SaasChatController {
                 .onErrorResume(
                         error -> {
                             RunRecoveryCoordinator.Decision decision =
-                                    recoveryCoordinator.decide(error, currentAttempt);
+                                    recoveryCoordinator.decide(error, currentAttempt, context);
                             if (!decision.recoverable()) {
+                                return Flux.error(error);
+                            }
+                            if (recoveryCoordinator.canScheduleDurableRecovery(context)) {
+                                // Hand over the remaining shared retry budget instead of consuming
+                                // it inline and resetting it at the worker boundary.
                                 return Flux.error(error);
                             }
                             int nextAttempt = attempt.incrementAndGet();
@@ -1014,7 +1207,9 @@ public class SaasChatController {
         while (path.startsWith("/")) {
             path = path.substring(1);
         }
-        if (!path.startsWith("inputs/") || path.contains("../") || path.endsWith("/..")) {
+        if (!(path.startsWith("inputs/") || path.startsWith("outputs/"))
+                || path.contains("../")
+                || path.endsWith("/..")) {
             return null;
         }
         return path;
@@ -1083,7 +1278,13 @@ public class SaasChatController {
         }
     }
 
-    private static String errorMessage(Throwable error) {
+    static String errorMessage(Throwable error) {
+        Throwable current = error;
+        for (int depth = 0; current != null && depth < 8; depth++, current = current.getCause()) {
+            if (current
+                    instanceof io.agentscope.saas.app.workspace.WorkspaceArchiveRejectedException)
+                return "Workspace output could not be safely handed over for archiving";
+        }
         Throwable t = unwrapRuntimeWrapper(error);
         StringBuilder sb = new StringBuilder(messageOf(t));
         Throwable cause = t.getCause();

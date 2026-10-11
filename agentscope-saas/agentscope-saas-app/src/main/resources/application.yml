@@ -10,7 +10,7 @@ spring:
   webflux:
     multipart:
       max-in-memory-size: ${SAAS_MULTIPART_MAX_IN_MEMORY_SIZE:256KB}
-      max-disk-usage-per-part: ${SAAS_MULTIPART_MAX_DISK_USAGE_PER_PART:32MB}
+      max-disk-usage-per-part: ${SAAS_MULTIPART_MAX_DISK_USAGE_PER_PART:${SAAS_FILE_STORE_MAX_FILE_BYTES:33554432}}
       max-parts: ${SAAS_MULTIPART_MAX_PARTS:20}
   application:
     name: agentscope-saas
@@ -68,7 +68,7 @@ saas:
       max-daily-user-calls: ${SAAS_MODEL_MAX_DAILY_USER_CALLS:}
     stream-recovery:
       enabled: ${SAAS_MODEL_STREAM_RECOVERY_ENABLED:true}
-      # DURABLE requires an enabled local scheduler; REQUEST_ONLY never queues an orphaned run.
+      # DURABLE requires a local consumer or explicitly scoped, heartbeating external consumers.
       mode: ${SAAS_MODEL_STREAM_RECOVERY_MODE:REQUEST_ONLY}
       max-attempts: ${SAAS_MODEL_STREAM_RECOVERY_MAX_ATTEMPTS:3}
       initial-backoff-millis: ${SAAS_MODEL_STREAM_RECOVERY_INITIAL_BACKOFF_MILLIS:1000}
@@ -118,6 +118,21 @@ saas:
     publication-recovery-max-attempts: ${SAAS_FILE_STORE_PUBLICATION_RECOVERY_MAX_ATTEMPTS:3}
     publication-recovery-retry-seconds: ${SAAS_FILE_STORE_PUBLICATION_RECOVERY_RETRY_SECONDS:30}
     publication-recovery-fixed-delay-seconds: ${SAAS_FILE_STORE_PUBLICATION_RECOVERY_FIXED_DELAY_SECONDS:5}
+    workspace-archive-enabled: ${SAAS_WORKSPACE_ARCHIVE_ENABLED:true}
+    workspace-completion-handover-enabled: ${SAAS_WORKSPACE_COMPLETION_HANDOVER_ENABLED:true}
+    workspace-archive-lease-seconds: ${SAAS_WORKSPACE_ARCHIVE_LEASE_SECONDS:60}
+    workspace-archive-deadline-seconds: ${SAAS_WORKSPACE_ARCHIVE_DEADLINE_SECONDS:900}
+    workspace-archive-max-attempts: ${SAAS_WORKSPACE_ARCHIVE_MAX_ATTEMPTS:8}
+    workspace-archive-retry-seconds: ${SAAS_WORKSPACE_ARCHIVE_RETRY_SECONDS:5}
+    workspace-archive-fixed-delay-seconds: ${SAAS_WORKSPACE_ARCHIVE_FIXED_DELAY_SECONDS:2}
+    workspace-source-enabled: ${SAAS_WORKSPACE_SOURCE_ENABLED:true}
+    workspace-source-max-bytes: ${SAAS_WORKSPACE_SOURCE_MAX_BYTES:335544320}
+    workspace-source-max-org-bytes: ${SAAS_WORKSPACE_SOURCE_MAX_ORG_BYTES:2147483648}
+    workspace-source-gc-fixed-delay-seconds: ${SAAS_WORKSPACE_SOURCE_GC_FIXED_DELAY_SECONDS:60}
+    workspace-provider-retention-enabled: ${SAAS_WORKSPACE_PROVIDER_RETENTION_ENABLED:true}
+    workspace-provider-retention-seconds: ${SAAS_WORKSPACE_PROVIDER_RETENTION_SECONDS:900}
+    workspace-provider-retention-max-org-resources: ${SAAS_WORKSPACE_PROVIDER_RETENTION_MAX_ORG_RESOURCES:4}
+    workspace-provider-retention-gc-fixed-delay-seconds: ${SAAS_WORKSPACE_PROVIDER_RETENTION_GC_FIXED_DELAY_SECONDS:10}
     publication-gc-fixed-delay-seconds: ${SAAS_FILE_STORE_PUBLICATION_GC_FIXED_DELAY_SECONDS:300}
     blocked-extensions: ${SAAS_FILE_STORE_BLOCKED_EXTENSIONS:exe,dll,com,msi,apk,dmg}
     blocked-content-types: ${SAAS_FILE_STORE_BLOCKED_CONTENT_TYPES:application/x-msdownload,application/x-msdos-program,application/vnd.android.package-archive}
@@ -142,6 +157,9 @@ saas:
   sandbox:
     transfer-max-files: ${SAAS_SANDBOX_TRANSFER_MAX_FILES:5000}
     transfer-max-bytes: ${SAAS_SANDBOX_TRANSFER_MAX_BYTES:268435456}
+    transfer-buffer-bytes: ${SAAS_SANDBOX_TRANSFER_BUFFER_BYTES:1048576}
+    max-concurrent-transfers: ${SAAS_SANDBOX_MAX_CONCURRENT_TRANSFERS:2}
+    max-spool-bytes: ${SAAS_SANDBOX_MAX_SPOOL_BYTES:1073741824}
     enabled: ${SAAS_SANDBOX_ENABLED:false}
     type: ${SAAS_SANDBOX_TYPE:cube}
     image: ${SAAS_SANDBOX_IMAGE:ubuntu:22.04}
@@ -222,6 +240,7 @@ saas:
     window-seconds: ${SAAS_RATELIMIT_WINDOW:60}
   agent:
     name: ${SAAS_AGENT_NAME:assistant}
+    memory-hooks-enabled: ${SAAS_AGENT_MEMORY_HOOKS_ENABLED:true}
     max-iters: ${SAAS_AGENT_MAX_ITERS:10}
     task-list-enabled: ${SAAS_AGENT_TASK_LIST_ENABLED:true}
     plan-mode-enabled: ${SAAS_AGENT_PLAN_MODE_ENABLED:true}
@@ -246,6 +265,10 @@ saas:
     enabled: ${SAAS_ORCHESTRATION_ENABLED:true}
     session-fence-poll-millis: ${SAAS_ORCHESTRATION_SESSION_FENCE_POLL_MILLIS:1000}
     scheduler-enabled: ${SAAS_ORCHESTRATION_SCHEDULER_ENABLED:false}
+    consumer-mode: ${SAAS_ORCHESTRATION_CONSUMER_MODE:LOCAL}
+    deployment-scope: ${SAAS_ORCHESTRATION_DEPLOYMENT_SCOPE:local}
+    consumer-heartbeat-ttl-seconds: ${SAAS_ORCHESTRATION_CONSUMER_HEARTBEAT_TTL_SECONDS:90}
+    recovery-queue-sla-seconds: ${SAAS_ORCHESTRATION_RECOVERY_QUEUE_SLA_SECONDS:300}
     planner-enabled: ${SAAS_ORCHESTRATION_PLANNER_ENABLED:false}
     planner-max-depth: ${SAAS_ORCHESTRATION_PLANNER_MAX_DEPTH:8}
     planner-max-fanout: ${SAAS_ORCHESTRATION_PLANNER_MAX_FANOUT:8}
@@ -323,6 +346,11 @@ saas:
     body-gc-max-attempts: ${SAAS_RUNTIME_ARCHIVE_BODY_GC_MAX_ATTEMPTS:10}
     max-body-user-bytes: ${SAAS_RUNTIME_ARCHIVE_BODY_MAX_USER_BYTES:5368709120}
     max-body-org-bytes: ${SAAS_RUNTIME_ARCHIVE_BODY_MAX_ORG_BYTES:107374182400}
+    body-fallback-enabled: ${SAAS_RUNTIME_BODY_FALLBACK_ENABLED:true}
+    body-fallback-max-bytes: ${SAAS_RUNTIME_BODY_FALLBACK_MAX_BYTES:1048576}
+    body-fallback-max-user-bytes: ${SAAS_RUNTIME_BODY_FALLBACK_MAX_USER_BYTES:16777216}
+    body-fallback-max-org-bytes: ${SAAS_RUNTIME_BODY_FALLBACK_MAX_ORG_BYTES:134217728}
+    body-fallback-recovery-delay-seconds: ${SAAS_RUNTIME_BODY_FALLBACK_RECOVERY_DELAY_SECONDS:10}
     lightweight-checkpoints-enabled: ${SAAS_RUNTIME_ARCHIVE_LIGHTWEIGHT_CHECKPOINTS_ENABLED:true}
     checkpoint-inline-max-bytes: ${SAAS_RUNTIME_ARCHIVE_CHECKPOINT_INLINE_MAX_BYTES:65536}
     checkpoint-max-json-bytes: ${SAAS_RUNTIME_ARCHIVE_CHECKPOINT_MAX_JSON_BYTES:1048576}
@@ -376,5 +404,8 @@ logging:
     io.agentscope.saas.dal.mybatis.admin.RuntimeBodyGcMapper: INFO
     io.agentscope.saas.dal.mybatis.admin.ContextCheckpointMapper: INFO
     io.agentscope.saas.dal.mybatis.tenant.FilePublicationMapper: INFO
+    io.agentscope.saas.dal.mybatis.tenant.WorkspaceManifestMapper: INFO
+    io.agentscope.saas.dal.mybatis.tenant.WorkspaceArchiveMapper: INFO
+    io.agentscope.saas.dal.mybatis.admin.WorkspaceArchiveCompletionMapper: INFO
     io.agentscope.saas.dal.mybatis.tenant.RelationalBlobStorageMapper: INFO
     org.springframework.security: WARN

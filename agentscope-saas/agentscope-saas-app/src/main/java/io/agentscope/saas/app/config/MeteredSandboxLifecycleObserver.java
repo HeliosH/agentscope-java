@@ -18,6 +18,7 @@ package io.agentscope.saas.app.config;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.sandbox.SandboxAcquireResult.AcquisitionSource;
 import io.agentscope.harness.agent.sandbox.SandboxLifecycleObserver;
+import io.agentscope.harness.agent.sandbox.WorkspaceProjectionReport;
 import io.agentscope.saas.app.workspace.WorkspaceCheckpointContext;
 import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.sandbox.SandboxBroker;
@@ -76,6 +77,16 @@ final class MeteredSandboxLifecycleObserver implements SandboxLifecycleObserver 
                 sandboxType, source != null ? source.metricTag() : null, durationNanos);
         updateExternalId(runtimeContext);
         activateOrchestrationLease(runtimeContext);
+    }
+
+    @Override
+    public void onWorkspaceProjectionSucceeded(
+            RuntimeContext context, WorkspaceProjectionReport report) {
+        report.verifyComplete();
+        var checkpoint = checkpoint(context);
+        if (checkpoint != null)
+            checkpoint.projectionSucceeded(report.projectedFiles() + report.unchangedFiles());
+        if (report.projectedFiles() > 0) metrics.workspaceProjectionSucceeded(sandboxType);
     }
 
     @Override

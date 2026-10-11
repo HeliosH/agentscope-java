@@ -42,7 +42,7 @@ import reactor.core.publisher.Flux;
  * assistant message carries a {@link ToolUseBlock}. So this model emits:
  *
  * <ol>
- *   <li><b>First call</b> (no tool result in history yet) — a single {@link ToolUseBlock} named
+ *   <li><b>First call</b> (no tool result in the current turn yet) — a single {@link ToolUseBlock} named
  *       {@code "execute"} (the registered {@code ShellExecuteTool} name) with {@code command} set to
  *       the last user message. The agent then runs that command in the sandbox.
  *   <li><b>Second call</b> (a {@link ToolResultBlock} is now present) — a text-only response
@@ -123,8 +123,8 @@ public class ScriptedToolModel implements Model {
     }
 
     /**
-     * Returns the concatenated text output of the most recent {@link ToolResultBlock} in history, or
-     * {@code null} if no tool has run yet. Presence of a tool result signals the second ReAct
+     * Returns the concatenated text output of the most recent {@link ToolResultBlock} after the
+     * latest user request, or {@code null} if no tool has run this turn. A result signals the second ReAct
      * iteration.
      */
     private static String findLastToolOutput(List<Msg> messages) {
@@ -146,6 +146,9 @@ public class ScriptedToolModel implements Model {
                     }
                 }
                 return sb.toString();
+            }
+            if (messages.get(i).getRole() == MsgRole.USER) {
+                return null;
             }
         }
         return null;

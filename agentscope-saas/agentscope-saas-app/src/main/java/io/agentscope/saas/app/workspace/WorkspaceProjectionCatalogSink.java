@@ -19,10 +19,14 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.tool.ExecutionLeaseSnapshot;
 import io.agentscope.core.tool.StepSnapshot;
 import io.agentscope.harness.agent.filesystem.sandbox.WorkspaceProjectionSink;
+import io.agentscope.harness.agent.sandbox.WorkspaceProjectionPlan;
+import io.agentscope.harness.agent.sandbox.WorkspaceProjectionReport;
 import io.agentscope.saas.app.orchestration.SessionRunFenceService;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.core.tenant.TenantContextHolder;
 import io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException;
 import io.agentscope.saas.domain.workspace.FilePublicationRepository.Execution;
+import io.agentscope.saas.domain.workspace.WorkspaceManifestRepository.Scope;
 import io.agentscope.saas.orchestration.RunOrchestrationService;
 import io.agentscope.saas.sandbox.SandboxRuntimeAttributes;
 import java.util.Map;
@@ -41,9 +45,160 @@ public class WorkspaceProjectionCatalogSink implements WorkspaceProjectionSink {
     private static final Logger log = LoggerFactory.getLogger(WorkspaceProjectionCatalogSink.class);
 
     private final FileCatalogService fileCatalogService;
+    private final WorkspaceManifestService manifests;
+    private final WorkspaceSourceService sources;
+    private org.springframework.beans.factory.ObjectProvider<WorkspaceArchiveService> archives;
 
-    public WorkspaceProjectionCatalogSink(FileCatalogService fileCatalogService) {
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureComputedHandover(
+            org.springframework.beans.factory.ObjectProvider<WorkspaceArchiveService> value) {
+        archives = value;
+    }
+
+    public WorkspaceProjectionCatalogSink(
+            FileCatalogService fileCatalogService, WorkspaceManifestService manifests) {
+        this(fileCatalogService, manifests, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public WorkspaceProjectionCatalogSink(
+            FileCatalogService fileCatalogService,
+            WorkspaceManifestService manifests,
+            WorkspaceSourceService sources) {
         this.fileCatalogService = fileCatalogService;
+        this.manifests = manifests;
+        this.sources = sources;
+    }
+
+    @Override
+    public void onProjectionCaptured(
+            RuntimeContext context, WorkspaceProjectionPlan plan, java.nio.file.Path snapshot) {
+        var checkpoint = context == null ? null : context.get(WorkspaceCheckpointContext.class);
+        if (sources == null || checkpoint == null || checkpoint.manifest() == null) return;
+        String prior = TenantContextHolder.getOrgId();
+        TenantContextHolder.setOrgId(checkpoint.manifest().scope().orgId().toString());
+        Runnable sealed =
+                () -> {
+                    var computed =
+                            context.get(
+                                    io.agentscope.harness.agent.sandbox.InvocationResultObserver
+                                            .class);
+                    if (computed instanceof WorkspaceComputedResult result && archives != null)
+                        result.sealed(checkpoint, archives.getObject());
+                };
+        try {
+            sources.capture(checkpoint.manifest(), plan, snapshot, sealed);
+        } catch (io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException revoked) {
+            throw revoked;
+        } catch (Exception error) {
+            try {
+                if (sources.captureRetention(
+                        context, checkpoint.manifest(), plan, snapshot, sealed)) return;
+            } catch (
+                    io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException
+                            revoked) {
+                throw revoked;
+            } catch (Exception retentionFailure) {
+                log.warn(
+                        "Workspace provider retention unavailable manifest={} ({})",
+                        checkpoint.manifest().id(),
+                        retentionFailure.getClass().getSimpleName());
+            }
+            log.warn(
+                    "Workspace source escrow unavailable manifest={} ({})",
+                    checkpoint.manifest().id(),
+                    error.getClass().getSimpleName());
+        } finally {
+            if (prior == null) TenantContextHolder.clear();
+            else TenantContextHolder.setOrgId(prior);
+        }
+    }
+
+    @Override
+    public void onProjectionPlanned(RuntimeContext context, WorkspaceProjectionPlan plan) {
+        if (context == null) return;
+        var checkpoint = context.get(WorkspaceCheckpointContext.class);
+        if (checkpoint == null) return;
+        var binding = context.get(SessionRunFenceService.Binding.class);
+        if (binding == null || binding.runId() == null)
+            throw new SessionExecutionRevokedException();
+        String prior = TenantContextHolder.getOrgId();
+        TenantContextHolder.setOrgId(binding.orgId().toString());
+        try {
+            checkpoint.planned(
+                    manifests.freeze(
+                            new Scope(
+                                    binding.orgId(),
+                                    binding.userId(),
+                                    binding.agentId(),
+                                    binding.fence().sessionId(),
+                                    binding.fence().generation(),
+                                    binding.runId(),
+                                    execution(context, binding.runId())),
+                            plan));
+        } finally {
+            if (prior == null) TenantContextHolder.clear();
+            else TenantContextHolder.setOrgId(prior);
+        }
+    }
+
+    @Override
+    public void onProjectionCompleted(RuntimeContext context, WorkspaceProjectionReport report) {
+        if (context == null) return;
+        var checkpoint = context.get(WorkspaceCheckpointContext.class);
+        if (checkpoint == null) return;
+        var manifest = checkpoint.manifest();
+        if (manifest == null) throw new IllegalStateException("WORKSPACE_MANIFEST_MISSING");
+        String prior = TenantContextHolder.getOrgId();
+        TenantContextHolder.setOrgId(manifest.scope().orgId().toString());
+        try {
+            manifests.scanCompleted(manifest, report);
+        } finally {
+            if (prior == null) TenantContextHolder.clear();
+            else TenantContextHolder.setOrgId(prior);
+        }
+    }
+
+    @Override
+    public boolean supportsStreamProjection(RuntimeContext context) {
+        if (context == null) return false;
+        var checkpoint = context.get(WorkspaceCheckpointContext.class);
+        var binding = context.get(SessionRunFenceService.Binding.class);
+        return checkpoint != null
+                && checkpoint.manifest() != null
+                && binding != null
+                && binding.runId() != null;
+    }
+
+    @Override
+    public void onProjectedFile(
+            RuntimeContext context,
+            String path,
+            java.nio.file.Path content,
+            long size,
+            String sha256) {
+        var checkpoint = context.get(WorkspaceCheckpointContext.class);
+        var binding = context.get(SessionRunFenceService.Binding.class);
+        var tenant = TenantContext.from(context);
+        if (checkpoint == null || binding == null || tenant == null)
+            throw new SessionExecutionRevokedException();
+        var record =
+                fileCatalogService
+                        .recordWorkspacePathForAttempt(
+                                tenant,
+                                binding.agentId(),
+                                binding.runId(),
+                                binding.fence(),
+                                execution(context, binding.runId()),
+                                path,
+                                content,
+                                MediaType.APPLICATION_OCTET_STREAM_VALUE,
+                                FileCatalogService.SOURCE_SANDBOX_PROJECTION,
+                                checkpoint.publicationMetadata(path))
+                        .orElseThrow();
+        if (record.sizeBytes() != size || !record.sha256().equals(sha256))
+            throw new IllegalStateException("FILE_PUBLICATION_INTEGRITY_FAILED");
+        checkpoint.recordFile(record);
     }
 
     @Override
@@ -77,7 +232,9 @@ public class WorkspaceProjectionCatalogSink implements WorkspaceProjectionSink {
                                     content,
                                     MediaType.APPLICATION_OCTET_STREAM_VALUE,
                                     FileCatalogService.SOURCE_SANDBOX_PROJECTION,
-                                    Map.of("source", "sandbox.release.projection"))
+                                    checkpoint == null
+                                            ? Map.of("source", "sandbox.release.projection")
+                                            : checkpoint.publicationMetadata(path))
                             : binding != null
                                     ? fileCatalogService.recordWorkspaceFileForExecution(
                                             tenant,
@@ -88,7 +245,9 @@ public class WorkspaceProjectionCatalogSink implements WorkspaceProjectionSink {
                                             content,
                                             MediaType.APPLICATION_OCTET_STREAM_VALUE,
                                             FileCatalogService.SOURCE_SANDBOX_PROJECTION,
-                                            Map.of("source", "sandbox.release.projection"))
+                                            checkpoint == null
+                                                    ? Map.of("source", "sandbox.release.projection")
+                                                    : checkpoint.publicationMetadata(path))
                                     : fileCatalogService.recordWorkspaceFile(
                                             tenant,
                                             parseUuid(
@@ -103,7 +262,9 @@ public class WorkspaceProjectionCatalogSink implements WorkspaceProjectionSink {
                                             content,
                                             MediaType.APPLICATION_OCTET_STREAM_VALUE,
                                             FileCatalogService.SOURCE_SANDBOX_PROJECTION,
-                                            Map.of("source", "sandbox.release.projection"));
+                                            checkpoint == null
+                                                    ? Map.of("source", "sandbox.release.projection")
+                                                    : checkpoint.publicationMetadata(path));
             publication.ifPresentOrElse(
                     record -> {
                         if (checkpoint != null) {

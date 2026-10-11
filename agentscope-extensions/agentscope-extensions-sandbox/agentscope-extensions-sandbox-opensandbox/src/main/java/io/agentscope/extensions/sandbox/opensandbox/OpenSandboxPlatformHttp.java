@@ -81,6 +81,20 @@ final class OpenSandboxPlatformHttp {
         return withRetries(() -> getJson(url("/sandboxes/" + pathPart(sandboxId))));
     }
 
+    void renewExpiration(String sandboxId, java.time.OffsetDateTime deadline) throws IOException {
+        var response =
+                postJson(
+                        url("/sandboxes/" + pathPart(sandboxId) + "/renew-expiration"),
+                        json.createObjectNode().put("expiresAt", deadline.toString()));
+        try {
+            if (java.time.OffsetDateTime.parse(response.path("expiresAt").asText())
+                    .isBefore(deadline))
+                throw new IOException("Provider retention deadline was shortened");
+        } catch (java.time.format.DateTimeParseException invalid) {
+            throw new IOException("Provider did not confirm a retention deadline", invalid);
+        }
+    }
+
     void deleteSandbox(String sandboxId) throws IOException {
         Request req = requestBuilder(url("/sandboxes/" + pathPart(sandboxId))).delete().build();
         try (Response res = http.newCall(req).execute()) {
@@ -322,6 +336,183 @@ final class OpenSandboxPlatformHttp {
             rb.addHeader(EXECD_ACCESS_TOKEN_HEADER, opt.getExecdAccessToken());
         }
         return rb;
+    }
+
+    void uploadFile(OpenSandboxState state, String destination, java.nio.file.Path source)
+            throws IOException {
+        var metadata = json.createObjectNode().put("path", destination);
+        var body =
+                new okhttp3.MultipartBody.Builder()
+                        .setType(okhttp3.MultipartBody.FORM)
+                        .addFormDataPart(
+                                "metadata",
+                                "metadata.json",
+                                RequestBody.create(metadata.toString(), JSON))
+                        .addFormDataPart(
+                                "file",
+                                "workspace.tar",
+                                RequestBody.create(
+                                        source.toFile(), MediaType.get("application/octet-stream")))
+                        .build();
+        var request = requestBuilder(execdUrl(state, "/files/upload")).post(body).build();
+        try (var response =
+                http.newBuilder()
+                        .callTimeout(300, TimeUnit.SECONDS)
+                        .build()
+                        .newCall(request)
+                        .execute()) {
+            if (!response.isSuccessful())
+                throw new IOException("OpenSandbox file upload failed HTTP " + response.code());
+        }
+    }
+
+    void downloadFile(
+            OpenSandboxState state, String path, java.nio.file.Path destination, long maxBytes)
+            throws IOException {
+        try (var input = openDownload(state, path, maxBytes);
+                var output = java.nio.file.Files.newOutputStream(destination)) {
+            input.transferTo(output);
+        }
+    }
+
+    void uploadStream(
+            OpenSandboxState state, String destination, java.io.InputStream input, long maxBytes)
+            throws IOException {
+        if (maxBytes < 1 || maxBytes > 536870912)
+            throw new IllegalArgumentException("Invalid workspace upload budget");
+        var payload =
+                new RequestBody() {
+                    @Override
+                    public MediaType contentType() {
+                        return MediaType.get("application/octet-stream");
+                    }
+
+                    @Override
+                    public boolean isOneShot() {
+                        return true;
+                    }
+
+                    @Override
+                    public void writeTo(okio.BufferedSink sink) throws IOException {
+                        byte[] buffer = new byte[8192];
+                        long copied = 0;
+                        int read;
+                        while ((read = input.read(buffer)) != -1) {
+                            if (read > maxBytes - copied)
+                                throw new IOException("Workspace upload exceeds budget");
+                            copied += read;
+                            sink.write(buffer, 0, read);
+                        }
+                    }
+                };
+        var metadata = json.createObjectNode().put("path", destination);
+        var body =
+                new okhttp3.MultipartBody.Builder()
+                        .setType(okhttp3.MultipartBody.FORM)
+                        .addFormDataPart(
+                                "metadata",
+                                "metadata.json",
+                                RequestBody.create(metadata.toString(), JSON))
+                        .addFormDataPart("file", "workspace.tar", payload)
+                        .build();
+        var request = requestBuilder(execdUrl(state, "/files/upload")).post(body).build();
+        try (var response =
+                http.newBuilder()
+                        .callTimeout(300, TimeUnit.SECONDS)
+                        .build()
+                        .newCall(request)
+                        .execute()) {
+            if (!response.isSuccessful())
+                throw new IOException("OpenSandbox file upload failed HTTP " + response.code());
+        }
+    }
+
+    java.io.InputStream openDownload(OpenSandboxState state, String path, long maxBytes)
+            throws IOException {
+        if (maxBytes < 1 || maxBytes > 536870912)
+            throw new IllegalArgumentException("Invalid workspace download budget");
+        var endpoint =
+                okhttp3.HttpUrl.get(execdUrl(state, "/files/download"))
+                        .newBuilder()
+                        .addQueryParameter("path", path)
+                        .build();
+        var request = requestBuilder(endpoint.toString()).get().build();
+        var response =
+                http.newBuilder()
+                        .callTimeout(300, TimeUnit.SECONDS)
+                        .build()
+                        .newCall(request)
+                        .execute();
+        try {
+            if (!response.isSuccessful() || response.body() == null)
+                throw new IOException("OpenSandbox file download failed HTTP " + response.code());
+            long declared = response.body().contentLength();
+            if (declared > maxBytes) throw new IOException("Workspace download exceeds budget");
+            return new java.io.FilterInputStream(response.body().byteStream()) {
+                long total = 0;
+
+                private void received(int count) throws IOException {
+                    if (count < 0) {
+                        if (declared >= 0 && declared != total)
+                            throw new IOException("Truncated workspace download");
+                        return;
+                    }
+                    if (count > maxBytes - total)
+                        throw new IOException("Workspace download exceeds budget");
+                    total += count;
+                }
+
+                @Override
+                public int read() throws IOException {
+                    int value = in.read();
+                    received(value < 0 ? -1 : 1);
+                    return value;
+                }
+
+                @Override
+                public int read(byte[] bytes, int off, int len) throws IOException {
+                    java.util.Objects.checkFromIndexSize(off, len, bytes.length);
+                    if (len == 0) return 0;
+                    int read = in.read(bytes, off, (int) Math.min(len, maxBytes - total + 1));
+                    received(read);
+                    return read;
+                }
+
+                @Override
+                public long skip(long bytes) throws IOException {
+                    if (bytes <= 0) return 0;
+                    byte[] buffer = new byte[8192];
+                    long skipped = 0;
+                    while (skipped < bytes) {
+                        int read = read(buffer, 0, (int) Math.min(buffer.length, bytes - skipped));
+                        if (read < 0) break;
+                        skipped += read;
+                    }
+                    return skipped;
+                }
+
+                @Override
+                public void close() throws IOException {
+                    try {
+                        super.close();
+                    } finally {
+                        response.close();
+                    }
+                }
+            };
+        } catch (IOException | RuntimeException error) {
+            response.close();
+            throw error;
+        }
+    }
+
+    private String execdUrl(OpenSandboxState state, String path) {
+        return url(
+                "/sandboxes/"
+                        + pathPart(state.getSandboxId())
+                        + "/proxy/"
+                        + opt.getExecdPort()
+                        + path);
     }
 
     private JsonNode postJson(String url, ObjectNode body) throws IOException {

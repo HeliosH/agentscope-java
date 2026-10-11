@@ -128,7 +128,8 @@ public class SandboxConfig {
             SaasProperties properties,
             ObjectProvider<SandboxExecutionGuard> guardProvider,
             ObjectProvider<RelationalBlobStorageMapper> blobMapperProvider,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            io.agentscope.harness.agent.sandbox.WorkspaceTransferResources transferResources) {
 
         SaasProperties.Sandbox sb = properties.getSandbox();
         IsolationScope scope = IsolationScope.valueOf(sb.getIsolationScope());
@@ -314,7 +315,7 @@ public class SandboxConfig {
                         ? "cube-volume+remote-projection"
                         : snapshotSpec != null ? snapshotBackend(sb) : "none");
 
-        return spec;
+        return spec.transferResources(transferResources);
     }
 
     static List<CubeHostMount> cubeHostMounts(

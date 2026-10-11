@@ -56,7 +56,8 @@ QwenPaw 是 **Python 产品**。框架有"等价物" ≠ QwenPaw 代码能直接
 | 23 | [企业扩展运行时优化落地方案](./23-enterprise-extension-runtime-plan.md) | 请求级工具隔离、可撤销扩展、依赖治理、运行能力快照与企业插件路线图 |
 | 24 | [CubeSandbox Volume 持久工作区优化方案](./24-cubesandbox-volume-workspace-plan.md) | 用户工作卷、公共 Skills Volume、增量同步、冲突保护、回收与跨 Provider 恢复 |
 | 37 | [运行时可靠性修复与能力收尾落地方案](./37-runtime-reliability-and-feature-closure-plan.md) | 非 JWT 缺陷修复、任务工作区、增量归档、企业记忆、重试与验证、生产门禁及后续实施批次 |
-| 38 | [运行时可靠性实施记录](./38-runtime-reliability-implementation-progress.md) | 路由、容量、PG 顺序归档、大正文回收、轻量检查点、自适应转存、会话执行代际、文件发布预留/短事务/持久补登、提交屏障、调用治理、记忆投影队列的实施范围、配置、验证证据和剩余边界 |
+| 38 | [运行时可靠性实施记录](./38-runtime-reliability-implementation-progress.md) | 路由、容量、PG 顺序归档、大正文回收及对象存储故障下的 PG 降级、轻量检查点、自适应转存、会话执行代际、文件预留/补登/原子任务收据/冻结清单、独立归档与字节源保管、显式附件权威恢复、Provider 有界保留、已计算结果原子交接和强杀恢复、调用治理和记忆投影队列的范围、配置、验证证据及剩余边界 |
+| 39 | [方案功能全量收尾清单](./39-feature-closure-execution-checklist.md) | R01–R17 权威执行矩阵、依赖顺序、验收门禁与暂缓范围，不将单批完成视为全部完成 |
 
 ## 一页速读
 

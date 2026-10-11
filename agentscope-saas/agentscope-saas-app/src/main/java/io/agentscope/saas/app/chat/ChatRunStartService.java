@@ -29,6 +29,13 @@ public class ChatRunStartService {
     private final AgentRepository agentRepository;
     private final RunOrchestrationService orchestration;
     private final OrchestrationPolicyFactory policyFactory;
+    private io.agentscope.saas.app.orchestration.RunExecutionPolicyService executionPolicies;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureExecutionPolicies(
+            io.agentscope.saas.app.orchestration.RunExecutionPolicyService policies) {
+        executionPolicies = policies;
+    }
 
     public ChatRunStartService(
             ChatPersistenceService persistence,
@@ -103,6 +110,8 @@ public class ChatRunStartService {
                                                 "_runtime",
                                                 java.util.Map.of(
                                                         "directChat", true, "modelId", modelId))));
+        if (executionPolicies != null && !run.reused())
+            executionPolicies.accept(orgId, run.runId());
         return new StartedRun(
                 locked.getId(),
                 session.getId(),

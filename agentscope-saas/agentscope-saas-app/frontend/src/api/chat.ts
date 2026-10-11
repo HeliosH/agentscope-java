@@ -60,6 +60,9 @@ export interface ChatEvent {
   maxAttempts?: number;
   message?: string;
   scheduled?: boolean;
+  state?: string;
+  runStatus?: string;
+  nextRecoveryAt?: string | null;
 }
 
 export interface CurrentSession {
@@ -138,18 +141,33 @@ export async function* stream(agentId: string, req: ChatRequest): AsyncGenerator
           maxAttempts: value?.maxAttempts,
           message: value?.message,
         };
-      } else if (type === 'CUSTOM' && payload.name === 'run_recovery_scheduled') {
+      } else if (type === 'CUSTOM' && (payload.name === 'run_recovery_scheduled' || payload.name === 'run_recovery_state')) {
         const value = payload.value as {
           message?: string;
           runId?: string;
           scheduled?: boolean;
+          state?: string;
+          runStatus?: string;
+          nextRecoveryAt?: string | null;
+          attempt?: number;
+          maxAttempts?: number;
+          sessionId?: string;
         } | undefined;
         yield {
-          type: 'run_recovery_scheduled',
+          type: payload.name as string,
           message: value?.message,
           runId: value?.runId,
           scheduled: value?.scheduled,
+          state: value?.state,
+          runStatus: value?.runStatus,
+          nextRecoveryAt: value?.nextRecoveryAt,
+          attempt: value?.attempt,
+          maxAttempts: value?.maxAttempts,
+          sessionKey: value?.sessionId ?? payload.threadId as string | undefined,
         };
+      } else if (type === 'CUSTOM' && payload.name === 'run_archiving') {
+        const value = payload.value as { runId?: string; sessionId?: string } | undefined;
+        yield { type: 'run_archiving', runId: value?.runId, sessionKey: value?.sessionId };
       } else if (type === 'TEXT_MESSAGE_CONTENT') {
         const delta = (payload.delta as string) ?? '';
         if (delta) yield { type: 'token', data: delta };

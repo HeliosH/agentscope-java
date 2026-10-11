@@ -193,6 +193,15 @@ public class RedisStore implements BaseStore {
         jedis.eval(DELETE_SCRIPT, List.of(itemKey, idxKey), List.of(key));
     }
 
+    @Override
+    public List<String> listKeys(List<String> namespace, String prefix, int limit, int offset) {
+        if (limit <= 0 || limit > 1000 || offset < 0 || prefix == null || !prefix.endsWith("/"))
+            throw new IllegalArgumentException("Invalid prefix key page");
+        String next = prefix.substring(0, prefix.length() - 1) + "0";
+        var keys = jedis.zrangeByLex(indexKey(namespace), "[" + prefix, "(" + next, offset, limit);
+        return keys == null ? List.of() : List.copyOf(keys);
+    }
+
     // -------------------------------------------------------------------------
     //  Helpers
     // -------------------------------------------------------------------------

@@ -59,7 +59,7 @@ import reactor.core.scheduler.Schedulers;
  *
  * The SaaS agent is a singleton serving all tenants, so the middleware holds a single shared {@link
  * Mem0Client} (which owns one underlying OkHttpClient/connection pool) and builds a per-call
- * {@link Mem0AddRequest}/{@link Mem0SearchRequest} carrying the caller's {@code userId} (as Mem0
+ * {@link io.agentscope.core.memory.mem0.Mem0AddRequest}/{@link Mem0SearchRequest} carrying the caller's {@code userId} (as Mem0
  * {@code user_id}) and {@code orgId} (as a metadata filter). Mem0 only returns memories whose
  * metadata matches, so Alice's memories are invisible to Bob even if user ids collided across
  * orgs.

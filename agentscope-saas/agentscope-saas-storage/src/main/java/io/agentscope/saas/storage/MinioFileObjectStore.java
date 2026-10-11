@@ -66,12 +66,115 @@ public final class MinioFileObjectStore implements FileObjectStore {
     }
 
     @Override
+    public java.io.InputStream openRead(UUID orgId, String key, long maxBytes) throws Exception {
+        if (maxBytes < 0) throw new IllegalArgumentException("Invalid object read budget");
+        var delegate = client.getObject(GetObjectArgs.builder().bucket(bucket).object(key).build());
+        return new java.io.FilterInputStream(delegate) {
+            private long remaining = maxBytes;
+
+            @Override
+            public int read() throws java.io.IOException {
+                int value = in.read();
+                if (value >= 0 && remaining-- == 0)
+                    throw new java.io.IOException("Object exceeds read budget");
+                return value;
+            }
+
+            @Override
+            public int read(byte[] bytes, int offset, int length) throws java.io.IOException {
+                Objects.checkFromIndexSize(offset, length, bytes.length);
+                if (length == 0) return 0;
+                int read =
+                        in.read(
+                                bytes,
+                                offset,
+                                (int)
+                                        Math.min(
+                                                length,
+                                                remaining == Long.MAX_VALUE
+                                                        ? remaining
+                                                        : remaining + 1));
+                if (read > remaining) throw new java.io.IOException("Object exceeds read budget");
+                if (read > 0) remaining -= read;
+                return read;
+            }
+
+            @Override
+            public long skip(long count) throws java.io.IOException {
+                if (count <= 0) return 0;
+                byte[] buffer = new byte[8192];
+                long skipped = 0;
+                while (skipped < count) {
+                    int read = read(buffer, 0, (int) Math.min(buffer.length, count - skipped));
+                    if (read < 0) break;
+                    skipped += read;
+                }
+                return skipped;
+            }
+
+            @Override
+            public boolean markSupported() {
+                return false;
+            }
+
+            @Override
+            public synchronized void reset() throws java.io.IOException {
+                throw new java.io.IOException("Bounded object streams cannot reset");
+            }
+        };
+    }
+
+    @Override
+    public void putStream(
+            UUID orgId,
+            String key,
+            java.io.InputStream input,
+            long size,
+            String type,
+            String sha256)
+            throws Exception {
+        if (size < 0) throw new IllegalArgumentException("Invalid object size");
+        ensureBucket();
+        client.putObject(
+                PutObjectArgs.builder().bucket(bucket).object(key).stream(input, size, -1)
+                        .contentType(type == null ? "application/octet-stream" : type)
+                        .build());
+    }
+
+    @Override
+    public void putFromPath(
+            UUID orgId, String key, java.nio.file.Path path, String type, String sha256)
+            throws Exception {
+        ensureBucket();
+        try (var in = java.nio.file.Files.newInputStream(path)) {
+            putStream(orgId, key, in, java.nio.file.Files.size(path), type, sha256);
+        }
+    }
+
+    @Override
+    public void copyToPath(UUID orgId, String key, java.nio.file.Path path, long maxBytes)
+            throws Exception {
+        if (maxBytes < 1 || maxBytes > 536870912)
+            throw new IllegalArgumentException("Invalid snapshot read budget");
+        try (var in = client.getObject(GetObjectArgs.builder().bucket(bucket).object(key).build());
+                var out = java.nio.file.Files.newOutputStream(path)) {
+            byte[] buffer = new byte[8192];
+            long total = 0;
+            int count;
+            while ((count = in.read(buffer)) != -1) {
+                total = Math.addExact(total, count);
+                if (total > maxBytes)
+                    throw new IllegalStateException("Snapshot exceeds read budget");
+                out.write(buffer, 0, count);
+            }
+        }
+    }
+
+    @Override
     public byte[] getBounded(UUID orgId, String objectKey, long maxBytes) throws Exception {
-        if (maxBytes < 1 || maxBytes > 33554432)
+        if (maxBytes < 1 || maxBytes >= Integer.MAX_VALUE)
             throw new IllegalArgumentException("Invalid object read budget");
-        try (var in =
-                client.getObject(
-                        GetObjectArgs.builder().bucket(bucket).object(objectKey).build())) {
+        try (var in = openRead(orgId, objectKey, maxBytes)) {
             byte[] bytes = in.readNBytes(Math.toIntExact(maxBytes + 1));
             if (bytes.length > maxBytes)
                 throw new IllegalStateException("Object exceeds read budget");

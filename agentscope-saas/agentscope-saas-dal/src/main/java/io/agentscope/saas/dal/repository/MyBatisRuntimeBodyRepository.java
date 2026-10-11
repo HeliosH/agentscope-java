@@ -58,7 +58,9 @@ public class MyBatisRuntimeBodyRepository implements RuntimeBodyRepository {
 
     @Override
     public int collected(UUID id, UUID token, OffsetDateTime recheck) {
-        return admin.collected(id, token, recheck);
+        int updated = admin.collected(id, token, recheck);
+        if (updated == 1) admin.purgeFallback(id);
+        return updated;
     }
 
     @Override
@@ -84,5 +86,46 @@ public class MyBatisRuntimeBodyRepository implements RuntimeBodyRepository {
     @Override
     public long usage(UUID org, UUID user) {
         return tenant.usage(org, user);
+    }
+
+    @Override
+    public void fallback(Body body, String payload) {
+        if (tenant.fallback(body, payload) != 1)
+            throw new IllegalStateException("Runtime fallback reservation failed");
+    }
+
+    @Override
+    public Optional<String> fallbackPayload(Scope scope, UUID id) {
+        return tenant.fallbackPayload(scope, id).stream().findFirst();
+    }
+
+    @Override
+    public long fallbackUsage(UUID org, UUID user) {
+        return tenant.fallbackUsage(org, user);
+    }
+
+    @Override
+    public List<Body> fallbackCandidates(OffsetDateTime now, int limit) {
+        return admin.fallbackCandidates(now, limit);
+    }
+
+    @Override
+    public int protectFallback(UUID id, OffsetDateTime now, OffsetDateTime leaseUntil) {
+        return admin.protectFallback(id, now, leaseUntil);
+    }
+
+    @Override
+    public int claimFallback(UUID id, UUID token, OffsetDateTime now, OffsetDateTime leaseUntil) {
+        return admin.claimFallback(id, token, now, leaseUntil);
+    }
+
+    @Override
+    public int offloaded(UUID id, UUID token, OffsetDateTime now) {
+        return admin.offloaded(id, token, now);
+    }
+
+    @Override
+    public int retryFallback(UUID id, UUID token, OffsetDateTime retryAt) {
+        return admin.retryFallback(id, token, retryAt);
     }
 }

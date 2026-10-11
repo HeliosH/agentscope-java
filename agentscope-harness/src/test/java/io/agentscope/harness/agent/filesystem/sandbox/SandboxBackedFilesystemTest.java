@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.harness.agent.filesystem.model.FileUploadResponse;
 import io.agentscope.harness.agent.filesystem.model.ReadResult;
 import io.agentscope.harness.agent.filesystem.remote.RemoteFilesystem;
 import io.agentscope.harness.agent.filesystem.remote.store.InMemoryStore;
@@ -30,6 +31,8 @@ import io.agentscope.harness.agent.sandbox.ExecResult;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxException;
 import io.agentscope.harness.agent.sandbox.SandboxState;
+import io.agentscope.harness.agent.sandbox.WorkspaceProjectionPlan;
+import io.agentscope.harness.agent.sandbox.WorkspaceProjectionReport;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -37,6 +40,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
@@ -51,6 +56,20 @@ import org.junit.jupiter.api.Test;
  * harness tests run on JUnit 5 only).
  */
 class SandboxBackedFilesystemTest {
+    @Test
+    void acceptedTransferLimitsAreCallScopedAndNeverChangeTheSharedDefaults() {
+        var filesystem = new SandboxBackedFilesystem();
+        var small = new io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy(2, 10, 20);
+        var large = new io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy(4, 100, 200);
+        filesystem.configureTransferPolicy(small);
+        var oldRun = io.agentscope.core.agent.RuntimeContext.builder().build();
+        oldRun.put(io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy.class, large);
+        var newRun = io.agentscope.core.agent.RuntimeContext.builder().build();
+        assertEquals(large, filesystem.getTransferPolicy(oldRun));
+        assertEquals(small, filesystem.getTransferPolicy(newRun));
+        assertEquals(small, filesystem.getTransferPolicy());
+        assertEquals(large, filesystem.fork().getTransferPolicy(oldRun));
+    }
 
     private static final RuntimeContext RC = RuntimeContext.empty();
     private static final NamespaceFactory NS = rc -> List.of("test", "fs");
@@ -120,6 +139,30 @@ class SandboxBackedFilesystemTest {
         ReadResult result = fs.read(RC, "/MEMORY.md", 0, 0);
         assertTrue(result.isSuccess());
         assertTrue(result.fileData().content().contains("memory content"));
+    }
+
+    @Test
+    void linksAndSpecialEntriesRejectTheWholeProjectionBeforePublication() throws Exception {
+        for (byte type : new byte[] {'1', '2', '3', '6'}) {
+            var bytes = new ByteArrayOutputStream();
+            try (var tar = new TarArchiveOutputStream(bytes)) {
+                var entry = new TarArchiveEntry("outputs/linked.txt", type);
+                entry.setLinkName("/etc/passwd");
+                tar.putArchiveEntry(entry);
+                tar.closeArchiveEntry();
+                tar.finish();
+            }
+            var remote = new RemoteFilesystem(new InMemoryStore(), NS);
+            var fs = new SandboxBackedFilesystem();
+            fs.configureRemoteFallback(remote);
+            var report =
+                    fs.projectSandboxWorkspaceWithReport(
+                            contextWithSandbox(new FakeSandbox(bytes.toByteArray())));
+            assertFalse(report.completeScan(), "entry type " + (char) type);
+            assertEquals(0, report.projectedFiles());
+            assertFalse(remote.exists(RC, "/outputs/linked.txt"));
+            assertThrows(IllegalStateException.class, report::verifyComplete);
+        }
     }
 
     @Test
@@ -270,14 +313,13 @@ class SandboxBackedFilesystemTest {
                                         Map.of("../escape.txt", "bad", "safe/file.txt", "good"))));
 
         var receipt = fs.projectSandboxWorkspaceWithReport(rc);
-        assertEquals(1, receipt.projectedFiles());
+        assertEquals(0, receipt.projectedFiles());
         assertFalse(receipt.completeScan());
         assertThrows(IllegalStateException.class, receipt::verifyComplete);
         fs.setSandbox(null);
         assertFalse(fs.exists(RC, "/escape.txt"));
         ReadResult safe = fs.read(RC, "/safe/file.txt", 0, 0);
-        assertTrue(safe.isSuccess());
-        assertTrue(safe.fileData().content().contains("good"));
+        assertFalse(safe.isSuccess());
     }
 
     @Test
@@ -455,10 +497,405 @@ class SandboxBackedFilesystemTest {
                         .anyMatch(path -> path.startsWith("/generated/conflicts/")));
     }
 
+    @Test
+    void freezesCompleteInventoryBeforeWritesAndReadsTheSandboxArchiveOnlyOnce() throws Exception {
+        var remote = new RemoteFilesystem(new InMemoryStore(), NS);
+        var fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        var original = tarArchive(Map.of("outputs/a.txt", "original", "outputs/b.txt", "second"));
+        var changed = tarArchive(Map.of("outputs/a.txt", "changed"));
+        var archive = new AtomicReference<>(original);
+        var reads = new AtomicInteger();
+        var sandbox =
+                new FakeSandbox(original) {
+                    @Override
+                    public InputStream persistWorkspace() {
+                        reads.incrementAndGet();
+                        return new ByteArrayInputStream(archive.get());
+                    }
+                };
+        var admission = new AtomicReference<WorkspaceProjectionPlan>();
+        var captured = new AtomicReference<java.nio.file.Path>();
+        var completed = new AtomicInteger();
+        fs.configureProjectionSink(
+                new WorkspaceProjectionSink() {
+                    @Override
+                    public void onProjectionPlanned(
+                            RuntimeContext ctx, WorkspaceProjectionPlan plan) {
+                        assertTrue(remote.fileVersions(ctx).isEmpty());
+                        assertEquals(2, plan.entries().size());
+                        assertEquals(14, plan.totalBytes());
+                        assertEquals(64, plan.version().length());
+                        admission.set(plan);
+                        archive.set(changed);
+                    }
+
+                    @Override
+                    public void onProjectionCaptured(
+                            RuntimeContext ctx,
+                            WorkspaceProjectionPlan plan,
+                            java.nio.file.Path path)
+                            throws Exception {
+                        assertTrue(admission.get() == plan);
+                        assertTrue(remote.fileVersions(ctx).isEmpty());
+                        assertTrue(java.nio.file.Files.size(path) > 0);
+                        captured.set(path);
+                    }
+
+                    @Override
+                    public void onProjectionCompleted(
+                            RuntimeContext ctx, WorkspaceProjectionReport report) {
+                        completed.incrementAndGet();
+                    }
+                });
+        var report = fs.projectSandboxWorkspaceWithReport(contextWithSandbox(sandbox));
+        assertEquals(2, report.projectedFiles());
+        assertEquals(1, reads.get());
+        assertEquals(1, completed.get());
+        assertFalse(java.nio.file.Files.exists(captured.get()));
+        assertEquals("original", remote.read(RC, "/outputs/a.txt", 0, 0).fileData().content());
+        assertEquals("second", remote.read(RC, "/outputs/b.txt", 0, 0).fileData().content());
+        var reverse = new java.util.ArrayList<>(admission.get().entries());
+        java.util.Collections.reverse(reverse);
+        assertEquals(
+                admission.get().version(), new WorkspaceProjectionPlan(reverse, 2, 14).version());
+    }
+
+    @Test
+    void rejectedAdmissionCannotTransferAnyWorkspaceFile() throws Exception {
+        var remote = new RemoteFilesystem(new InMemoryStore(), NS);
+        var fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        fs.configureProjectionSink(
+                new WorkspaceProjectionSink() {
+                    @Override
+                    public void onProjectionPlanned(
+                            RuntimeContext ctx, WorkspaceProjectionPlan plan) {
+                        throw new IllegalStateException("manifest database unavailable");
+                    }
+                });
+        assertThrows(
+                IllegalStateException.class,
+                () ->
+                        fs.projectSandboxWorkspaceWithReport(
+                                contextWithSandbox(
+                                        new FakeSandbox(
+                                                tarArchive(Map.of("outputs/a.txt", "abc"))))));
+        assertTrue(remote.fileVersions(RC).isEmpty());
+    }
+
+    @Test
+    void duplicateCanonicalPathsRejectTheEntireScanBeforeAdmission() throws Exception {
+        var files = new java.util.LinkedHashMap<String, String>();
+        files.put("./outputs/a.txt", "abc");
+        files.put("outputs/a.txt", "different");
+        var remote = new RemoteFilesystem(new InMemoryStore(), NS);
+        var fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        var report =
+                fs.projectSandboxWorkspaceWithReport(
+                        contextWithSandbox(new FakeSandbox(tarArchive(files))));
+        assertFalse(report.completeScan());
+        assertEquals(0, report.projectedFiles());
+        assertTrue(remote.fileVersions(RC).isEmpty());
+    }
+
+    @Test
+    void unchangedVolumeFilesStillHaveAnAdmittedInventoryAndCatalogCallback() throws Exception {
+        var remote = new RemoteFilesystem(new InMemoryStore(), NS);
+        remote.write(RC, "/outputs/a.txt", "same");
+        var fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        var sandbox = new FakeSandbox(tarArchive(Map.of("outputs/a.txt", "same")), "", true);
+        fs.hydrateRemoteWorkspace(RC, sandbox);
+        var callbacks = new AtomicInteger();
+        fs.configureProjectionSink(
+                new WorkspaceProjectionSink() {
+                    @Override
+                    public void onProjectionPlanned(
+                            RuntimeContext ctx, WorkspaceProjectionPlan plan) {
+                        assertEquals(1, plan.entries().size());
+                        assertTrue(plan.entries().get(0).unchanged());
+                    }
+
+                    @Override
+                    public void onProjectedFile(RuntimeContext ctx, String path, byte[] content) {
+                        callbacks.incrementAndGet();
+                        assertEquals("/outputs/a.txt", path);
+                        assertArrayEquals("same".getBytes(StandardCharsets.UTF_8), content);
+                    }
+                });
+        var report = fs.projectSandboxWorkspaceWithReport(contextWithSandbox(sandbox));
+        assertEquals(0, report.projectedFiles());
+        assertEquals(1, report.unchangedFiles());
+        assertEquals(1, callbacks.get());
+        assertEquals(1L, remote.fileVersions(RC).get("/outputs/a.txt"));
+    }
+
+    @Test
+    void returnedUploadFailureCannotProduceACompletionReceipt() throws Exception {
+        var remote =
+                new RemoteFilesystem(new InMemoryStore(), NS) {
+                    @Override
+                    public List<FileUploadResponse> uploadFiles(
+                            RuntimeContext ctx, List<Map.Entry<String, byte[]>> files) {
+                        return files.stream()
+                                .map(
+                                        e ->
+                                                FileUploadResponse.fail(
+                                                        e.getKey(), "fixture unavailable"))
+                                .toList();
+                    }
+                };
+        var fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        var completed = new AtomicInteger();
+        fs.configureProjectionSink(
+                new WorkspaceProjectionSink() {
+                    @Override
+                    public void onProjectionCompleted(
+                            RuntimeContext ctx, WorkspaceProjectionReport report) {
+                        completed.incrementAndGet();
+                    }
+                });
+        assertThrows(
+                IllegalStateException.class,
+                () ->
+                        fs.projectSandboxWorkspaceWithReport(
+                                contextWithSandbox(
+                                        new FakeSandbox(
+                                                tarArchive(Map.of("outputs/a.txt", "abc"))))));
+        assertEquals(0, completed.get());
+        assertTrue(remote.fileVersions(RC).isEmpty());
+    }
+
+    @Test
+    void concurrentRemoteChangeToUnchangedSandboxFileRejectsRatherThanClaimsItVerified()
+            throws Exception {
+        var remote = new RemoteFilesystem(new InMemoryStore(), NS);
+        remote.write(RC, "/outputs/a.txt", "original");
+        var fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        var sandbox = new FakeSandbox(tarArchive(Map.of("outputs/a.txt", "original")), "", true);
+        fs.hydrateRemoteWorkspace(RC, sandbox);
+        remote.uploadFiles(
+                RC,
+                List.of(Map.entry("/outputs/a.txt", "browser".getBytes(StandardCharsets.UTF_8))));
+        var report = fs.projectSandboxWorkspaceWithReport(contextWithSandbox(sandbox));
+        assertFalse(report.completeScan());
+        assertEquals(0, report.projectedFiles());
+        assertEquals("browser", remote.read(RC, "/outputs/a.txt", 0, 0).fileData().content());
+    }
+
     private static RuntimeContext contextWithSandbox(Sandbox sandbox) {
         RuntimeContext rc = RuntimeContext.empty();
         rc.put(Sandbox.class, sandbox);
         return rc;
+    }
+
+    @Test
+    void pinnedToolWritesDoNotBypassReleasePublication() {
+        var remote = new RemoteFilesystem(new InMemoryStore(), NS);
+        remote.write(RC, "/inputs/pinned.txt", "newer-input");
+        remote.write(RC, "/outputs/report.txt", "newer-output");
+        var fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        var ctx = contextWithSandbox(new FakeSandbox());
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class,
+                new io.agentscope.harness.agent.sandbox.WorkspaceInputPlan(
+                        new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan(
+                                "input://fixture",
+                                "pinned",
+                                List.of(
+                                        new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan
+                                                .WorkspaceFile(
+                                                "inputs/pinned.txt", new byte[0])))));
+
+        var results =
+                fs.uploadFiles(
+                        ctx,
+                        List.of(
+                                Map.entry(
+                                        "/inputs/pinned.txt",
+                                        "edited".getBytes(StandardCharsets.UTF_8)),
+                                Map.entry(
+                                        "/outputs/report.txt",
+                                        "edited".getBytes(StandardCharsets.UTF_8)),
+                                Map.entry(
+                                        "/outputs/new.txt",
+                                        "new".getBytes(StandardCharsets.UTF_8))));
+
+        assertEquals(3, results.size());
+        assertTrue(results.stream().allMatch(FileUploadResponse::isSuccess));
+        assertEquals(
+                "newer-input", remote.read(RC, "/inputs/pinned.txt", 0, 0).fileData().content());
+        assertEquals(
+                "newer-output", remote.read(RC, "/outputs/report.txt", 0, 0).fileData().content());
+        assertFalse(remote.exists(RC, "/outputs/new.txt"));
+    }
+
+    @Test
+    void pinnedProjectionDoesNotRepublishInputsOrDeleteGlobalFiles() throws Exception {
+        var remote = new RemoteFilesystem(new InMemoryStore(), NS);
+        remote.uploadFiles(
+                RC,
+                List.of(
+                        Map.entry(
+                                "/inputs/pinned.txt",
+                                "new-upload".getBytes(StandardCharsets.UTF_8)),
+                        Map.entry(
+                                "/outputs/history.txt", "history".getBytes(StandardCharsets.UTF_8)),
+                        Map.entry(
+                                "/.agentscope/sandbox_projection_manifest",
+                                "/inputs/pinned.txt\n/outputs/history.txt\n"
+                                        .getBytes(StandardCharsets.UTF_8))));
+        var fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        var ctx =
+                contextWithSandbox(
+                        new FakeSandbox(
+                                tarArchive(
+                                        Map.of(
+                                                "inputs/pinned.txt",
+                                                "old-input",
+                                                "outputs/result.txt",
+                                                "result"))));
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class,
+                new io.agentscope.harness.agent.sandbox.WorkspaceInputPlan(
+                        new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan(
+                                "input://fixture",
+                                "pinned",
+                                List.of(
+                                        new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan
+                                                .WorkspaceFile(
+                                                "inputs/pinned.txt",
+                                                "old-input".getBytes(StandardCharsets.UTF_8))))));
+        assertEquals(1, fs.projectSandboxWorkspaceWithReport(ctx).projectedFiles());
+        assertEquals(
+                "new-upload", remote.read(RC, "/inputs/pinned.txt", 0, 0).fileData().content());
+        assertEquals("history", remote.read(RC, "/outputs/history.txt", 0, 0).fileData().content());
+        assertEquals("result", remote.read(RC, "/outputs/result.txt", 0, 0).fileData().content());
+    }
+
+    @Test
+    void unchangedBoundOutputIsNotRepublishedAndChangedCopyGetsANewTarget() throws Exception {
+        var remote = new RemoteFilesystem(new InMemoryStore(), NS);
+        remote.uploadFiles(
+                RC,
+                List.of(
+                        Map.entry(
+                                "/outputs/report.txt",
+                                "newer-upload".getBytes(StandardCharsets.UTF_8))));
+        var fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        var ctx =
+                contextWithSandbox(
+                        new FakeSandbox(tarArchive(Map.of("outputs/report.txt", "original"))));
+        var input =
+                new io.agentscope.harness.agent.sandbox.WorkspaceInputPlan(
+                        new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan(
+                                "input://fixture",
+                                "pinned",
+                                List.of(
+                                        new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan
+                                                .WorkspaceFile(
+                                                "outputs/report.txt",
+                                                "original".getBytes(StandardCharsets.UTF_8)))));
+        ctx.put(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class, input);
+        assertEquals(0, fs.projectSandboxWorkspaceWithReport(ctx).projectedFiles());
+        var changed =
+                contextWithSandbox(
+                        new FakeSandbox(tarArchive(Map.of("outputs/report.txt", "revision"))));
+        changed.put(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class, input);
+        assertEquals(1, fs.projectSandboxWorkspaceWithReport(changed).projectedFiles());
+        assertEquals(
+                "newer-upload", remote.read(RC, "/outputs/report.txt", 0, 0).fileData().content());
+        var revisions = remote.glob(RC, "**", "/outputs/revisions").matches();
+        assertEquals(1, revisions.size());
+        assertEquals(
+                "revision", remote.read(RC, revisions.get(0).path(), 0, 0).fileData().content());
+    }
+
+    @Test
+    void systemHydrationNeverSearchesUserBodiesAndSharesInputBudget() throws Exception {
+        var store =
+                new InMemoryStore() {
+                    @Override
+                    public List<io.agentscope.harness.agent.filesystem.remote.store.StoreItem>
+                            search(List<String> ns, int limit, int offset) {
+                        throw new AssertionError("Unbounded workspace body search");
+                    }
+
+                    @Override
+                    public io.agentscope.harness.agent.filesystem.remote.store.StoreItem get(
+                            List<String> ns, String key) {
+                        if (key.startsWith("/inputs/") || key.startsWith("/outputs/"))
+                            throw new AssertionError("Unselected user-file read");
+                        return super.get(ns, key);
+                    }
+                };
+        var remote = new RemoteFilesystem(store, NS);
+        remote.uploadFiles(
+                RC,
+                List.of(
+                        Map.entry(
+                                "/skills/test/SKILL.md", "skill".getBytes(StandardCharsets.UTF_8)),
+                        Map.entry(
+                                "/outputs/huge.txt", "history".getBytes(StandardCharsets.UTF_8))));
+        var fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        var sandbox = new FakeSandbox();
+        var ctx = contextWithSandbox(sandbox);
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class,
+                new io.agentscope.harness.agent.sandbox.WorkspaceInputPlan(
+                        new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan(
+                                "input://fixture",
+                                "pinned",
+                                List.of(
+                                        new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan
+                                                .WorkspaceFile(
+                                                "inputs/pinned.txt", new byte[3])))));
+        assertEquals(1, fs.hydrateSystemWorkspace(ctx, sandbox));
+        fs.configureTransferPolicy(
+                new io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy(2, 7, 7));
+        assertThrows(IllegalStateException.class, () -> fs.hydrateSystemWorkspace(ctx, sandbox));
+    }
+
+    @Test
+    void inputAndOutputCopiesShareTheSamePhysicalWorkspaceBudget() throws Exception {
+        var remote = new RemoteFilesystem(new InMemoryStore(), NS);
+        var fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        fs.configureTransferPolicy(
+                new io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy(10, 8, 10));
+        var context =
+                contextWithSandbox(
+                        new FakeSandbox(
+                                tarArchive(
+                                        Map.of(
+                                                "inputs/source.txt",
+                                                "12345678",
+                                                "outputs/result.txt",
+                                                "12345678"))));
+        context.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class,
+                new io.agentscope.harness.agent.sandbox.WorkspaceInputPlan(
+                        new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan(
+                                "input://budget",
+                                "v1",
+                                List.of(
+                                        new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan
+                                                .WorkspaceFile(
+                                                "inputs/source.txt",
+                                                "12345678".getBytes(StandardCharsets.UTF_8))))));
+        var report = fs.projectSandboxWorkspaceWithReport(context);
+        assertFalse(report.completeScan());
+        assertEquals(0, report.projectedFiles());
+        assertThrows(IllegalStateException.class, report::verifyComplete);
+        assertFalse(remote.exists(RC, "/outputs/result.txt"));
     }
 
     /** A minimal Sandbox that reports success for any exec (so uploadFiles proceeds). */

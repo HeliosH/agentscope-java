@@ -286,10 +286,14 @@ else
   bad "workspace quota summary is invalid"
 fi
 
-CHAT_BODY="$(COMMAND="$COMMAND" python3 - <<'PY'
+CHAT_BODY="$(COMMAND="$COMMAND" UPLOAD_JSON="$UPLOAD_JSON" python3 - <<'PY'
 import json
 import os
-print(json.dumps({"message": os.environ["COMMAND"]}))
+with open(os.environ["UPLOAD_JSON"]) as source:
+    file = json.load(source)
+print(json.dumps({"message": os.environ["COMMAND"], "attachments": [{
+    "path": file["path"], "name": file["path"].split("/")[-1],
+    "versionId": file["versionId"], "sizeBytes": file["sizeBytes"]}]}))
 PY
 )"
 curl -s -N --max-time "$TIMEOUT" -X POST "$BASE/api/agents/$AGID/chat/stream" \

@@ -38,6 +38,15 @@ public class FileAttachmentEntity {
     private UUID fileId;
 
     private UUID fileVersionId;
+    private String logicalPath;
+
+    public String getLogicalPath() {
+        return logicalPath;
+    }
+
+    public void setLogicalPath(String value) {
+        logicalPath = value;
+    }
 
     private String kind;
 

@@ -64,6 +64,18 @@ public abstract class SandboxFilesystemSpec {
 
     private WorkspaceProjectionSink workspaceProjectionSink = WorkspaceProjectionSink.noop();
     private WorkspaceTransferPolicy workspaceTransferPolicy = WorkspaceTransferPolicy.DEFAULT;
+    private io.agentscope.harness.agent.sandbox.WorkspaceTransferResources transferResources =
+            io.agentscope.harness.agent.sandbox.WorkspaceTransferResources.DEFAULT;
+
+    public SandboxFilesystemSpec transferResources(
+            io.agentscope.harness.agent.sandbox.WorkspaceTransferResources resources) {
+        this.transferResources = Objects.requireNonNull(resources);
+        return this;
+    }
+
+    public io.agentscope.harness.agent.sandbox.WorkspaceTransferResources getTransferResources() {
+        return transferResources;
+    }
 
     public SandboxFilesystemSpec workspaceTransferPolicy(WorkspaceTransferPolicy policy) {
         this.workspaceTransferPolicy = Objects.requireNonNull(policy, "policy");

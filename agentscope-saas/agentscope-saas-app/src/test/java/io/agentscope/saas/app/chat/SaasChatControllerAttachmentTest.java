@@ -25,6 +25,19 @@ import org.junit.jupiter.api.Test;
 class SaasChatControllerAttachmentTest {
 
     @Test
+    void archiveFailureNeverExposesPrivateStorageDetails() {
+        var error =
+                new io.agentscope.saas.app.workspace.WorkspaceArchiveRejectedException(
+                        new IllegalStateException(
+                                "Failed to connect to http://internal-storage:9000/private-key"));
+        assertThat(SaasChatController.errorMessage(error))
+                .isEqualTo("Workspace output could not be safely handed over for archiving")
+                .doesNotContain("internal-storage", "private-key");
+        assertThat(SaasChatController.errorMessage(new RuntimeException(error)))
+                .doesNotContain("internal-storage", "private-key");
+    }
+
+    @Test
     void agentMessageIncludesOnlySafeInputAttachments() {
         ChatRequest request =
                 new ChatRequest(
@@ -44,5 +57,14 @@ class SaasChatControllerAttachmentTest {
         assertThat(prompt)
                 .contains("inputs/report.pdf", "User request:\n总结文件")
                 .doesNotContain("MEMORY.md", "inputs/../secret");
+    }
+
+    @Test
+    void outputFilesCanBeReferencedButRuntimeAndMemoryFilesCannot() {
+        assertThat(SaasChatController.safeInputPath("outputs/report.pptx"))
+                .isEqualTo("outputs/report.pptx");
+        assertThat(SaasChatController.safeInputPath("outputs/../MEMORY.md")).isNull();
+        assertThat(SaasChatController.safeInputPath("runtime/checkpoint.json")).isNull();
+        assertThat(SaasChatController.safeInputPath("skills/private.md")).isNull();
     }
 }

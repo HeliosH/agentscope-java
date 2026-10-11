@@ -9,7 +9,9 @@ package io.agentscope.saas.dal.repository;
 import io.agentscope.saas.dal.mybatis.tenant.RunArtifactData;
 import io.agentscope.saas.dal.mybatis.tenant.RunArtifactMapper;
 import io.agentscope.saas.domain.orchestration.RunArtifactRepository;
+import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.stereotype.Repository;
 
@@ -26,12 +28,22 @@ public class MyBatisRunArtifactRepository implements RunArtifactRepository {
     @Override
     public boolean lockCurrentPublicationScope(
             UUID orgId, UUID runId, UUID taskId, UUID attemptId) {
-        return !mapper.lockCurrentPublicationScope(orgId, runId, taskId, attemptId).isEmpty();
+        return !mapper.lockCurrentPublicationScope(orgId, runId, taskId, attemptId).isEmpty()
+                && !mapper.lockActiveRun(orgId, runId).isEmpty()
+                && !mapper.lockActiveAttempt(orgId, runId, taskId, attemptId, OffsetDateTime.now())
+                        .isEmpty();
     }
 
     @Override
     public boolean existsById(UUID id, UUID orgId) {
         return mapper.countById(id, orgId) > 0;
+    }
+
+    @Override
+    public Optional<RunArtifact> findById(UUID id, UUID orgId) {
+        return mapper.findById(id, orgId).stream()
+                .findFirst()
+                .map(MyBatisRunArtifactRepository::toDomain);
     }
 
     @Override

@@ -53,6 +53,7 @@
 }
 
 .run-status--running,
+.run-status--archiving,
 .run-status--ready,
 .run-status--claimed,
 .run-status--pending,
@@ -245,6 +246,7 @@
 }
 
 .run-task__marker--running,
+.run-task__marker--archiving,
 .run-task__marker--claimed,
 .run-task__marker--leased {
   border-color: #3c79ad;
@@ -339,3 +341,13 @@
   font-size: 0.72rem;
   text-align: center;
 }
+.run-recovery {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+.run-recovery svg { flex: 0 0 14px; margin-top: 2px; }

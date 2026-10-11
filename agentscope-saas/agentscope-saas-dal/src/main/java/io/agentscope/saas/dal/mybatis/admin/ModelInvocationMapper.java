@@ -24,6 +24,16 @@ import org.apache.ibatis.annotations.Update;
 /** All privileged operations retain explicit tenant and ownership predicates. */
 public interface ModelInvocationMapper {
     @Select(
+            """
+            SELECT COUNT(*) FROM model_invocations m
+            JOIN assistant_runs r ON r.id = m.run_id AND r.org_id = m.org_id
+            WHERE m.org_id = #{orgId} AND m.user_id = #{userId} AND r.user_id = #{userId}
+                AND m.run_id = #{runId} AND m.task_id = #{taskId}
+                AND m.purpose = 'REASONING' AND m.status = 'FAILED'
+            """)
+    long failedReasoningCalls(Scope scope);
+
+    @Select(
             "SELECT id FROM orgs WHERE id = #{orgId} AND (#{requireActive} = FALSE OR status ="
                     + " 'active') FOR UPDATE")
     List<UUID> lockOrg(@Param("orgId") UUID orgId, @Param("requireActive") boolean requireActive);

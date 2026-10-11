@@ -18,7 +18,19 @@ import java.util.UUID;
 public interface DurableTaskLeaseRepository {
     boolean lockRun(UUID runId);
 
+    boolean archiveHandover(UUID attemptId, String workerId);
+
+    boolean completedSuccessfully(UUID attemptId, String workerId);
+
     List<TaskCandidate> findReadyCandidates(OffsetDateTime readyAt, int limit);
+
+    List<TaskCandidate> findCompatibleReadyCandidates(
+            OffsetDateTime readyAt,
+            int limit,
+            String deploymentScope,
+            String capabilityHash,
+            long maxArchiveBytes,
+            long maxFileBytes);
 
     int claimTask(UUID taskId, OffsetDateTime claimedAt);
 
@@ -51,6 +63,9 @@ public interface DurableTaskLeaseRepository {
             OffsetDateTime leaseExpiresAt);
 
     List<ExpiredAttempt> findExpiredAttempts(OffsetDateTime expiredBefore, int limit);
+
+    List<ExpiredAttempt> findScopedExpiredAttempts(
+            OffsetDateTime expiredBefore, int limit, String deploymentScope);
 
     int finishAttempt(
             UUID attemptId,

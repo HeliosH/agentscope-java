@@ -33,11 +33,15 @@ import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxAware;
 import io.agentscope.harness.agent.sandbox.SandboxErrorCode;
 import io.agentscope.harness.agent.sandbox.SandboxException;
+import io.agentscope.harness.agent.sandbox.WorkspaceProjectionPlan;
 import io.agentscope.harness.agent.sandbox.WorkspaceProjectionReport;
 import io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy;
+import io.agentscope.harness.agent.sandbox.WorkspaceTransferResources;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -69,6 +73,15 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
     private static final Logger log = LoggerFactory.getLogger(SandboxBackedFilesystem.class);
     private static final int REMOTE_PROJECTION_BATCH_SIZE = 100;
     private WorkspaceTransferPolicy transferPolicy = WorkspaceTransferPolicy.DEFAULT;
+    private WorkspaceTransferResources transferResources = WorkspaceTransferResources.DEFAULT;
+
+    public void configureTransferResources(WorkspaceTransferResources resources) {
+        transferResources = Objects.requireNonNull(resources);
+    }
+
+    public WorkspaceTransferResources getTransferResources() {
+        return transferResources;
+    }
 
     public void configureTransferPolicy(WorkspaceTransferPolicy policy) {
         transferPolicy = Objects.requireNonNull(policy, "policy");
@@ -76,6 +89,11 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
 
     public WorkspaceTransferPolicy getTransferPolicy() {
         return transferPolicy;
+    }
+
+    public WorkspaceTransferPolicy getTransferPolicy(RuntimeContext context) {
+        var accepted = context == null ? null : context.get(WorkspaceTransferPolicy.class);
+        return accepted == null ? transferPolicy : accepted;
     }
 
     private static final String REMOTE_PROJECTION_MANIFEST =
@@ -119,6 +137,7 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
         child.remoteFallback = this.remoteFallback;
         child.projectionSink = this.projectionSink;
         child.transferPolicy = this.transferPolicy;
+        child.transferResources = this.transferResources;
         return child;
     }
 
@@ -154,16 +173,59 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
      */
     public int hydrateRemoteWorkspace(RuntimeContext runtimeContext, Sandbox target)
             throws Exception {
+        return hydrateRemoteWorkspace(runtimeContext, target, false);
+    }
+
+    public int hydrateSystemWorkspace(RuntimeContext context, Sandbox target) throws Exception {
+        return hydrateRemoteWorkspace(context, target, true);
+    }
+
+    private int hydrateRemoteWorkspace(
+            RuntimeContext runtimeContext, Sandbox target, boolean systemOnly) throws Exception {
+        try (var permit = transferResources.acquire()) {
+            return hydrateRemoteWorkspaceAdmitted(runtimeContext, target, systemOnly);
+        }
+    }
+
+    private int hydrateRemoteWorkspaceAdmitted(
+            RuntimeContext runtimeContext, Sandbox target, boolean systemOnly) throws Exception {
+        var transferPolicy = getTransferPolicy(runtimeContext);
         RemoteFilesystem fallback = remoteFallback;
         if (fallback == null || target == null) {
             return 0;
         }
-        boolean incremental = target.hasPersistentWorkspace();
+        boolean incremental = target.hasPersistentWorkspace() && !systemOnly;
+        var inputPlan =
+                systemOnly
+                        ? runtimeContext.get(
+                                io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class)
+                        : null;
+        int maxHydratedFiles =
+                transferPolicy.maxFiles()
+                        - (inputPlan == null ? 0 : inputPlan.workspace().files().size());
+        long maxHydratedBytes =
+                transferPolicy.maxTotalBytes()
+                        - (inputPlan == null
+                                ? 0
+                                : inputPlan.workspace().files().stream()
+                                        .mapToLong(f -> f.size())
+                                        .reduce(0L, Math::addExact));
+        if (maxHydratedFiles < 0 || maxHydratedBytes < 0)
+            throw new IllegalStateException("Input plan exceeds workspace budget");
         Map<String, Long> remoteVersions =
                 incremental ? normalizedRemoteVersions(runtimeContext, fallback) : Map.of();
         Map<String, VolumeSyncEntry> previous =
                 incremental ? readVolumeSyncManifest(runtimeContext, target) : Map.of();
-        GlobResult glob = fallback.glob(runtimeContext, "**", "/");
+        GlobResult glob =
+                systemOnly
+                        ? GlobResult.success(
+                                fallback
+                                        .systemFilePaths(
+                                                runtimeContext, Math.max(1, maxHydratedFiles))
+                                        .stream()
+                                        .map(p -> FileInfo.ofFile(p, 0, ""))
+                                        .toList())
+                        : fallback.glob(runtimeContext, "**", "/");
         if (!glob.isSuccess() || glob.matches() == null) {
             return 0;
         }
@@ -173,9 +235,9 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                         .filter(file -> !file.isDirectory())
                         .map(FileInfo::path)
                         .filter(path -> normalizeHydrationPath(path) != null)
-                        .limit(transferPolicy.maxFiles() + 1L)
+                        .limit(maxHydratedFiles + 1L)
                         .toList();
-        if (allPaths.size() > transferPolicy.maxFiles()) {
+        if (allPaths.size() > maxHydratedFiles) {
             throw new IllegalStateException(
                     "Remote workspace exceeds hydration file limit " + transferPolicy.maxFiles());
         }
@@ -199,80 +261,84 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
             removeRemoteDeletedVolumeFiles(runtimeContext, target, previous, remoteVersions);
         }
 
-        ByteArrayOutputStream archiveBytes = new ByteArrayOutputStream();
-        long totalBytes = 0L;
-        int hydrated = 0;
-        Map<String, VolumeSyncEntry> next =
-                incremental ? new LinkedHashMap<>(previous) : new LinkedHashMap<>();
-        if (incremental) {
-            next.keySet().retainAll(remoteVersions.keySet());
-        }
-        try (TarArchiveOutputStream archive = new TarArchiveOutputStream(archiveBytes)) {
-            ArchiveOutputStream<TarArchiveEntry> compatibleArchive = archive;
-            archive.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
-            for (int offset = 0; offset < paths.size(); offset += REMOTE_PROJECTION_BATCH_SIZE) {
-                List<String> batch =
-                        paths.subList(
-                                offset,
-                                Math.min(paths.size(), offset + REMOTE_PROJECTION_BATCH_SIZE));
-                for (FileDownloadResponse file : fallback.downloadFiles(runtimeContext, batch)) {
-                    if (!file.isSuccess() || file.content() == null) {
-                        throw new IllegalStateException(
-                                "Remote workspace file unavailable during hydration: "
-                                        + file.path()
-                                        + ": "
-                                        + file.error());
-                    }
-                    byte[] content = file.content();
-                    if (content.length > transferPolicy.maxFileBytes()) {
-                        throw new IllegalStateException(
-                                "Remote workspace file exceeds hydration limit: " + file.path());
-                    }
-                    totalBytes = Math.addExact(totalBytes, content.length);
-                    if (totalBytes > transferPolicy.maxTotalBytes()) {
-                        throw new IllegalStateException(
-                                "Remote workspace exceeds hydration byte limit "
-                                        + transferPolicy.maxTotalBytes());
-                    }
-                    String path = normalizeHydrationPath(file.path());
-                    if (path == null) {
-                        continue;
-                    }
-                    TarArchiveEntry entry = new TarArchiveEntry(path.substring(1));
-                    entry.setSize(content.length);
-                    entry.setMode(0644);
-                    compatibleArchive.putArchiveEntry(entry);
-                    archive.write(content);
-                    archive.closeArchiveEntry();
-                    hydrated++;
-                    if (incremental) {
-                        next.put(
-                                path,
-                                new VolumeSyncEntry(
-                                        remoteVersions.getOrDefault(path, 0L), sha256(content)));
+        try (var spool =
+                transferResources.spool(
+                        "agentscope-hydrate-",
+                        WorkspaceTransferResources.archiveLimit(transferPolicy))) {
+            long totalBytes = 0L;
+            int hydrated = 0;
+            Map<String, VolumeSyncEntry> next =
+                    incremental ? new LinkedHashMap<>(previous) : new LinkedHashMap<>();
+            if (incremental) {
+                next.keySet().retainAll(remoteVersions.keySet());
+            }
+            try (TarArchiveOutputStream archive = new TarArchiveOutputStream(spool.output())) {
+                ArchiveOutputStream<TarArchiveEntry> compatibleArchive = archive;
+                archive.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
+                for (int offset = 0; offset < paths.size(); offset++) {
+                    List<String> batch = paths.subList(offset, Math.min(paths.size(), offset + 1));
+                    for (FileDownloadResponse file :
+                            fallback.downloadFiles(runtimeContext, batch)) {
+                        if (!file.isSuccess() || file.content() == null) {
+                            throw new IllegalStateException(
+                                    "Remote workspace file unavailable during hydration: "
+                                            + file.path()
+                                            + ": "
+                                            + file.error());
+                        }
+                        byte[] content = file.content();
+                        if (content.length > transferPolicy.maxFileBytes()) {
+                            throw new IllegalStateException(
+                                    "Remote workspace file exceeds hydration limit: "
+                                            + file.path());
+                        }
+                        totalBytes = Math.addExact(totalBytes, content.length);
+                        if (totalBytes > maxHydratedBytes) {
+                            throw new IllegalStateException(
+                                    "Remote workspace exceeds hydration byte limit "
+                                            + transferPolicy.maxTotalBytes());
+                        }
+                        String path = normalizeHydrationPath(file.path());
+                        if (path == null) {
+                            continue;
+                        }
+                        TarArchiveEntry entry = new TarArchiveEntry(path.substring(1));
+                        entry.setSize(content.length);
+                        entry.setMode(0644);
+                        compatibleArchive.putArchiveEntry(entry);
+                        archive.write(content);
+                        archive.closeArchiveEntry();
+                        hydrated++;
+                        if (incremental) {
+                            next.put(
+                                    path,
+                                    new VolumeSyncEntry(
+                                            remoteVersions.getOrDefault(path, 0L),
+                                            sha256(content)));
+                        }
                     }
                 }
+                archive.finish();
             }
-            archive.finish();
-        }
-        if (hydrated > 0) {
-            try (InputStream input = new java.io.ByteArrayInputStream(archiveBytes.toByteArray())) {
-                target.hydrateWorkspace(input);
+            if (hydrated > 0) {
+                try (InputStream input = Files.newInputStream(spool.path())) {
+                    target.hydrateWorkspace(input);
+                }
+                log.debug(
+                        "[sandbox-fs] Hydrated {} remote workspace files ({} bytes)",
+                        hydrated,
+                        totalBytes);
             }
-            log.debug(
-                    "[sandbox-fs] Hydrated {} remote workspace files ({} bytes)",
-                    hydrated,
-                    totalBytes);
+            if (incremental) {
+                writeVolumeSyncManifest(runtimeContext, target, next);
+                log.info(
+                        "[sandbox-fs] Volume workspace sync: total={} changed={} unchanged={}",
+                        allPaths.size(),
+                        hydrated,
+                        Math.max(0, allPaths.size() - hydrated));
+            }
+            return hydrated;
         }
-        if (incremental) {
-            writeVolumeSyncManifest(runtimeContext, target, next);
-            log.info(
-                    "[sandbox-fs] Volume workspace sync: total={} changed={} unchanged={}",
-                    allPaths.size(),
-                    hydrated,
-                    Math.max(0, allPaths.size() - hydrated));
-        }
-        return hydrated;
     }
 
     private String normalizeHydrationPath(String path) {
@@ -473,6 +539,12 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
      * copy is authoritative within a call).
      */
     private void projectToRemote(RuntimeContext runtimeContext, String path, byte[] content) {
+        // Explicit worksets publish only through the verified release inventory.
+        if (runtimeContext != null
+                && runtimeContext.get(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class)
+                        != null) {
+            return;
+        }
         RemoteFilesystem fallback = remoteFallback;
         if (fallback == null) {
             return;
@@ -500,6 +572,14 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
 
     public WorkspaceProjectionReport projectSandboxWorkspaceWithReport(
             RuntimeContext runtimeContext) throws Exception {
+        try (var permit = transferResources.acquire()) {
+            return projectSandboxWorkspaceAdmitted(runtimeContext);
+        }
+    }
+
+    private WorkspaceProjectionReport projectSandboxWorkspaceAdmitted(RuntimeContext runtimeContext)
+            throws Exception {
+        var transferPolicy = getTransferPolicy(runtimeContext);
         Sandbox active = activeSandbox(runtimeContext);
         RemoteFilesystem fallback = remoteFallback;
         if (active == null || fallback == null) {
@@ -514,173 +594,397 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
         Map<String, String> localHashes = new LinkedHashMap<>();
         Set<String> remoteConflicts = new LinkedHashSet<>();
         Set<String> remoteDeletes = new LinkedHashSet<>();
+        try (var spool =
+                transferResources.spool(
+                        "agentscope-projection-",
+                        WorkspaceTransferResources.archiveLimit(transferPolicy))) {
+            Path snapshot = spool.path();
+            ProjectionScan scan =
+                    captureProjection(
+                            runtimeContext, active, spool, incremental, previous, remoteBefore);
+            if (!scan.rejected().isEmpty())
+                return new WorkspaceProjectionReport(
+                        scan.scanned(), 0, 0, scan.bytes(), false, scan.rejected());
+            WorkspaceProjectionPlan plan =
+                    new WorkspaceProjectionPlan(scan.entries(), scan.scanned(), scan.bytes());
+            projectionSink.onProjectionPlanned(runtimeContext, plan);
+            projectionSink.onProjectionCaptured(runtimeContext, plan, snapshot);
+            Map<String, WorkspaceProjectionPlan.Entry> inventory =
+                    plan.entries().stream()
+                            .collect(
+                                    Collectors.toMap(
+                                            WorkspaceProjectionPlan.Entry::sourcePath, e -> e));
+            try (InputStream archive = Files.newInputStream(snapshot);
+                    TarArchiveInputStream tar = new TarArchiveInputStream(archive)) {
+                List<Map.Entry<String, byte[]>> batch =
+                        new ArrayList<>(REMOTE_PROJECTION_BATCH_SIZE);
+                Set<String> currentProjection = new LinkedHashSet<>();
+                int projected = 0;
+                int scanned = 0;
+                int unchanged = 0;
+                long totalBytes = 0;
+                boolean completeScan = true;
+                List<String> rejected = new ArrayList<>();
+                TarArchiveEntry entry;
+                while ((entry = tar.getNextTarEntry()) != null) {
+                    if (!entry.isFile()) {
+                        continue;
+                    }
+                    scanned++;
+                    if (scanned > transferPolicy.maxFiles()) {
+                        completeScan = false;
+                        rejected.add("file count exceeds " + transferPolicy.maxFiles());
+                        break;
+                    }
+                    String path = toRemoteProjectionPath(entry.getName());
+                    if (path == null) {
+                        completeScan = false;
+                        rejected.add("unsafe archive entry: " + entry.getName());
+                        log.warn(
+                                "[sandbox-fs] Skipping unsafe workspace archive entry: {}",
+                                entry.getName());
+                        continue;
+                    }
+                    if (REMOTE_PROJECTION_MANIFEST.equals(path)
+                            || VOLUME_SYNC_MANIFEST.equals(path)) {
+                        continue;
+                    }
+                    currentProjection.add(path);
+                    long size = entry.getSize();
+                    if (size > transferPolicy.maxFileBytes()) {
+                        completeScan = false;
+                        rejected.add(
+                                path
+                                        + ": exceeds file byte limit "
+                                        + transferPolicy.maxFileBytes());
+                        log.warn(
+                                "[sandbox-fs] Skipping oversized workspace file {} ({} bytes)",
+                                path,
+                                size);
+                        continue;
+                    }
+                    if (size > 0 && size > transferPolicy.maxTotalBytes() - totalBytes) {
+                        log.warn(
+                                "[sandbox-fs] Workspace remote projection hit byte limit {}",
+                                transferPolicy.maxTotalBytes());
+                        completeScan = false;
+                        rejected.add(
+                                path
+                                        + ": exceeds total byte limit "
+                                        + transferPolicy.maxTotalBytes());
+                        break;
+                    }
 
-        try (InputStream archive = active.persistWorkspace();
-                TarArchiveInputStream tar = new TarArchiveInputStream(archive)) {
-            List<Map.Entry<String, byte[]>> batch = new ArrayList<>(REMOTE_PROJECTION_BATCH_SIZE);
-            Set<String> currentProjection = new LinkedHashSet<>();
-            int projected = 0;
-            int scanned = 0;
-            int unchanged = 0;
-            long totalBytes = 0;
-            boolean completeScan = true;
-            List<String> rejected = new ArrayList<>();
-            TarArchiveEntry entry;
-            while ((entry = tar.getNextTarEntry()) != null) {
-                if (!entry.isFile()) {
-                    continue;
+                    if (!incremental && projectionSink.supportsStreamProjection(runtimeContext)) {
+                        WorkspaceProjectionPlan.Entry planned = inventory.get(path);
+                        if (planned == null || planned.sizeBytes() != size)
+                            throw new IllegalStateException(
+                                    "Workspace snapshot changed after admission");
+                        try (var file =
+                                transferResources.spool("agentscope-publish-", Math.max(1, size))) {
+                            var digest = MessageDigest.getInstance("SHA-256");
+                            long copied = 0;
+                            byte[] buffer = new byte[transferResources.bufferBytes()];
+                            try (var output = file.output()) {
+                                int read;
+                                while ((read = tar.read(buffer)) != -1) {
+                                    if (read > size - copied)
+                                        throw new IllegalStateException(
+                                                "Workspace archive size mismatch");
+                                    copied += read;
+                                    digest.update(buffer, 0, read);
+                                    output.write(buffer, 0, read);
+                                }
+                            }
+                            String hash = java.util.HexFormat.of().formatHex(digest.digest());
+                            if (copied != size || !planned.sha256().equals(hash))
+                                throw new IllegalStateException(
+                                        "Workspace snapshot changed after admission");
+                            projectionSink.onProjectedFile(
+                                    runtimeContext, planned.path(), file.path(), size, hash);
+                            localHashes.put(path, hash);
+                        }
+                        totalBytes = Math.addExact(totalBytes, size);
+                        projected++;
+                        continue;
+                    }
+                    byte[] content = readEntryBytes(tar, path, transferPolicy);
+                    if (content.length > transferPolicy.maxTotalBytes() - totalBytes) {
+                        log.warn(
+                                "[sandbox-fs] Workspace remote projection hit byte limit {}",
+                                transferPolicy.maxTotalBytes());
+                        completeScan = false;
+                        rejected.add(
+                                path
+                                        + ": exceeds total byte limit "
+                                        + transferPolicy.maxTotalBytes());
+                        break;
+                    }
+                    totalBytes += content.length;
+                    String hash = sha256(content);
+                    WorkspaceProjectionPlan.Entry planned = inventory.get(path);
+                    if (planned == null
+                            || planned.sizeBytes() != content.length
+                            || !planned.sha256().equals(hash))
+                        throw new IllegalStateException(
+                                "Workspace snapshot changed after admission");
+                    localHashes.put(path, hash);
+                    if (incremental) {
+                        VolumeSyncEntry old = previous.get(path);
+                        long remoteVersion = remoteBefore.getOrDefault(path, 0L);
+                        boolean localUnchanged = old != null && old.sha256().equals(hash);
+                        boolean remoteDeleted =
+                                old != null
+                                        && old.remoteVersion() != 0L
+                                        && !remoteBefore.containsKey(path);
+                        boolean remoteChanged =
+                                old != null
+                                        && (remoteDeleted
+                                                || (remoteVersion != 0L
+                                                        && old.remoteVersion() != remoteVersion));
+                        if (remoteChanged) {
+                            // Never overwrite a browser/API update made while the sandbox was
+                            // active.
+                            // Preserve a concurrently changed sandbox copy as a visible conflict
+                            // file.
+                            remoteConflicts.add(path);
+                            if (remoteDeleted) {
+                                remoteDeletes.add(path);
+                            }
+                            if (localUnchanged) {
+                                unchanged++;
+                            } else {
+                                batch.add(Map.entry(planned.path(), content));
+                                projected++;
+                                if (!batch.isEmpty()) {
+                                    flushProjectionBatch(runtimeContext, fallback, batch);
+                                }
+                            }
+                            continue;
+                        }
+                        if (localUnchanged
+                                && remoteVersion != 0L
+                                && old.remoteVersion() == remoteVersion) {
+                            unchanged++;
+                            notifyProjectionWritten(runtimeContext, path, content);
+                            continue;
+                        }
+                    }
+                    batch.add(Map.entry(planned.path(), content));
+                    projected++;
+
+                    if (!batch.isEmpty()) {
+                        flushProjectionBatch(runtimeContext, fallback, batch);
+                    }
                 }
-                scanned++;
-                if (scanned > transferPolicy.maxFiles()) {
-                    completeScan = false;
+                if (!batch.isEmpty()) {
+                    flushProjectionBatch(runtimeContext, fallback, batch);
+                }
+                int deleted = 0;
+                if (completeScan
+                        && runtimeContext.get(
+                                        io.agentscope.harness.agent.sandbox.WorkspaceInputPlan
+                                                .class)
+                                == null) {
+                    deleted =
+                            incremental
+                                    ? reconcileVolumeProjection(
+                                            runtimeContext,
+                                            fallback,
+                                            currentProjection,
+                                            previous,
+                                            remoteBefore)
+                                    : reconcileRemoteProjection(
+                                            runtimeContext, fallback, currentProjection);
+                    writeProjectionManifest(runtimeContext, fallback, currentProjection);
+                }
+                if (incremental && completeScan) {
+                    Map<String, Long> refreshed =
+                            normalizedRemoteVersions(runtimeContext, fallback);
+                    Map<String, VolumeSyncEntry> next = new LinkedHashMap<>();
+                    for (Map.Entry<String, String> local : localHashes.entrySet()) {
+                        if (!remoteConflicts.contains(local.getKey())) {
+                            next.put(
+                                    local.getKey(),
+                                    new VolumeSyncEntry(
+                                            refreshed.getOrDefault(local.getKey(), 0L),
+                                            local.getValue()));
+                        }
+                    }
+                    // Keep the previous entry as a tombstone hint. The next acquire compares it
+                    // with
+                    // the absent remote key and removes the stale local file from the Volume.
+                    for (String deletedPath : remoteDeletes) {
+                        VolumeSyncEntry old = previous.get(deletedPath);
+                        if (old != null) {
+                            next.put(deletedPath, old);
+                        }
+                    }
+                    writeVolumeSyncManifest(runtimeContext, active, next);
+                }
+                if (projected > 0 || incremental) {
+                    log.info(
+                            "[sandbox-fs] Workspace projection: scanned={} uploaded={} unchanged={}"
+                                    + " conflicts={} bytes={} deleted={}",
+                            scanned,
+                            projected,
+                            unchanged,
+                            remoteConflicts.size(),
+                            totalBytes,
+                            deleted);
+                }
+                var report =
+                        new WorkspaceProjectionReport(
+                                scan.scanned(),
+                                projected,
+                                unchanged,
+                                totalBytes,
+                                completeScan,
+                                rejected);
+                report.verifyComplete();
+                projectionSink.onProjectionCompleted(runtimeContext, report);
+                return report;
+            }
+        }
+    }
+
+    private record ProjectionScan(
+            List<WorkspaceProjectionPlan.Entry> entries,
+            int scanned,
+            long bytes,
+            List<String> rejected) {}
+
+    private ProjectionScan captureProjection(
+            RuntimeContext context,
+            Sandbox active,
+            WorkspaceTransferResources.Spool spool,
+            boolean incremental,
+            Map<String, VolumeSyncEntry> previous,
+            Map<String, Long> remoteVersions)
+            throws Exception {
+        var transferPolicy = getTransferPolicy(context);
+        List<WorkspaceProjectionPlan.Entry> entries = new ArrayList<>();
+        List<String> rejected = new ArrayList<>();
+        Set<String> sources = new LinkedHashSet<>();
+        Set<String> targets = new LinkedHashSet<>();
+        int scanned = 0;
+        long bytes = 0;
+        long workspaceBytes = 0;
+        var pinned = context.get(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class);
+        Map<String, String> pinnedOutputs = new LinkedHashMap<>();
+        if (pinned != null)
+            for (var file : pinned.workspace().files())
+                if (file.path().startsWith("outputs/"))
+                    pinnedOutputs.put("/" + file.path(), file.sha256());
+        try (InputStream input = active.persistWorkspace();
+                TarArchiveInputStream source = new TarArchiveInputStream(input);
+                TarArchiveOutputStream saved = new TarArchiveOutputStream(spool.output())) {
+            saved.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
+            ArchiveOutputStream<TarArchiveEntry> compatibleSaved = saved;
+            TarArchiveEntry entry;
+            byte[] buffer = new byte[8192];
+            while ((entry = source.getNextTarEntry()) != null) {
+                byte type = entry.getLinkFlag();
+                if (type == org.apache.commons.compress.archivers.tar.TarConstants.LF_DIR) continue;
+                if (type != org.apache.commons.compress.archivers.tar.TarConstants.LF_NORMAL
+                        && type
+                                != org.apache.commons.compress.archivers.tar.TarConstants
+                                        .LF_OLDNORM) {
+                    rejected.add("non-regular workspace archive entry");
+                    break;
+                }
+                if (++scanned > transferPolicy.maxFiles()) {
                     rejected.add("file count exceeds " + transferPolicy.maxFiles());
                     break;
                 }
                 String path = toRemoteProjectionPath(entry.getName());
-                if (path == null) {
-                    completeScan = false;
-                    rejected.add("unsafe archive entry: " + entry.getName());
-                    log.warn(
-                            "[sandbox-fs] Skipping unsafe workspace archive entry: {}",
-                            entry.getName());
-                    continue;
+                if (path == null || path.length() > 1024 || !sources.add(path)) {
+                    rejected.add("unsafe or duplicate workspace archive path");
+                    break;
                 }
-                if (REMOTE_PROJECTION_MANIFEST.equals(path) || VOLUME_SYNC_MANIFEST.equals(path)) {
+                if (REMOTE_PROJECTION_MANIFEST.equals(path) || VOLUME_SYNC_MANIFEST.equals(path))
                     continue;
-                }
-                currentProjection.add(path);
                 long size = entry.getSize();
-                if (size > transferPolicy.maxFileBytes()) {
-                    completeScan = false;
-                    rejected.add(
-                            path + ": exceeds file byte limit " + transferPolicy.maxFileBytes());
-                    log.warn(
-                            "[sandbox-fs] Skipping oversized workspace file {} ({} bytes)",
-                            path,
-                            size);
-                    continue;
-                }
-                if (size > 0 && size > transferPolicy.maxTotalBytes() - totalBytes) {
-                    log.warn(
-                            "[sandbox-fs] Workspace remote projection hit byte limit {}",
-                            transferPolicy.maxTotalBytes());
-                    completeScan = false;
-                    rejected.add(
-                            path + ": exceeds total byte limit " + transferPolicy.maxTotalBytes());
+                if (size < 0
+                        || size > transferPolicy.maxFileBytes()
+                        || size > transferPolicy.maxTotalBytes() - workspaceBytes) {
+                    rejected.add(path + ": exceeds workspace transfer byte limit");
                     break;
                 }
-
-                byte[] content = readEntryBytes(tar, path);
-                if (content.length > transferPolicy.maxTotalBytes() - totalBytes) {
-                    log.warn(
-                            "[sandbox-fs] Workspace remote projection hit byte limit {}",
-                            transferPolicy.maxTotalBytes());
-                    completeScan = false;
-                    rejected.add(
-                            path + ": exceeds total byte limit " + transferPolicy.maxTotalBytes());
+                workspaceBytes = Math.addExact(workspaceBytes, size);
+                // Working input copies must not republish over authoritative employee files.
+                if (pinned != null && path.startsWith("/inputs/")) continue;
+                String referenceTarget = null;
+                String hash;
+                // Bound outputs must be compared before entering the immutable publication tar.
+                try (var reference =
+                        pinnedOutputs.containsKey(path)
+                                ? transferResources.spool("workspace-reference-", Math.max(1, size))
+                                : null) {
+                    if (reference != null) {
+                        try (var output = reference.output()) {
+                            hash = transferEntry(source, output, size, buffer);
+                        }
+                        if (hash.equals(pinnedOutputs.get(path))) continue;
+                        String name = path.substring(path.lastIndexOf('/') + 1);
+                        referenceTarget = "/outputs/revisions/" + UUID.randomUUID() + "-" + name;
+                    }
+                    var outputEntry = new TarArchiveEntry(path.substring(1));
+                    outputEntry.setSize(size);
+                    outputEntry.setMode(0600);
+                    compatibleSaved.putArchiveEntry(outputEntry);
+                    if (reference == null) {
+                        hash = transferEntry(source, saved, size, buffer);
+                    } else {
+                        try (var referenceInput =
+                                java.nio.file.Files.newInputStream(reference.path())) {
+                            hash = transferEntry(referenceInput, saved, size, buffer);
+                        }
+                    }
+                    saved.closeArchiveEntry();
+                }
+                bytes = Math.addExact(bytes, size);
+                VolumeSyncEntry old = previous.get(path);
+                long remoteVersion = remoteVersions.getOrDefault(path, 0L);
+                boolean localUnchanged = old != null && old.sha256().equals(hash);
+                boolean remoteChanged =
+                        incremental && old != null && old.remoteVersion() != remoteVersion;
+                String target = referenceTarget == null ? path : referenceTarget;
+                boolean unchanged =
+                        incremental && localUnchanged && remoteVersion != 0L && !remoteChanged;
+                if (remoteChanged) {
+                    if (localUnchanged) {
+                        rejected.add(path + ": remote version changed during execution");
+                        break;
+                    }
+                    target = conflictProjectionPath(path);
+                }
+                if (!targets.add(target)) {
+                    rejected.add("duplicate workspace publication target");
                     break;
                 }
-                totalBytes += content.length;
-                String hash = sha256(content);
-                localHashes.put(path, hash);
-                if (incremental) {
-                    VolumeSyncEntry old = previous.get(path);
-                    long remoteVersion = remoteBefore.getOrDefault(path, 0L);
-                    boolean localUnchanged = old != null && old.sha256().equals(hash);
-                    boolean remoteDeleted =
-                            old != null
-                                    && old.remoteVersion() != 0L
-                                    && !remoteBefore.containsKey(path);
-                    boolean remoteChanged =
-                            old != null
-                                    && (remoteDeleted
-                                            || (remoteVersion != 0L
-                                                    && old.remoteVersion() != remoteVersion));
-                    if (remoteChanged) {
-                        // Never overwrite a browser/API update made while the sandbox was active.
-                        // Preserve a concurrently changed sandbox copy as a visible conflict file.
-                        remoteConflicts.add(path);
-                        if (remoteDeleted) {
-                            remoteDeletes.add(path);
-                        }
-                        if (localUnchanged) {
-                            unchanged++;
-                        } else {
-                            batch.add(Map.entry(conflictProjectionPath(path), content));
-                            projected++;
-                            if (batch.size() >= REMOTE_PROJECTION_BATCH_SIZE) {
-                                flushProjectionBatch(runtimeContext, fallback, batch);
-                            }
-                        }
-                        continue;
-                    }
-                    if (localUnchanged
-                            && remoteVersion != 0L
-                            && old.remoteVersion() == remoteVersion) {
-                        unchanged++;
-                        continue;
-                    }
-                }
-                batch.add(Map.entry(path, content));
-                projected++;
-
-                if (batch.size() >= REMOTE_PROJECTION_BATCH_SIZE) {
-                    flushProjectionBatch(runtimeContext, fallback, batch);
-                }
+                entries.add(new WorkspaceProjectionPlan.Entry(path, target, size, hash, unchanged));
             }
-            if (!batch.isEmpty()) {
-                flushProjectionBatch(runtimeContext, fallback, batch);
-            }
-            int deleted = 0;
-            if (completeScan) {
-                deleted =
-                        incremental
-                                ? reconcileVolumeProjection(
-                                        runtimeContext,
-                                        fallback,
-                                        currentProjection,
-                                        previous,
-                                        remoteBefore)
-                                : reconcileRemoteProjection(
-                                        runtimeContext, fallback, currentProjection);
-                writeProjectionManifest(runtimeContext, fallback, currentProjection);
-            }
-            if (incremental && completeScan) {
-                Map<String, Long> refreshed = normalizedRemoteVersions(runtimeContext, fallback);
-                Map<String, VolumeSyncEntry> next = new LinkedHashMap<>();
-                for (Map.Entry<String, String> local : localHashes.entrySet()) {
-                    if (!remoteConflicts.contains(local.getKey())) {
-                        next.put(
-                                local.getKey(),
-                                new VolumeSyncEntry(
-                                        refreshed.getOrDefault(local.getKey(), 0L),
-                                        local.getValue()));
-                    }
-                }
-                // Keep the previous entry as a tombstone hint. The next acquire compares it with
-                // the absent remote key and removes the stale local file from the Volume.
-                for (String deletedPath : remoteDeletes) {
-                    VolumeSyncEntry old = previous.get(deletedPath);
-                    if (old != null) {
-                        next.put(deletedPath, old);
-                    }
-                }
-                writeVolumeSyncManifest(runtimeContext, active, next);
-            }
-            if (projected > 0 || incremental) {
-                log.info(
-                        "[sandbox-fs] Workspace projection: scanned={} uploaded={} unchanged={}"
-                                + " conflicts={} bytes={} deleted={}",
-                        scanned,
-                        projected,
-                        unchanged,
-                        remoteConflicts.size(),
-                        totalBytes,
-                        deleted);
-            }
-            return new WorkspaceProjectionReport(
-                    scanned, projected, unchanged, totalBytes, completeScan, rejected);
+            saved.finish();
         }
+        return new ProjectionScan(List.copyOf(entries), scanned, bytes, List.copyOf(rejected));
+    }
+
+    private static String transferEntry(
+            InputStream input, java.io.OutputStream output, long size, byte[] buffer)
+            throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        long total = 0;
+        int read;
+        while ((read = input.read(buffer)) != -1) {
+            if (read > size - total)
+                throw new IllegalStateException("Workspace archive size mismatch");
+            digest.update(buffer, 0, read);
+            output.write(buffer, 0, read);
+            total += read;
+        }
+        if (total != size) throw new IllegalStateException("Truncated workspace archive");
+        return java.util.HexFormat.of().formatHex(digest.digest());
     }
 
     private int reconcileVolumeProjection(
@@ -743,11 +1047,24 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
             RuntimeContext runtimeContext,
             RemoteFilesystem fallback,
             List<Map.Entry<String, byte[]>> batch) {
-        fallback.uploadFiles(runtimeContext, batch);
+        var receipts = fallback.uploadFiles(runtimeContext, batch);
+        verifyProjectionWrites(batch, receipts);
         for (Map.Entry<String, byte[]> entry : batch) {
             notifyProjectionWritten(runtimeContext, entry.getKey(), entry.getValue());
         }
         batch.clear();
+    }
+
+    private static void verifyProjectionWrites(
+            List<Map.Entry<String, byte[]>> batch, List<FileUploadResponse> receipts) {
+        if (receipts == null
+                || receipts.size() != batch.size()
+                || receipts.stream().anyMatch(r -> !r.isSuccess())
+                || !receipts.stream()
+                        .map(r -> r.path())
+                        .collect(Collectors.toSet())
+                        .equals(batch.stream().map(Map.Entry::getKey).collect(Collectors.toSet())))
+            throw new IllegalStateException("Workspace remote projection write failed");
     }
 
     private void notifyProjectionWritten(
@@ -791,15 +1108,17 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
             Set<String> currentProjection) {
         String manifest =
                 currentProjection.stream().sorted().collect(Collectors.joining("\n", "", "\n"));
-        fallback.uploadFiles(
-                runtimeContext,
+        var batch =
                 List.of(
                         Map.entry(
                                 REMOTE_PROJECTION_MANIFEST,
-                                manifest.getBytes(StandardCharsets.UTF_8))));
+                                manifest.getBytes(StandardCharsets.UTF_8)));
+        verifyProjectionWrites(batch, fallback.uploadFiles(runtimeContext, batch));
     }
 
-    private byte[] readEntryBytes(TarArchiveInputStream tar, String path) throws Exception {
+    private byte[] readEntryBytes(
+            TarArchiveInputStream tar, String path, WorkspaceTransferPolicy transferPolicy)
+            throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buffer = new byte[8192];
         long bytes = 0;

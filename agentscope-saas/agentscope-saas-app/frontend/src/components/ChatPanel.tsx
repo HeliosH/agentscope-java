@@ -24,7 +24,7 @@ import {
   type FileNode,
   type UploadedFile,
 } from '../api/workspace';
-import { getArtifacts } from '../api/runs';
+import { getArtifacts, getRecovery, getRun, getTasks } from '../api/runs';
 import RunInspector from './RunInspector';
 import { FilePreviewDialog, type PreviewFile } from './FilePreview';
 
@@ -142,6 +142,9 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
   const [uploading, setUploading] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<MessageFile[]>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [archivingRunId, setArchivingRunId] = useState<string | null>(null);
+  const [recoveringRunId, setRecoveringRunId] = useState<string | null>(null);
+  const pendingRunId = archivingRunId ?? recoveringRunId;
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [selectedModelId, setSelectedModelId] = useState('');
@@ -197,6 +200,8 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
     setHasEarlier(false);
     setNextBeforeSeq(null);
     setActiveRunId(null);
+    setArchivingRunId(null);
+    setRecoveringRunId(null);
     setInspectorOpen(false);
     setPreviewFile(null);
 
@@ -211,10 +216,24 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
         if (!key && !explicitlyNew) {
           const cur = await currentSession(agentId);
           key = cur.sessionKey;
-          if (cur.latestRunId) setActiveRunId(cur.latestRunId);
+          if (cur.latestRunId) {
+            setActiveRunId(cur.latestRunId);
+            const tasks = await getTasks(agentId, cur.latestRunId);
+            if (!cancelled && tasks.some(task => task.status === 'ARCHIVING')) setArchivingRunId(cur.latestRunId);
+            const recovery = await getRecovery(agentId, cur.latestRunId);
+            if (!cancelled && recovery && recovery.runStatus === 'RUNNING' && recovery.recoveryCount > 0)
+              setRecoveringRunId(cur.latestRunId);
+          }
         } else if (key) {
           const cur = await currentSession(agentId);
-          if (cur.sessionKey === key && cur.latestRunId) setActiveRunId(cur.latestRunId);
+          if (cur.sessionKey === key && cur.latestRunId) {
+            setActiveRunId(cur.latestRunId);
+            const tasks = await getTasks(agentId, cur.latestRunId);
+            if (!cancelled && tasks.some(task => task.status === 'ARCHIVING')) setArchivingRunId(cur.latestRunId);
+            const recovery = await getRecovery(agentId, cur.latestRunId);
+            if (!cancelled && recovery && recovery.runStatus === 'RUNNING' && recovery.recoveryCount > 0)
+              setRecoveringRunId(cur.latestRunId);
+          }
         }
       } catch {
         // A missing current-session pointer does not prevent loading an explicit session.
@@ -248,6 +267,35 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId, requestedSession, newTaskNonce]);
 
+  useEffect(() => {
+    if (!pendingRunId || !sessionKey) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = async () => {
+      try {
+        const run = await getRun(agentId, pendingRunId);
+        if (cancelled) return;
+        if (['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(run.status)) {
+          const page = await turnsWindow(agentId, sessionKey);
+          if (cancelled) return;
+          const history = turnsToMessages(page.items);
+          if (run.status !== 'SUCCEEDED') history.push({ id: `status-${pendingRunId}`,
+            role: 'assistant', text: run.status === 'CANCELLED' ? '任务已停止。' : '任务未完成，请查看任务详情。',
+            tools: [], files: [], pending: false });
+          setMessages(history);
+          setNextBeforeSeq(page.nextBeforeSeq);
+          setHasEarlier(page.hasMore);
+          setArchivingRunId(null);
+          setRecoveringRunId(null);
+          return;
+        }
+      } catch { /* Retry transient state/history reads without replaying the task. */ }
+      if (!cancelled) timer = setTimeout(() => void refresh(), 2000);
+    };
+    void refresh();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [agentId, pendingRunId, sessionKey]);
+
   async function loadEarlier() {
     if (!sessionKey || !hasEarlier || loadingEarlier) return;
     const scroller = threadRef.current;
@@ -278,8 +326,8 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
   }, [messages]);
 
   const canSend = useMemo(
-    () => !busy && !restoring && (input.trim().length > 0 || pendingFiles.length > 0),
-    [busy, restoring, input, pendingFiles],
+    () => !busy && !restoring && !pendingRunId && (input.trim().length > 0 || pendingFiles.length > 0),
+    [busy, restoring, pendingRunId, input, pendingFiles],
   );
 
   function applyChatEvent(evt: ChatEvent, replyId: string) {
@@ -302,9 +350,19 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
             },
           }
         : m));
-    } else if (evt.type === 'run_recovery_scheduled') {
+    } else if (evt.type === 'run_recovery_scheduled' || evt.type === 'run_recovery_state') {
+      if (evt.sessionKey) {
+        setSessionKey(evt.sessionKey);
+        persistSession(evt.sessionKey);
+        const next = new URLSearchParams(searchParams);
+        next.delete('new');
+        next.set('session', evt.sessionKey);
+        skipSessionRestoreRef.current = evt.sessionKey;
+        setSearchParams(next, { replace: true });
+      }
       if (evt.runId) {
         setActiveRunId(evt.runId);
+        if (!evt.runStatus || evt.runStatus === 'RUNNING') setRecoveringRunId(evt.runId);
         setInspectorOpen(true);
       }
       setMessages(prev => prev.map(m => m.id === replyId
@@ -316,6 +374,24 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
               + (evt.message ?? '模型连接中断，任务已转入后台恢复。'),
           }
         : m));
+    } else if (evt.type === 'run_archiving') {
+      if (evt.sessionKey) {
+        setSessionKey(evt.sessionKey);
+        persistSession(evt.sessionKey);
+        const next = new URLSearchParams(searchParams);
+        next.delete('new');
+        next.set('session', evt.sessionKey);
+        skipSessionRestoreRef.current = evt.sessionKey;
+        setSearchParams(next, { replace: true });
+      }
+      if (evt.runId) {
+        setActiveRunId(evt.runId);
+        setArchivingRunId(evt.runId);
+        setInspectorOpen(true);
+      }
+      setMessages(prev => prev.map(m => m.id === replyId ? {
+        ...m, pending: false, recovery: { message: '正在归档任务产物' },
+      } : m));
     } else if (evt.type === 'token') {
       const chunk = evt.data ?? '';
       setMessages(prev => prev.map(m => m.id === replyId
@@ -554,10 +630,10 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
           <Menu size={17} />
         </button>
         <span className="chat-header__title">{agentName || 'Assistant'}</span>
-        <span className="chat-header__status">
+        {pendingRunId ? <span className="chat-header__archive" role="status" aria-label={archivingRunId ? '正在归档任务产物' : '正在恢复任务'}>{archivingRunId ? '归档中' : '恢复中'}</span> : <span className="chat-header__status">
           <span className="chat-header__status-dot" />
           Ready
-        </span>
+        </span>}
         {sessionKey && <span className="chat-header__meta" title={sessionKey}>Session {sessionKey.slice(0, 8)}</span>}
         <span className="chat-header__spacer" />
         {models.length > 0 && (
@@ -579,13 +655,15 @@ export default function ChatPanel({ agentId, agentName, onOpenSidebar }: ChatPan
         )}
         {activeRunId && (
           <button
-            className={`quiet-button${inspectorOpen ? ' is-active' : ''}`}
+            className={`quiet-button chat-run-toggle${inspectorOpen ? ' is-active' : ''}`}
             type="button"
+            title="Run details"
+            aria-label="Run details"
             aria-expanded={inspectorOpen}
             onClick={() => setInspectorOpen(open => !open)}
           >
             <ListTodo size={15} />
-            Run details
+            <span>Run details</span>
           </button>
         )}
       </header>

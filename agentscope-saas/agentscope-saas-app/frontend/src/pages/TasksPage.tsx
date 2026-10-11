@@ -8,7 +8,7 @@ function tone(status: string): 'neutral' | 'success' | 'danger' | 'info' | 'warn
   const value = status.toUpperCase();
   if (value.includes('SUCCEED') || value === 'COMPLETED' || value === 'APPROVED') return 'success';
   if (value.includes('FAIL') || value.includes('CANCEL') || value.includes('REJECT')) return 'danger';
-  if (value.includes('RUNNING') || value.includes('CLAIMED') || value.includes('LEASED')) return 'info';
+  if (value.includes('RUNNING') || value.includes('ARCHIVING') || value.includes('CLAIMED') || value.includes('LEASED')) return 'info';
   if (value.includes('PENDING') || value.includes('READY')) return 'warning';
   return 'neutral';
 }

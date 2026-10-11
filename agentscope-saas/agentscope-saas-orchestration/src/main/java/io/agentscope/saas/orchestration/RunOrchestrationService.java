@@ -362,6 +362,9 @@ public class RunOrchestrationService {
         if (!RUN_RUNNING.equals(run.status())) {
             return;
         }
+        if (repository.findTasks(run.id(), run.orgId()).stream()
+                .anyMatch(task -> task.parentId() == null && "ARCHIVING".equals(task.status())))
+            throw new SessionExecutionRevokedException();
         OffsetDateTime now = OffsetDateTime.now();
         completeCoordinator(run, now);
         List<TaskNode> children =
@@ -737,7 +740,7 @@ public class RunOrchestrationService {
             }
         }
         for (AgentRun agentRun : repository.findAgentRuns(run.id(), run.orgId())) {
-            if (RUN_RUNNING.equals(agentRun.status())) {
+            if (RUN_RUNNING.equals(agentRun.status()) || "ARCHIVING".equals(agentRun.status())) {
                 repository.updateAgentRunStatus(
                         agentRun.id(), run.orgId(), taskStatus, completedAt, completedAt);
             }

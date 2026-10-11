@@ -46,7 +46,6 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -57,7 +56,6 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
@@ -91,6 +89,14 @@ public class AgentWorkspaceController {
     private final TenantResolver tenantResolver;
     private final FileCatalogService fileCatalogService;
     private final FileUploadStagingService uploadStagingService;
+    private FileDownloadService downloads =
+            new FileDownloadService(
+                    io.agentscope.harness.agent.sandbox.WorkspaceTransferResources.DEFAULT);
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureDownloads(FileDownloadService downloads) {
+        this.downloads = downloads;
+    }
 
     public AgentWorkspaceController(
             HarnessAgent agent,
@@ -258,6 +264,8 @@ public class AgentWorkspaceController {
                             TenantContext tenant = TenantContext.from(rc);
                             String abs = toAbsFsPath(path);
                             String rel = toRelFsPath(path);
+                            if (fileCatalogService.describeCurrentFile(tenant, rel).isPresent())
+                                return readStoredTextOr404(tenant, rel, path);
                             try {
                                 if (fs.exists(FS_RC, abs)) {
                                     ReadResult rr = fs.read(FS_RC, abs, 0, Integer.MAX_VALUE);
@@ -300,10 +308,18 @@ public class AgentWorkspaceController {
      * absent or the filesystem reports a read failure.
      */
     @GetMapping("/file/download")
-    public Mono<ResponseEntity<byte[]>> downloadFile(
-            @PathVariable String agentId,
-            @RequestParam("path") String path,
-            @AuthenticationPrincipal Jwt jwt) {
+    public Mono<
+                    ResponseEntity<
+                            reactor.core.publisher.Flux<
+                                    org.springframework.core.io.buffer.DataBuffer>>>
+            downloadFile(
+                    @PathVariable String agentId,
+                    @RequestParam("path") String path,
+                    @org.springframework.web.bind.annotation.RequestHeader(
+                                    name = "Range",
+                                    required = false)
+                            String range,
+                    @AuthenticationPrincipal Jwt jwt) {
         RuntimeContext rc = runtimeContext(jwt);
         return Mono.fromCallable(
                         () -> {
@@ -311,6 +327,9 @@ public class AgentWorkspaceController {
                             TenantContext tenant = TenantContext.from(rc);
                             String abs = toAbsFsPath(path);
                             String rel = toRelFsPath(path);
+                            var durable = fileCatalogService.describeCurrentFile(tenant, rel);
+                            if (durable.isPresent())
+                                return downloads.response(durable.orElseThrow(), range);
                             String sandboxError = null;
                             try {
                                 List<FileDownloadResponse> results =
@@ -331,7 +350,11 @@ public class AgentWorkspaceController {
                                             MediaType.APPLICATION_OCTET_STREAM_VALUE,
                                             FileCatalogService.SOURCE_WORKSPACE_DOWNLOAD,
                                             Map.of("api", "workspace.download"));
-                                    return downloadResponse(abs, result.content());
+                                    var described =
+                                            fileCatalogService
+                                                    .describeCurrentFile(tenant, rel)
+                                                    .orElseThrow();
+                                    return downloads.response(described, range);
                                 }
                                 sandboxError = result != null ? result.error() : null;
                             } catch (Exception e) {
@@ -344,8 +367,8 @@ public class AgentWorkspaceController {
                             }
                             String failure = sandboxError;
                             return fileCatalogService
-                                    .readCurrentFile(tenant, rel)
-                                    .map(stored -> downloadResponse(abs, stored.content()))
+                                    .describeCurrentFile(tenant, rel)
+                                    .map(stored -> downloads.response(stored, range))
                                     .orElseThrow(
                                             () ->
                                                     new ResponseStatusException(
@@ -444,28 +467,24 @@ public class AgentWorkspaceController {
             @RequestParam(name = "sessionId", required = false) String sessionId,
             @RequestParam(name = "messageId", required = false) String messageId,
             @RequestParam(name = "taskId", required = false) String taskId,
-            @RequestPart("file") Mono<FilePart> filePartMono,
+            @RequestBody
+                    reactor.core.publisher.Flux<org.springframework.http.codec.multipart.PartEvent>
+                            parts,
             @AuthenticationPrincipal Jwt jwt) {
         RuntimeContext rc = runtimeContext(jwt);
-        return filePartMono.flatMap(
-                file ->
-                        uploadStagingService
-                                .stage(file)
-                                .flatMap(
-                                        staged -> {
-                                            Mono<UploadedFile> uploaded =
-                                                    Mono.fromCallable(
-                                                                    () ->
-                                                                            uploadFileBytes(
-                                                                                    agentId, rc,
-                                                                                    staged, path,
-                                                                                    sessionId,
-                                                                                    messageId,
-                                                                                    taskId))
-                                                            .subscribeOn(
-                                                                    Schedulers.boundedElastic());
-                                            return uploaded.doFinally(ignored -> staged.close());
-                                        }));
+        return uploadStagingService
+                .stageEvents(parts)
+                .flatMap(
+                        staged -> {
+                            Mono<UploadedFile> uploaded =
+                                    Mono.fromCallable(
+                                                    () ->
+                                                            uploadFileBytes(
+                                                                    agentId, rc, staged, path,
+                                                                    sessionId, messageId, taskId))
+                                            .subscribeOn(Schedulers.boundedElastic());
+                            return uploaded.doFinally(ignored -> staged.close());
+                        });
     }
 
     @GetMapping("/file/versions")
@@ -484,25 +503,33 @@ public class AgentWorkspaceController {
     }
 
     @GetMapping("/file/version/{versionId}/download")
-    public Mono<ResponseEntity<byte[]>> downloadVersion(
-            @PathVariable String agentId,
-            @PathVariable String versionId,
-            @AuthenticationPrincipal Jwt jwt) {
+    public Mono<
+                    ResponseEntity<
+                            reactor.core.publisher.Flux<
+                                    org.springframework.core.io.buffer.DataBuffer>>>
+            downloadVersion(
+                    @PathVariable String agentId,
+                    @PathVariable String versionId,
+                    @org.springframework.web.bind.annotation.RequestHeader(
+                                    name = "Range",
+                                    required = false)
+                            String range,
+                    @AuthenticationPrincipal Jwt jwt) {
         RuntimeContext rc = runtimeContext(jwt);
         return Mono.fromCallable(
                         () -> {
                             resolveFilesystem(rc, agentId);
                             UUID id = parseUuid(versionId, "versionId");
-                            FileCatalogService.StoredFile stored =
+                            FileCatalogService.VersionStream stored =
                                     fileCatalogService
-                                            .readVersion(TenantContext.from(rc), id)
+                                            .describeVersion(TenantContext.from(rc), id)
                                             .orElseThrow(
                                                     () ->
                                                             new ResponseStatusException(
                                                                     HttpStatus.NOT_FOUND,
                                                                     "Version not found: "
                                                                             + versionId));
-                            return downloadResponse(stored.logicalPath(), stored.content());
+                            return downloads.response(stored, range);
                         })
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -516,47 +543,23 @@ public class AgentWorkspaceController {
         RuntimeContext rc = runtimeContext(jwt);
         return Mono.fromCallable(
                         () -> {
-                            AbstractFilesystem fs = resolveFilesystem(rc, agentId);
+                            resolveFilesystem(rc, agentId);
                             TenantContext tenant = TenantContext.from(rc);
                             UUID id = parseUuid(versionId, "versionId");
-                            FileCatalogService.StoredFile stored =
+                            FileCatalogService.FileRecord record =
                                     fileCatalogService
-                                            .readVersion(tenant, id)
+                                            .restoreVersion(
+                                                    tenant,
+                                                    agentUuid(agentId),
+                                                    sessionUuid(rc),
+                                                    id,
+                                                    path == null ? null : toRelFsPath(path))
                                             .orElseThrow(
                                                     () ->
                                                             new ResponseStatusException(
                                                                     HttpStatus.NOT_FOUND,
                                                                     "Version not found: "
                                                                             + versionId));
-                            String rel =
-                                    path != null && !path.isBlank()
-                                            ? toRelFsPath(path)
-                                            : toRelFsPath(stored.logicalPath());
-                            FileCatalogService.FileRecord record =
-                                    fileCatalogService
-                                            .recordWorkspaceFileWithWrite(
-                                                    tenant,
-                                                    agentUuid(agentId),
-                                                    sessionUuid(rc),
-                                                    rel,
-                                                    stored.content(),
-                                                    stored.contentType(),
-                                                    FileCatalogService.SOURCE_WORKSPACE_RESTORE,
-                                                    Map.of("restoredVersionId", versionId),
-                                                    () ->
-                                                            uploadToWorkspace(
-                                                                    fs,
-                                                                    rc,
-                                                                    rel,
-                                                                    stored.content(),
-                                                                    "restore file"))
-                                            .orElseThrow(
-                                                    () ->
-                                                            new ResponseStatusException(
-                                                                    HttpStatus
-                                                                            .INTERNAL_SERVER_ERROR,
-                                                                    "File catalog is not"
-                                                                            + " available"));
                             return new FileNode(
                                     basename(record.logicalPath()),
                                     record.logicalPath(),
@@ -650,15 +653,24 @@ public class AgentWorkspaceController {
     }
 
     private String readStoredTextOr404(TenantContext tenant, String relPath, String requestedPath) {
-        FileCatalogService.StoredFile stored =
+        FileCatalogService.VersionStream stored =
                 fileCatalogService
-                        .readCurrentFile(tenant, relPath)
+                        .describeCurrentFile(tenant, relPath)
                         .orElseThrow(
                                 () ->
                                         new ResponseStatusException(
                                                 HttpStatus.NOT_FOUND,
                                                 "File not found: " + requestedPath));
-        return storedText(stored, relPath);
+        if (!isProbablyText(stored.contentType(), relPath))
+            return "(binary file: " + stored.sizeBytes() + " bytes; not editable)";
+        if (stored.sizeBytes() > MAX_FILE_SIZE)
+            return "(file too large to display: " + stored.sizeBytes() + " bytes)";
+        try {
+            return downloads.previewText(stored, MAX_FILE_SIZE);
+        } catch (Exception error) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "File preview is temporarily unavailable");
+        }
     }
 
     private String storedText(FileCatalogService.StoredFile stored, String relPath) {
@@ -681,8 +693,7 @@ public class AgentWorkspaceController {
             String messageId,
             String taskId)
             throws java.io.IOException {
-        byte[] bytes = staged.readAllBytes();
-        AbstractFilesystem fs = resolveFilesystem(rc, agentId);
+        resolveFilesystem(rc, agentId);
         TenantContext tenant = TenantContext.from(rc);
         String rel = uploadTargetPath(requestedPath, staged.filename());
         UUID agentUuid = agentUuid(agentId);
@@ -691,16 +702,15 @@ public class AgentWorkspaceController {
         UUID taskUuid = parseOptionalUuid(taskId);
         FileCatalogService.FileRecord record =
                 fileCatalogService
-                        .recordWorkspaceFileWithWrite(
+                        .recordWorkspacePath(
                                 tenant,
                                 agentUuid,
                                 sessionUuid,
                                 rel,
-                                bytes,
+                                staged.path(),
                                 staged.contentType(),
                                 FileCatalogService.SOURCE_WORKSPACE_UPLOAD,
-                                Map.of("api", "workspace.upload", "filename", staged.filename()),
-                                () -> uploadToWorkspace(fs, rc, rel, bytes, "upload file"))
+                                Map.of("api", "workspace.upload", "filename", staged.filename()))
                         .orElseThrow(
                                 () ->
                                         new ResponseStatusException(

@@ -198,16 +198,29 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
         String leaseOwner = stringValue(ctx.get(SandboxRuntimeAttributes.ATTR_LEASE_OWNER));
         return withTenantOrg(
                 orgId.toString(),
-                () ->
-                        leaseService.begin(
-                                orgId,
-                                userId,
-                                runId,
-                                taskId,
-                                attemptId,
-                                deployment,
-                                leaseOwner,
-                                OffsetDateTime.now().plusSeconds(ttlSeconds)));
+                () -> {
+                    var lease =
+                            leaseService.begin(
+                                    orgId,
+                                    userId,
+                                    runId,
+                                    taskId,
+                                    attemptId,
+                                    deployment,
+                                    leaseOwner,
+                                    OffsetDateTime.now().plusSeconds(ttlSeconds));
+                    var sandbox = ctx.get(io.agentscope.harness.agent.sandbox.Sandbox.class);
+                    if (sandbox != null && sandbox.isRunning()) {
+                        String resource = SandboxExternalIds.fromSandbox(sandbox).orElseThrow();
+                        if (!leaseService.activate(
+                                lease,
+                                resource,
+                                "{}",
+                                OffsetDateTime.now().plusSeconds(ttlSeconds)))
+                            throw new IllegalStateException("SANDBOX_LEASE_ACTIVATION_REJECTED");
+                    }
+                    return lease;
+                });
     }
 
     private void releaseTrackingRow(UUID id, String orgId) {

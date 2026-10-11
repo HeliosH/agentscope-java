@@ -66,6 +66,14 @@ import org.springframework.web.server.ResponseStatusException;
  */
 @Service
 public class FileCatalogService {
+    private io.agentscope.saas.app.orchestration.RunExecutionPolicyService executionPolicies;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureExecutionPolicies(
+            io.agentscope.saas.app.orchestration.RunExecutionPolicyService policies) {
+        executionPolicies = policies;
+    }
+
     private static final Logger log = LoggerFactory.getLogger(FileCatalogService.class);
 
     public static final String STATUS_ACTIVE = "active";
@@ -296,6 +304,72 @@ public class FileCatalogService {
                 execution);
     }
 
+    @Transactional(propagation = Propagation.NEVER)
+    public FileRecord recordWorkspaceFileForArchive(
+            io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository.Job job,
+            io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository.Authority authority,
+            String path,
+            byte[] bytes,
+            io.agentscope.saas.domain.workspace.WorkspaceSourceRepository.Baseline baseline) {
+        return recordWorkspacePayloadForArchive(
+                job, authority, path, new FilePayload(bytes), baseline);
+    }
+
+    @Transactional(propagation = Propagation.NEVER)
+    public FileRecord recordWorkspacePathForArchive(
+            io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository.Job job,
+            io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository.Authority authority,
+            String path,
+            java.nio.file.Path bytes,
+            io.agentscope.saas.domain.workspace.WorkspaceSourceRepository.Baseline baseline) {
+        return recordWorkspacePayloadForArchive(
+                job, authority, path, new FilePayload(bytes), baseline);
+    }
+
+    private FileRecord recordWorkspacePayloadForArchive(
+            io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository.Job job,
+            io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository.Authority authority,
+            String path,
+            FilePayload payload,
+            io.agentscope.saas.domain.workspace.WorkspaceSourceRepository.Baseline baseline) {
+        if (baseline == null || !path.equals(baseline.logicalPath()))
+            throw new IllegalStateException("WORKSPACE_SOURCE_BASELINE_MISMATCH");
+        var tenant =
+                new TenantContext(
+                        job.orgId().toString(),
+                        job.userId().toString(),
+                        "member",
+                        "standard",
+                        0,
+                        0);
+        return recordWorkspaceFilePayload(
+                        tenant,
+                        job.agentId(),
+                        job.sessionId(),
+                        path,
+                        payload,
+                        "application/octet-stream",
+                        "sandbox-release",
+                        Map.of(
+                                "workspaceManifestId",
+                                job.manifestId().toString(),
+                                "workspaceSourceRecovery",
+                                true,
+                                "runBaselineCaptured",
+                                true,
+                                "runBaselineVersionId",
+                                baseline.versionId() == null
+                                        ? ""
+                                        : baseline.versionId().toString()),
+                        null,
+                        job.runId(),
+                        new SessionFence(job.sessionId(), job.sessionGeneration()),
+                        null,
+                        job.scope().execution(),
+                        authority)
+                .orElseThrow();
+    }
+
     private Optional<FileRecord> recordWorkspaceFileLocked(
             TenantContext tenant,
             UUID agentId,
@@ -310,6 +384,131 @@ public class FileCatalogService {
             SessionFence fence,
             Publication prepared,
             Execution execution) {
+        return recordWorkspaceFileLocked(
+                tenant,
+                agentId,
+                sessionId,
+                logicalPath,
+                content,
+                contentType,
+                source,
+                metadata,
+                workspaceWrite,
+                runId,
+                fence,
+                prepared,
+                execution,
+                null);
+    }
+
+    private Optional<FileRecord> recordWorkspaceFileLocked(
+            TenantContext tenant,
+            UUID agentId,
+            UUID sessionId,
+            String logicalPath,
+            byte[] content,
+            String contentType,
+            String source,
+            Map<String, Object> metadata,
+            Runnable workspaceWrite,
+            UUID runId,
+            SessionFence fence,
+            Publication prepared,
+            Execution execution,
+            io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository.Authority
+                    archiveAuthority) {
+        return recordWorkspaceFilePayload(
+                tenant,
+                agentId,
+                sessionId,
+                logicalPath,
+                new FilePayload(content),
+                contentType,
+                source,
+                metadata,
+                workspaceWrite,
+                runId,
+                fence,
+                prepared,
+                execution,
+                archiveAuthority);
+    }
+
+    @Transactional(propagation = Propagation.NEVER)
+    public Optional<FileRecord> recordWorkspacePathForAttempt(
+            TenantContext tenant,
+            UUID agent,
+            UUID run,
+            SessionFence fence,
+            Execution execution,
+            String logicalPath,
+            java.nio.file.Path path,
+            String contentType,
+            String source,
+            Map<String, Object> metadata) {
+        Objects.requireNonNull(publications, "Streaming publication requires durable admission");
+        Objects.requireNonNull(execution);
+        return recordWorkspaceFilePayload(
+                tenant,
+                agent,
+                fence.sessionId(),
+                logicalPath,
+                new FilePayload(path),
+                contentType,
+                source,
+                metadata,
+                null,
+                run,
+                fence,
+                null,
+                execution,
+                null);
+    }
+
+    @Transactional(propagation = Propagation.NEVER)
+    public Optional<FileRecord> recordWorkspacePath(
+            TenantContext tenant,
+            UUID agent,
+            UUID session,
+            String logicalPath,
+            java.nio.file.Path path,
+            String contentType,
+            String source,
+            Map<String, Object> metadata) {
+        Objects.requireNonNull(publications, "Streaming publication requires durable admission");
+        return recordWorkspaceFilePayload(
+                tenant,
+                agent,
+                session,
+                logicalPath,
+                new FilePayload(path),
+                contentType,
+                source,
+                metadata,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null);
+    }
+
+    private Optional<FileRecord> recordWorkspaceFilePayload(
+            TenantContext tenant,
+            UUID agentId,
+            UUID sessionId,
+            String logicalPath,
+            FilePayload payload,
+            String contentType,
+            String source,
+            Map<String, Object> metadata,
+            Runnable workspaceWrite,
+            UUID runId,
+            SessionFence fence,
+            Publication prepared,
+            Execution execution,
+            io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository.Authority
+                    archiveAuthority) {
         if (!properties.getFileStore().isEnabled()) {
             runWorkspaceWrite(workspaceWrite);
             return Optional.empty();
@@ -322,14 +521,16 @@ public class FileCatalogService {
             return Optional.empty();
         }
         String path = normalizePath(logicalPath);
-        byte[] bytes = content != null ? content : new byte[0];
-        long maxFileBytes = properties.getFileStore().getMaxFileBytes();
-        if (maxFileBytes > 0 && bytes.length > maxFileBytes) {
+        long maxFileBytes =
+                runId == null || executionPolicies == null
+                        ? properties.getFileStore().getMaxFileBytes()
+                        : executionPolicies.workspacePolicy(orgId.get(), runId).maxFileBytes();
+        if (maxFileBytes > 0 && payload.size > maxFileBytes) {
             throw new ResponseStatusException(
                     HttpStatus.PAYLOAD_TOO_LARGE,
                     "File exceeds configured limit of " + maxFileBytes + " bytes");
         }
-        String sha256 = sha256(bytes);
+        String sha256 = payload.sha256;
 
         if (publications != null && prepared == null) {
             return withTenantOrg(
@@ -347,9 +548,10 @@ public class FileCatalogService {
                                                             runId,
                                                             fence,
                                                             path,
-                                                            bytes.length,
+                                                            payload.size,
                                                             sha256,
-                                                            store),
+                                                            store,
+                                                            archiveAuthority),
                                             p ->
                                                     prepareIntent(
                                                             p,
@@ -357,36 +559,26 @@ public class FileCatalogService {
                                                             source,
                                                             metadata,
                                                             execution,
-                                                            workspaceWrite != null),
+                                                            workspaceWrite != null,
+                                                            archiveAuthority),
                                             p -> {
                                                 if (p.ownsObject()) {
-                                                    putObject(
+                                                    payload.put(
                                                             store,
                                                             p.orgId(),
                                                             p.objectKey(),
-                                                            bytes,
-                                                            contentType,
-                                                            sha256);
-                                                    byte[] persisted =
-                                                            getObject(
-                                                                    store,
-                                                                    p.orgId(),
-                                                                    p.objectKey());
-                                                    if (persisted == null
-                                                            || persisted.length != bytes.length
-                                                            || !sha256.equals(sha256(persisted)))
-                                                        throw new IllegalStateException(
-                                                                "FILE_PUBLICATION_INTEGRITY_FAILED");
+                                                            contentType);
                                                 }
+                                                payload.verify(store, p.orgId(), p.objectKey());
                                                 runWorkspaceWrite(workspaceWrite);
                                             },
                                             p ->
-                                                    recordWorkspaceFileLocked(
+                                                    recordWorkspaceFilePayload(
                                                                     tenant,
                                                                     agentId,
                                                                     sessionId,
                                                                     path,
-                                                                    bytes,
+                                                                    payload,
                                                                     contentType,
                                                                     source,
                                                                     metadata,
@@ -394,8 +586,10 @@ public class FileCatalogService {
                                                                     runId,
                                                                     fence,
                                                                     p,
-                                                                    execution)
-                                                            .orElseThrow())));
+                                                                    execution,
+                                                                    archiveAuthority)
+                                                            .orElseThrow(),
+                                            archiveAuthority)));
         }
 
         return withTenantOrg(
@@ -411,7 +605,8 @@ public class FileCatalogService {
                     if (prepared != null)
                         lockPublicationSession(tenant, agentId, sessionId, runId, fence);
                     Intent intent = prepared == null ? null : publications.intent(prepared);
-                    if (intent != null) publications.requireExecution(prepared, intent);
+                    if (intent != null)
+                        publications.requireExecution(prepared, intent, archiveAuthority);
                     Optional<FileEntity> existing =
                             fence == null
                                     ? fileRepository.lockByOrgUserPath(
@@ -438,7 +633,7 @@ public class FileCatalogService {
                             orgId.get(),
                             userId.get(),
                             replacedBytes,
-                            bytes.length,
+                            payload.size,
                             prepared == null ? null : prepared.id());
                     if (workspaceWrite != null) {
                         workspaceWrite.run();
@@ -453,9 +648,7 @@ public class FileCatalogService {
                             if (current.isPresent() && sha256.equals(current.get().getSha256())) {
                                 objectKey = current.get().getObjectKey();
                                 objectBackend = current.get().getStorageBackend();
-                            } else
-                                putObject(
-                                        store, orgId.get(), objectKey, bytes, contentType, sha256);
+                            } else payload.put(store, orgId.get(), objectKey, contentType);
                         }
                         // Session before file avoids a cycle with chat attachment FK locks.
                         lockExecutionFence(tenant, agentId, runId, fence);
@@ -479,7 +672,7 @@ public class FileCatalogService {
                                 orgId.get(),
                                 userId.get(),
                                 replacementSize(file, current),
-                                bytes.length,
+                                payload.size,
                                 prepared == null ? null : prepared.id());
                     }
                     if (prepared != null
@@ -515,7 +708,7 @@ public class FileCatalogService {
                                         version.getSha256()));
                     }
                     if (fence == null && prepared == null)
-                        putObject(store, orgId.get(), objectKey, bytes, contentType, sha256);
+                        payload.put(store, orgId.get(), objectKey, contentType);
                     if (existing.isEmpty()) fileRepository.saveAndFlush(file);
                     long versionNo =
                             existing.isEmpty()
@@ -530,7 +723,7 @@ public class FileCatalogService {
                                     objectKey,
                                     objectBackend,
                                     contentType,
-                                    bytes.length,
+                                    payload.size,
                                     sha256,
                                     source,
                                     metadata);
@@ -550,7 +743,7 @@ public class FileCatalogService {
                                     versionNo,
                                     objectKey,
                                     objectBackend,
-                                    bytes.length,
+                                    payload.size,
                                     sha256));
                 });
     }
@@ -566,9 +759,10 @@ public class FileCatalogService {
             String path,
             long size,
             String digest,
-            FileObjectStore store) {
+            FileObjectStore store,
+            io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository.Authority authority) {
         lockQuotaOwners(org, user);
-        publications.requireIdlePath(org, user, path);
+        publications.requireIdlePath(org, user, path, authority);
         lockPublicationSession(tenant, agent, session, run, fence);
         Optional<FileEntity> file =
                 fileRepository.findByOrgIdAndUserIdAndLogicalPath(org, user, path);
@@ -627,7 +821,8 @@ public class FileCatalogService {
             String source,
             Map<String, Object> metadata,
             Execution execution,
-            boolean rawWriteRequired) {
+            boolean rawWriteRequired,
+            io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository.Authority authority) {
         Optional<FileEntity> base =
                 fileRepository.findByOrgIdAndUserIdAndLogicalPath(
                         p.orgId(), p.userId(), p.logicalPath());
@@ -653,7 +848,8 @@ public class FileCatalogService {
                         execution == null ? null : execution.attemptId(),
                         execution == null ? null : execution.leaseOwner(),
                         rawWriteRequired);
-        publications.requireExecution(p, i);
+        if (authority != null) publications.bindArchive(p, i, authority);
+        publications.requireExecution(p, i, authority);
         return i;
     }
 
@@ -665,8 +861,28 @@ public class FileCatalogService {
             throw new IllegalStateException("FILE_PUBLICATION_BASE_CHANGED");
     }
 
+    private io.agentscope.harness.agent.sandbox.WorkspaceTransferResources transfers =
+            io.agentscope.harness.agent.sandbox.WorkspaceTransferResources.DEFAULT;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureTransferResources(
+            io.agentscope.harness.agent.sandbox.WorkspaceTransferResources resources) {
+        transfers = resources;
+    }
+
     @Transactional(propagation = Propagation.NEVER)
     public boolean recoverPublication(Publication p, UUID token) {
+        return recoverPublication(p, token, null, null);
+    }
+
+    @Transactional(propagation = Propagation.NEVER)
+    public boolean recoverPublication(
+            Publication p,
+            UUID token,
+            io.agentscope.saas.domain.workspace.WorkspaceArchiveRepository.Authority authority,
+            OffsetDateTime archiveLeaseUntil) {
+        if (authority != null && (!authority.token().equals(token) || archiveLeaseUntil == null))
+            throw new IllegalArgumentException("Invalid archive publication authority");
         return withTenantOrg(
                 p.orgId().toString(),
                 () -> {
@@ -688,49 +904,53 @@ public class FileCatalogService {
                             p.sessionGeneration() == null
                                     ? null
                                     : new SessionFence(p.sessionId(), p.sessionGeneration());
-                    boolean claimed =
-                            publications.claimRecovery(
-                                    p,
-                                    token,
-                                    () -> {
-                                        lockQuotaOwners(p.orgId(), p.userId());
-                                        lockPublicationSession(
-                                                tenant,
-                                                p.agentId(),
-                                                p.sessionId(),
-                                                p.runId(),
-                                                fence);
-                                        publications.requireExecution(p, intent);
-                                        publications.requireIdlePath(
+                    Runnable admission =
+                            () -> {
+                                lockQuotaOwners(p.orgId(), p.userId());
+                                lockPublicationSession(
+                                        tenant, p.agentId(), p.sessionId(), p.runId(), fence);
+                                publications.requireExecution(p, intent, authority);
+                                publications.requireIdlePathExcept(
+                                        p.orgId(), p.userId(), p.logicalPath(), p.id());
+                                var file =
+                                        fileRepository.lockByOrgUserPath(
                                                 p.orgId(), p.userId(), p.logicalPath());
-                                        var file =
-                                                fileRepository.lockByOrgUserPath(
-                                                        p.orgId(), p.userId(), p.logicalPath());
-                                        requireBase(intent, file);
-                                        var version =
-                                                file.flatMap(f -> currentVersion(f, p.orgId()));
-                                        enforceQuota(
-                                                p.orgId(),
-                                                p.userId(),
-                                                file.map(f -> replacementSize(f, version))
-                                                        .orElse(0L),
-                                                p.sizeBytes(),
-                                                p.id());
-                                    });
+                                requireBase(intent, file);
+                                var version = file.flatMap(f -> currentVersion(f, p.orgId()));
+                                enforceQuota(
+                                        p.orgId(),
+                                        p.userId(),
+                                        file.map(f -> replacementSize(f, version)).orElse(0L),
+                                        p.sizeBytes(),
+                                        p.id());
+                            };
+                    boolean claimed =
+                            authority == null
+                                    ? publications.claimRecovery(p, token, admission)
+                                    : publications.claimArchive(
+                                            p, authority, archiveLeaseUntil, admission);
                     if (!claimed) return false;
                     FileObjectStore store = objectStoreProvider.getIfAvailable();
                     if (store == null || !p.backend().equals(store.backend()))
                         throw new IllegalStateException("FILE_PUBLICATION_BACKEND_CHANGED");
-                    byte[] bytes;
-                    try {
-                        bytes = store.getBounded(p.orgId(), p.objectKey(), p.sizeBytes());
-                    } catch (Exception error) {
+                    String actual;
+                    try (var permit = transfers.acquire()) {
+                        java.io.InputStream input;
+                        try {
+                            input = store.openRead(p.orgId(), p.objectKey(), p.sizeBytes());
+                        } catch (Exception unavailable) {
+                            throw new FilePublicationRetryableException();
+                        }
+                        try (input) {
+                            actual = FilePayload.checksum(input, p.sizeBytes());
+                        }
+                    } catch (PayloadIntegrityException invalid) {
+                        throw invalid;
+                    } catch (Exception unavailable) {
                         throw new FilePublicationRetryableException();
                     }
-                    if (bytes == null
-                            || bytes.length != p.sizeBytes()
-                            || !p.sha256().equals(sha256(bytes)))
-                        throw new IllegalStateException("FILE_PUBLICATION_INTEGRITY_FAILED");
+                    if (!p.sha256().equals(actual)) throw new PayloadIntegrityException();
+                    var payload = new FilePayload(p.sizeBytes(), p.sha256());
                     Map<String, Object> metadata;
                     try {
                         if (intent.metadataJson().getBytes(StandardCharsets.UTF_8).length > 65536)
@@ -750,12 +970,12 @@ public class FileCatalogService {
                             p,
                             token,
                             candidate ->
-                                    recordWorkspaceFileLocked(
+                                    recordWorkspaceFilePayload(
                                                     tenant,
                                                     p.agentId(),
                                                     p.sessionId(),
                                                     p.logicalPath(),
-                                                    bytes,
+                                                    payload,
                                                     intent.contentType(),
                                                     intent.source(),
                                                     metadata,
@@ -763,7 +983,8 @@ public class FileCatalogService {
                                                     p.runId(),
                                                     fence,
                                                     candidate,
-                                                    intent.execution())
+                                                    intent.execution(),
+                                                    authority)
                                             .orElseThrow());
                     return true;
                 });
@@ -1060,6 +1281,133 @@ public class FileCatalogService {
                                                                                         .getSha256()))));
     }
 
+    /** Immutable metadata plus an authorized, repeatable stream opener; no object IO here. */
+    @Transactional(propagation = Propagation.NEVER)
+    public Optional<VersionStream> describeVersion(TenantContext tenant, UUID versionId) {
+        if (!properties.getFileStore().isEnabled() || versionId == null) return Optional.empty();
+        var org = parseUuid(tenant == null ? null : tenant.orgId());
+        var user = parseUuid(tenant == null ? null : tenant.userId());
+        var store = objectStoreProvider.getIfAvailable();
+        if (org.isEmpty() || user.isEmpty() || store == null) return Optional.empty();
+        return withTenantOrg(
+                org.get().toString(),
+                () ->
+                        fileVersionRepository
+                                .findByIdAndOrgIdAndUserId(versionId, org.get(), user.get())
+                                .flatMap(
+                                        version ->
+                                                fileRepository
+                                                        .findByIdAndOrgIdAndUserId(
+                                                                version.getFileId(),
+                                                                org.get(),
+                                                                user.get())
+                                                        .map(
+                                                                file -> {
+                                                                    if (!store.backend()
+                                                                                    .equals(
+                                                                                            version
+                                                                                                    .getStorageBackend())
+                                                                            || version
+                                                                                            .getSizeBytes()
+                                                                                    == null
+                                                                            || version
+                                                                                            .getSizeBytes()
+                                                                                    < 0
+                                                                            || version.getSha256()
+                                                                                    == null
+                                                                            || !version.getSha256()
+                                                                                    .matches(
+                                                                                            "[a-f0-9]{64}"))
+                                                                        throw new IllegalStateException(
+                                                                                "FILE_VERSION_DESCRIPTOR_INVALID");
+                                                                    return new VersionStream(
+                                                                            file.getLogicalPath(),
+                                                                            version
+                                                                                    .getContentType(),
+                                                                            version.getSizeBytes(),
+                                                                            version.getSha256(),
+                                                                            () -> {
+                                                                                withTenantOrg(
+                                                                                        org.get()
+                                                                                                .toString(),
+                                                                                        () -> {
+                                                                                            var
+                                                                                                    current =
+                                                                                                            fileVersionRepository
+                                                                                                                    .findByIdAndOrgIdAndUserId(
+                                                                                                                            versionId,
+                                                                                                                            org
+                                                                                                                                    .get(),
+                                                                                                                            user
+                                                                                                                                    .get())
+                                                                                                                    .orElseThrow();
+                                                                                            if (!Objects
+                                                                                                            .equals(
+                                                                                                                    current
+                                                                                                                            .getObjectKey(),
+                                                                                                                    version
+                                                                                                                            .getObjectKey())
+                                                                                                    || !Objects
+                                                                                                            .equals(
+                                                                                                                    current
+                                                                                                                            .getSha256(),
+                                                                                                                    version
+                                                                                                                            .getSha256())
+                                                                                                    || !Objects
+                                                                                                            .equals(
+                                                                                                                    current
+                                                                                                                            .getSizeBytes(),
+                                                                                                                    version
+                                                                                                                            .getSizeBytes())
+                                                                                                    || !Objects
+                                                                                                            .equals(
+                                                                                                                    current
+                                                                                                                            .getStorageBackend(),
+                                                                                                                    version
+                                                                                                                            .getStorageBackend())
+                                                                                                    || fileRepository
+                                                                                                            .findByIdAndOrgIdAndUserId(
+                                                                                                                    current
+                                                                                                                            .getFileId(),
+                                                                                                                    org
+                                                                                                                            .get(),
+                                                                                                                    user
+                                                                                                                            .get())
+                                                                                                            .isEmpty())
+                                                                                                throw new IllegalStateException(
+                                                                                                        "FILE_VERSION_DESCRIPTOR_CHANGED");
+                                                                                            return null;
+                                                                                        });
+                                                                                return store
+                                                                                        .openRead(
+                                                                                                org
+                                                                                                        .get(),
+                                                                                                version
+                                                                                                        .getObjectKey(),
+                                                                                                version
+                                                                                                        .getSizeBytes());
+                                                                            });
+                                                                })));
+    }
+
+    @Transactional(propagation = Propagation.NEVER)
+    public Optional<VersionStream> describeCurrentFile(TenantContext tenant, String logicalPath) {
+        var org = parseUuid(tenant == null ? null : tenant.orgId());
+        var user = parseUuid(tenant == null ? null : tenant.userId());
+        if (org.isEmpty() || user.isEmpty()) return Optional.empty();
+        String path = normalizePath(logicalPath);
+        return withTenantOrg(
+                org.get().toString(),
+                () ->
+                        fileRepository
+                                .findByOrgIdAndUserIdAndLogicalPath(org.get(), user.get(), path)
+                                .filter(file -> STATUS_ACTIVE.equals(file.getStatus()))
+                                .flatMap(
+                                        file ->
+                                                describeVersion(
+                                                        tenant, file.getCurrentVersionId())));
+    }
+
     @Transactional(propagation = Propagation.NEVER)
     public Optional<FileRecord> restoreVersion(
             TenantContext tenant,
@@ -1067,7 +1415,7 @@ public class FileCatalogService {
             UUID sessionId,
             UUID versionId,
             String logicalPath) {
-        Optional<StoredFile> stored = readVersion(tenant, versionId);
+        Optional<VersionStream> stored = describeVersion(tenant, versionId);
         if (stored.isEmpty()) {
             return Optional.empty();
         }
@@ -1075,15 +1423,26 @@ public class FileCatalogService {
                 logicalPath != null && !logicalPath.isBlank()
                         ? normalizePath(logicalPath)
                         : stored.get().logicalPath();
-        return recordWorkspaceFile(
-                tenant,
-                agentId,
-                sessionId,
-                path,
-                stored.get().content(),
-                stored.get().contentType(),
-                SOURCE_WORKSPACE_RESTORE,
-                Map.of("restoredVersionId", versionId.toString()));
+        try (var permit = transfers.acquire()) {
+            return recordWorkspaceFilePayload(
+                    tenant,
+                    agentId,
+                    sessionId,
+                    path,
+                    new FilePayload(stored.orElseThrow()),
+                    stored.orElseThrow().contentType(),
+                    SOURCE_WORKSPACE_RESTORE,
+                    Map.of("restoredVersionId", versionId.toString()),
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("File restore interrupted", interrupted);
+        }
     }
 
     @Transactional
@@ -1117,6 +1476,7 @@ public class FileCatalogService {
                     attachment.setTaskId(taskId);
                     attachment.setFileId(record.fileId());
                     attachment.setFileVersionId(record.versionId());
+                    attachment.setLogicalPath(record.logicalPath());
                     attachment.setKind(kind != null && !kind.isBlank() ? kind : "workspace_file");
                     attachment.setMetadata(json(metadata));
                     fileAttachmentRepository.save(attachment);
@@ -1145,9 +1505,9 @@ public class FileCatalogService {
                 parseUuid(tenant.userId())
                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN));
         String path = normalizePath(logicalPath);
-        if (!path.startsWith("inputs/")) {
+        if (!(path.startsWith("inputs/") || path.startsWith("outputs/"))) {
             throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST, "Attachment is not an uploaded input");
+                    HttpStatus.BAD_REQUEST, "Attachment is not a user file");
         }
         return withTenantOrg(
                 orgId.toString(),
@@ -1245,7 +1605,9 @@ public class FileCatalogService {
                                         id -> new java.util.ArrayList<>())
                                 .add(
                                         new MessageFile(
-                                                file.getLogicalPath(),
+                                                attachment.getLogicalPath() == null
+                                                        ? file.getLogicalPath()
+                                                        : attachment.getLogicalPath(),
                                                 version.getId().toString(),
                                                 version.getSizeBytes()));
                     }
@@ -1575,6 +1937,102 @@ public class FileCatalogService {
         }
     }
 
+    private static final class FilePayload {
+        private final byte[] bytes;
+        private final java.nio.file.Path path;
+        private final long size;
+        private final String sha256;
+        private final io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan.ContentSource stream;
+
+        private FilePayload(byte[] content) {
+            bytes = content == null ? new byte[0] : content;
+            path = null;
+            size = bytes.length;
+            sha256 = sha256(bytes);
+            stream = null;
+        }
+
+        private FilePayload(java.nio.file.Path file) {
+            bytes = null;
+            path = Objects.requireNonNull(file);
+            stream = null;
+            try {
+                if (!java.nio.file.Files.isRegularFile(
+                        file, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                    throw new java.io.IOException("Private regular staging file required");
+                size = java.nio.file.Files.size(file);
+                try (var input = java.nio.file.Files.newInputStream(file)) {
+                    sha256 = checksum(input, size);
+                }
+            } catch (Exception error) {
+                throw new IllegalStateException("FILE_PUBLICATION_SOURCE_UNAVAILABLE", error);
+            }
+        }
+
+        private FilePayload(long size, String sha256) {
+            this.size = size;
+            this.sha256 = sha256;
+            bytes = null;
+            path = null;
+            stream = null;
+        }
+
+        private FilePayload(VersionStream source) {
+            size = source.sizeBytes();
+            sha256 = source.sha256();
+            stream = source.source();
+            bytes = null;
+            path = null;
+        }
+
+        private void put(FileObjectStore store, UUID org, String key, String type) {
+            try {
+                if (stream != null) {
+                    try (var input = stream.open()) {
+                        store.putStream(org, key, input, size, type, sha256);
+                    }
+                    return;
+                }
+                if (path == null && bytes == null)
+                    throw new IllegalStateException(
+                            "Verified recovery metadata cannot transfer bytes");
+                if (path == null) store.put(new FileObject(org, key, bytes, type, sha256));
+                else store.putFromPath(org, key, path, type, sha256);
+            } catch (Exception error) {
+                throw new IllegalStateException("Failed to store file object", error);
+            }
+        }
+
+        private void verify(FileObjectStore store, UUID org, String key) {
+            try (var input = store.openRead(org, key, size)) {
+                if (!sha256.equals(checksum(input, size)))
+                    throw new java.io.IOException("Object digest mismatch");
+            } catch (Exception error) {
+                throw new IllegalStateException("FILE_PUBLICATION_INTEGRITY_FAILED", error);
+            }
+        }
+
+        private static String checksum(java.io.InputStream input, long size) throws Exception {
+            var digest = MessageDigest.getInstance("SHA-256");
+            byte[] buffer = new byte[8192];
+            long copied = 0;
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                if (read > size - copied) throw new PayloadIntegrityException();
+                copied += read;
+                digest.update(buffer, 0, read);
+            }
+            if (copied != size) throw new PayloadIntegrityException();
+            return java.util.HexFormat.of().formatHex(digest.digest());
+        }
+    }
+
+    private static final class PayloadIntegrityException extends IllegalStateException {
+        PayloadIntegrityException() {
+            super("FILE_PUBLICATION_INTEGRITY_FAILED");
+        }
+    }
+
     public record FileRecord(
             UUID fileId,
             UUID versionId,
@@ -1584,6 +2042,13 @@ public class FileCatalogService {
             String storageBackend,
             long sizeBytes,
             String sha256) {}
+
+    public record VersionStream(
+            String logicalPath,
+            String contentType,
+            long sizeBytes,
+            String sha256,
+            io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan.ContentSource source) {}
 
     public record StoredFile(
             String logicalPath, String contentType, byte[] content, Long sizeBytes, String sha256) {

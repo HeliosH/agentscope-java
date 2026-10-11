@@ -31,6 +31,16 @@ import org.springframework.context.annotation.Configuration;
 public class SandboxBackendTerminatorConfig {
 
     @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
+            name = "saas.sandbox.type",
+            havingValue = "opensandbox")
+    io.agentscope.harness.agent.sandbox.WorkspaceRetentionBackend workspaceRetentionBackend(
+            SaasProperties properties) {
+        return new io.agentscope.extensions.sandbox.opensandbox.OpenSandboxWorkspaceRetention(
+                openSandboxOptions(properties.getSandbox()));
+    }
+
+    @Bean
     SandboxBackendTerminator sandboxBackendTerminator(SaasProperties properties) {
         SaasProperties.Sandbox sandbox = properties.getSandbox();
         if (!sandbox.isEnabled()) {

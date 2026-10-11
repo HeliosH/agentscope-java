@@ -25,6 +25,19 @@ public interface DurableTaskLeaseMapper {
     List<UUID> lockRun(@Param("runId") UUID runId);
 
     @Select(
+            "SELECT COUNT(*) FROM workspace_archive_jobs j JOIN run_attempts a ON a.id ="
+                + " j.attempt_id AND a.org_id = j.org_id AND a.run_id = j.run_id AND a.task_id ="
+                + " j.task_id WHERE a.id = #{attemptId} AND a.lease_owner = #{workerId} AND"
+                + " j.original_owner = #{workerId} AND a.status IN ('ARCHIVING', 'SUCCEEDED')")
+    int archiveHandover(@Param("attemptId") UUID attempt, @Param("workerId") String worker);
+
+    @Select(
+            "SELECT EXISTS (SELECT 1 FROM run_attempts WHERE id = #{attemptId} AND lease_owner ="
+                    + " #{workerId} AND status = 'SUCCEEDED')")
+    boolean completedSuccessfully(
+            @Param("attemptId") UUID attempt, @Param("workerId") String worker);
+
+    @Select(
             """
             SELECT t.id AS task_id, t.org_id, t.run_id, r.user_id, r.agent_id, r.session_id,
                    ar.id AS agent_run_id, COALESCE(ar.agent_type, 'assistant') AS agent_type,
@@ -43,8 +56,14 @@ public interface DurableTaskLeaseMapper {
               LEFT JOIN agent_runs ar ON ar.id = t.owner_agent_run_id
               JOIN users u ON u.id = r.user_id
               LEFT JOIN tier_policies p ON p.tier = u.tier
+              LEFT JOIN run_execution_policies ep ON ep.run_id = r.id AND ep.org_id = r.org_id
              WHERE t.status = 'READY'
                AND r.status = 'RUNNING'
+               AND (CAST(#{deploymentScope} AS VARCHAR) IS NULL
+                    OR (ep.run_id IS NULL AND r.execution_policy_version IS NULL AND #{deploymentScope} = 'local')
+                    OR (ep.deployment_scope = #{deploymentScope} AND ep.capability_hash = #{capabilityHash}
+                        AND ep.max_file_bytes <= #{maxFileBytes}
+                        AND ep.max_workspace_bytes <= #{maxArchiveBytes} - (CAST(ep.max_files AS BIGINT) * 4096 + 10240)))
                AND (t.next_attempt_at IS NULL OR t.next_attempt_at <= #{readyAt})
                AND NOT EXISTS (
                    SELECT 1 FROM task_edges e
@@ -79,7 +98,12 @@ public interface DurableTaskLeaseMapper {
         @Arg(column = "last_attempt_no", javaType = int.class)
     })
     List<TaskLeaseCandidateData> findReadyCandidates(
-            @Param("readyAt") OffsetDateTime readyAt, @Param("limit") int limit);
+            @Param("readyAt") OffsetDateTime readyAt,
+            @Param("limit") int limit,
+            @Param("deploymentScope") String deploymentScope,
+            @Param("capabilityHash") String capabilityHash,
+            @Param("maxArchiveBytes") long maxArchiveBytes,
+            @Param("maxFileBytes") long maxFileBytes);
 
     @Select(
             """
@@ -237,6 +261,15 @@ public interface DurableTaskLeaseMapper {
               FROM run_attempts
              WHERE status IN ('LEASED', 'RUNNING')
                AND lease_expires_at < #{expiredBefore}
+               AND lease_owner IS NOT NULL AND TRIM(lease_owner) <> ''
+               AND (CAST(#{deploymentScope} AS VARCHAR) IS NULL
+                    OR EXISTS (SELECT 1 FROM run_execution_policies ep WHERE ep.run_id = run_attempts.run_id
+                        AND ep.org_id = run_attempts.org_id AND ep.deployment_scope = #{deploymentScope})
+                    OR (#{deploymentScope} = 'local' AND NOT EXISTS (SELECT 1 FROM run_execution_policies ep
+                        WHERE ep.run_id = run_attempts.run_id AND ep.org_id = run_attempts.org_id)
+                        AND EXISTS (SELECT 1 FROM assistant_runs r WHERE r.id = run_attempts.run_id
+                            AND r.org_id = run_attempts.org_id AND r.execution_policy_version IS NULL)))
+               AND NOT EXISTS (SELECT 1 FROM workspace_archive_jobs j WHERE j.attempt_id = run_attempts.id AND j.org_id = run_attempts.org_id AND j.prepared AND j.status = 'PENDING')
              ORDER BY lease_expires_at ASC
              LIMIT #{limit}
             """)
@@ -245,7 +278,9 @@ public interface DurableTaskLeaseMapper {
         @Arg(column = "worker_id", javaType = String.class)
     })
     List<ExpiredTaskLeaseData> findExpiredAttempts(
-            @Param("expiredBefore") OffsetDateTime expiredBefore, @Param("limit") int limit);
+            @Param("expiredBefore") OffsetDateTime expiredBefore,
+            @Param("limit") int limit,
+            @Param("deploymentScope") String deploymentScope);
 
     @Update(
             """
@@ -259,6 +294,10 @@ public interface DurableTaskLeaseMapper {
                AND status IN ('LEASED', 'RUNNING')
             <if test="requireExpiredBefore != null">
                AND lease_expires_at &lt; #{requireExpiredBefore}
+               AND NOT EXISTS (SELECT 1 FROM workspace_archive_jobs j WHERE j.attempt_id = run_attempts.id AND j.org_id = run_attempts.org_id AND j.prepared AND j.status = 'PENDING')
+            </if>
+            <if test="requireExpiredBefore == null">
+               AND lease_expires_at >= #{completedAt}
             </if>
             </script>
             """)
@@ -282,7 +321,7 @@ public interface DurableTaskLeaseMapper {
                        ELSE recovery_phase
                    END,
                    next_recovery_at = NULL
-             WHERE id = #{taskId} AND status IN ('CLAIMED', 'RUNNING')
+             WHERE id = #{taskId} AND status IN ('CLAIMED', 'RUNNING', 'ARCHIVING')
             """)
     int completeTask(
             @Param("taskId") UUID taskId,
@@ -431,7 +470,7 @@ public interface DurableTaskLeaseMapper {
                        ELSE recovery_phase
                    END,
                    next_recovery_at = NULL
-             WHERE id = #{taskId} AND status IN ('CLAIMED', 'RUNNING')
+             WHERE id = #{taskId} AND status IN ('CLAIMED', 'RUNNING', 'ARCHIVING')
             """)
     int stopTask(
             @Param("taskId") UUID taskId,
@@ -465,7 +504,7 @@ public interface DurableTaskLeaseMapper {
                    next_recovery_at = NULL, updated_at = #{completedAt}
              WHERE run_id = #{runId}
                AND id <> #{taskId}
-               AND status IN ('PENDING', 'READY', 'CLAIMED', 'RUNNING')
+               AND status IN ('PENDING', 'READY', 'CLAIMED', 'RUNNING', 'ARCHIVING')
             """)
     int cancelSiblingTasks(
             @Param("runId") UUID runId,
@@ -479,7 +518,7 @@ public interface DurableTaskLeaseMapper {
                    updated_at = #{completedAt}
              WHERE run_id = #{runId}
                AND task_id <> #{taskId}
-               AND status IN ('CREATED', 'LEASED', 'RUNNING')
+               AND status IN ('CREATED', 'LEASED', 'RUNNING', 'ARCHIVING')
             """)
     int cancelSiblingAttempts(
             @Param("runId") UUID runId,

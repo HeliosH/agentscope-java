@@ -70,4 +70,27 @@ public interface RuntimeBodyMapper {
              <if test="userId != null">AND user_id = #{userId}</if></script>
             """)
     long usage(@Param("orgId") UUID orgId, @Param("userId") UUID userId);
+
+    @Insert(
+            """
+            INSERT INTO runtime_body_fallbacks(body_id, org_id, user_id, agent_id, session_id, payload, size_bytes)
+            VALUES(#{body.id}, #{body.orgId}, #{body.userId}, #{body.agentId}, #{body.sessionId}, #{payload}, #{body.sizeBytes})
+            """)
+    int fallback(@Param("body") Body body, @Param("payload") String payload);
+
+    @Select(
+            """
+            SELECT payload FROM runtime_body_fallbacks f WHERE body_id = #{id}
+              AND org_id = #{scope.orgId} AND user_id = #{scope.userId}
+              AND agent_id = #{scope.agentId} AND session_id = #{scope.sessionId}
+              AND EXISTS (SELECT 1 FROM runtime_message_bodies b WHERE b.id = f.body_id AND b.status = 'READY')
+            """)
+    List<String> fallbackPayload(@Param("scope") Scope scope, @Param("id") UUID id);
+
+    @Select(
+            """
+            <script>SELECT COALESCE(SUM(size_bytes), 0) FROM runtime_body_fallbacks
+              WHERE org_id = #{orgId}<if test="userId != null"> AND user_id = #{userId}</if></script>
+            """)
+    long fallbackUsage(@Param("orgId") UUID orgId, @Param("userId") UUID userId);
 }

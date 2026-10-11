@@ -16,6 +16,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -44,6 +45,198 @@ import org.mockito.ArgumentCaptor;
 import reactor.core.publisher.Mono;
 
 class HarnessDurableTaskExecutorTest {
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+        "reply,true",
+        "reply,false",
+        "status,true",
+        "status,false"
+    })
+    void replyAndStatusSubmissionFailuresPreserveComputedAnswerWithoutCallingAgentAgain(
+            String stage, boolean admitted) throws Exception {
+        var parent = mock(HarnessAgent.class);
+        var reply =
+                Msg.builder().role(MsgRole.ASSISTANT).textContent("computed final answer").build();
+        when(parent.call(any(Msg.class), any(RuntimeContext.class))).thenReturn(Mono.just(reply));
+        var properties = new SaasProperties();
+        properties.getSandbox().setEnabled(true);
+        var chats = mock(ChatPersistenceService.class);
+        var orchestration = mock(RunOrchestrationService.class);
+        var artifacts = mock(WorkspaceArtifactService.class);
+        when(artifacts.publish(any(), any(), any(), any(), any(), any()))
+                .thenReturn(
+                        new WorkspaceArtifactService.Publication(
+                                "workspace-catalog://test", "version", 1));
+        var restore = mock(WorkspaceCheckpointRestoreService.class);
+        when(restore.prepare(any(), any(), any(), any(), any())).thenReturn(Optional.empty());
+        var archives = mock(io.agentscope.saas.app.workspace.WorkspaceArchiveService.class);
+        if (admitted)
+            when(archives.defer(any(), any(), anyList(), eq(true))).thenReturn(UUID.randomUUID());
+        else
+            when(archives.defer(any(), any(), anyList(), eq(true)))
+                    .thenThrow(new IllegalStateException("handover unavailable"));
+        var executor =
+                new HarnessDurableTaskExecutor(
+                        parent,
+                        new ObjectMapper(),
+                        properties,
+                        chats,
+                        orchestration,
+                        artifacts,
+                        restore,
+                        Optional.empty(),
+                        archives);
+        if (stage.equals("reply")) {
+            doThrow(
+                            new io.agentscope.core.model.ModelException(
+                                    "reply persistence transport failed"))
+                    .when(chats)
+                    .saveAssistantMessageForRun(any(), any(), any(), any(), anyList());
+            assertThatThrownBy(() -> executor.execute(computedRequest()))
+                    .isInstanceOf(
+                            admitted
+                                    ? io.agentscope.saas.app.workspace
+                                            .WorkspaceArchiveDeferredException.class
+                                    : io.agentscope.saas.app.workspace
+                                            .WorkspaceArchiveRejectedException.class);
+        } else {
+            var result = executor.execute(computedRequest());
+            assertThatThrownBy(
+                            () ->
+                                    result.commitFailed(
+                                            new io.agentscope.core.model.ModelException(
+                                                    "status transport failed")))
+                    .isInstanceOf(io.agentscope.saas.orchestration.TaskResultCommitException.class)
+                    .hasCauseInstanceOf(
+                            admitted
+                                    ? io.agentscope.saas.app.workspace
+                                            .WorkspaceArchiveDeferredException.class
+                                    : io.agentscope.saas.app.workspace
+                                            .WorkspaceArchiveRejectedException.class);
+        }
+        var pending = ArgumentCaptor.forClass(String.class);
+        verify(archives).defer(any(), pending.capture(), eq(reply.getContent()), eq(true));
+        assertThat(pending.getValue()).contains("computed final answer", "agent_result");
+        verify(parent).call(any(Msg.class), any(RuntimeContext.class));
+        verify(artifacts).publish(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void postComputeDeliveryScopeLookupFailureIsNotAnExecutionFailure() throws Exception {
+        var parent = mock(HarnessAgent.class);
+        when(parent.call(any(Msg.class), any(RuntimeContext.class)))
+                .thenReturn(
+                        Mono.just(
+                                Msg.builder().role(MsgRole.ASSISTANT).textContent("done").build()));
+        var orchestration = mock(RunOrchestrationService.class);
+        when(orchestration.hasUnsettledChildren(any()))
+                .thenThrow(new io.agentscope.core.model.ModelException("metadata unavailable"));
+        var artifacts = mock(WorkspaceArtifactService.class);
+        var executor =
+                new HarnessDurableTaskExecutor(
+                        parent,
+                        new ObjectMapper(),
+                        new SaasProperties(),
+                        mock(ChatPersistenceService.class),
+                        orchestration,
+                        artifacts,
+                        mock(WorkspaceCheckpointRestoreService.class),
+                        Optional.empty());
+        assertThatThrownBy(() -> executor.execute(computedRequest()))
+                .isInstanceOf(io.agentscope.saas.orchestration.TaskResultCommitException.class);
+        verify(artifacts, never()).publish(any(), any(), any(), any(), any(), any());
+        verify(parent).call(any(Msg.class), any(RuntimeContext.class));
+    }
+
+    private static ExecutionRequest computedRequest() {
+        return new ExecutionRequest(
+                UUID.randomUUID(),
+                "worker-test",
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                "assistant",
+                null,
+                "member",
+                "standard",
+                1,
+                100,
+                "compute",
+                "{\"prompt\":\"compute\",\"_runtime\":{\"directChat\":true}}",
+                WorkspaceIsolationMode.ATTEMPT_ISOLATED);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+    void completedComputeIsHandedOverOrStoppedButNeverRepeated(boolean admitted) throws Exception {
+        var parent = mock(HarnessAgent.class);
+        var reply = Msg.builder().role(MsgRole.ASSISTANT).textContent("finished compute").build();
+        when(parent.call(any(Msg.class), any(RuntimeContext.class))).thenReturn(Mono.just(reply));
+        var properties = new SaasProperties();
+        properties.getSandbox().setEnabled(true);
+        var chats = mock(ChatPersistenceService.class);
+        var orchestration = mock(RunOrchestrationService.class);
+        var artifacts = mock(WorkspaceArtifactService.class);
+        doThrow(new IllegalStateException("catalog incomplete"))
+                .when(artifacts)
+                .publish(any(), any(), any(), any(), any(), any());
+        var restore = mock(WorkspaceCheckpointRestoreService.class);
+        when(restore.prepare(any(), any(), any(), any(), any())).thenReturn(Optional.empty());
+        var archives = mock(io.agentscope.saas.app.workspace.WorkspaceArchiveService.class);
+        if (admitted)
+            when(archives.defer(any(), any(), anyList(), eq(true))).thenReturn(UUID.randomUUID());
+        else
+            when(archives.defer(any(), any(), anyList(), eq(true)))
+                    .thenThrow(new IllegalStateException("bytes missing"));
+        var executor =
+                new HarnessDurableTaskExecutor(
+                        parent,
+                        new ObjectMapper(),
+                        properties,
+                        chats,
+                        orchestration,
+                        artifacts,
+                        restore,
+                        Optional.empty(),
+                        archives);
+        var request =
+                new ExecutionRequest(
+                        UUID.randomUUID(),
+                        "worker-test",
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        "assistant",
+                        null,
+                        "member",
+                        "standard",
+                        1,
+                        100,
+                        "compute",
+                        "{\"prompt\":\"compute\",\"_runtime\":{\"directChat\":true}}",
+                        WorkspaceIsolationMode.ATTEMPT_ISOLATED);
+        assertThatThrownBy(() -> executor.execute(request))
+                .isInstanceOf(
+                        admitted
+                                ? io.agentscope.saas.app.workspace.WorkspaceArchiveDeferredException
+                                        .class
+                                : io.agentscope.saas.app.workspace.WorkspaceArchiveRejectedException
+                                        .class);
+        var output = ArgumentCaptor.forClass(String.class);
+        verify(archives).defer(any(), output.capture(), eq(reply.getContent()), eq(true));
+        assertThat(output.getValue()).contains("finished compute", "agent_result");
+        verify(parent).call(any(Msg.class), any(RuntimeContext.class));
+        verify(chats, never()).saveAssistantMessageForRun(any(), any(), any(), any(), anyList());
+    }
 
     @AfterEach
     void clearTenant() {
@@ -273,6 +466,7 @@ class HarnessDurableTaskExecutorTest {
                         any(TenantContext.class),
                         eq(orgId),
                         eq(attemptId),
+                        eq("worker-test"),
                         eq(WorkspaceIsolationMode.ATTEMPT_ISOLATED)))
                 .thenReturn(Optional.empty());
         HarnessDurableTaskExecutor executor =
@@ -339,7 +533,7 @@ class HarnessDurableTaskExecutorTest {
                 .when(artifacts)
                 .publish(any(), any(), any(), any(), any(), any());
         WorkspaceCheckpointRestoreService restore = mock(WorkspaceCheckpointRestoreService.class);
-        when(restore.prepare(any(), any(), any(), any())).thenReturn(Optional.empty());
+        when(restore.prepare(any(), any(), any(), any(), any())).thenReturn(Optional.empty());
         HarnessDurableTaskExecutor executor =
                 new HarnessDurableTaskExecutor(
                         parent,

@@ -75,6 +75,46 @@ class FileUploadStagingServiceTest {
                 .isFalse();
     }
 
+    @Test
+    void streamingPartsUseOneBoundedSpoolAndReturnTheAdmissionAfterFailure() throws Exception {
+        var properties = new SaasProperties();
+        properties.getFileStore().setMaxFileBytes(4);
+        var service = new FileUploadStagingService(properties, FileContentScanner.noop());
+        service.configureTransferResources(
+                new io.agentscope.harness.agent.sandbox.WorkspaceTransferResources(1, 8, 4096));
+        assertThatThrownBy(() -> service.stageEvents(events("hello")).block())
+                .isInstanceOf(ResponseStatusException.class);
+        try (var upload = service.stageEvents(events("abc")).block()) {
+            assertThat(upload.sizeBytes()).isEqualTo(3);
+            assertThat(upload.readAllBytes()).isEqualTo("abc".getBytes(StandardCharsets.UTF_8));
+        }
+        try (var next = service.stageEvents(events("xyz")).block()) {
+            assertThat(next.readAllBytes()).isEqualTo("xyz".getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    void streamingUploadRejectsAdditionalPartsRatherThanConcatenatingTheirFiles() {
+        var service = new FileUploadStagingService(new SaasProperties(), FileContentScanner.noop());
+        assertThatThrownBy(
+                        () ->
+                                service.stageEvents(Flux.concat(events("one"), events("two")))
+                                        .block())
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("Only one file part");
+    }
+
+    private static Flux<org.springframework.http.codec.multipart.PartEvent> events(String text) {
+        return org.springframework.http.codec.multipart.FilePartEvent.create(
+                        "file",
+                        "report.txt",
+                        MediaType.TEXT_PLAIN,
+                        Flux.just(
+                                DefaultDataBufferFactory.sharedInstance.wrap(
+                                        text.getBytes(StandardCharsets.UTF_8))))
+                .cast(org.springframework.http.codec.multipart.PartEvent.class);
+    }
+
     private static FilePart file(String filename, String content) {
         FilePart file = mock(FilePart.class);
         HttpHeaders headers = new HttpHeaders();

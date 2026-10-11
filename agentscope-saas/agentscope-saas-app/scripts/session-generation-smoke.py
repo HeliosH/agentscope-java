@@ -134,13 +134,38 @@ def main():
             JOIN file_publication_intents i ON i.publication_id = p.id AND i.org_id = p.org_id AND i.user_id = p.user_id
             JOIN run_attempts a ON a.id = i.attempt_id AND a.run_id = p.run_id
               AND a.task_id = i.task_id AND a.agent_run_id = i.agent_run_id AND a.org_id = p.org_id
+            JOIN run_artifacts ra ON ra.id = p.artifact_id AND ra.org_id = p.org_id
+              AND ra.run_id = p.run_id AND ra.task_id = i.task_id AND ra.attempt_id = i.attempt_id
+              AND ra.file_id = v.file_id AND ra.file_version_id = v.id
+              AND ra.logical_path = p.logical_path AND ra.artifact_type = 'WORKSPACE_FILE'
+            JOIN orchestration_outbox o ON o.id = p.receipt_event_id AND o.org_id = p.org_id
+              AND o.aggregate_id = ra.id AND o.aggregate_type = 'run_artifact'
+              AND o.event_type = 'workspace_file_published'
+            JOIN workspace_manifest_entries me ON me.publication_id = p.id AND me.org_id = p.org_id AND me.user_id = p.user_id
+              AND me.logical_path = p.logical_path AND me.sha256 = p.sha256 AND me.size_bytes = p.size_bytes
+            JOIN workspace_publication_manifests wm ON wm.id = me.manifest_id AND wm.org_id = p.org_id AND wm.user_id = p.user_id
+              AND wm.run_id = p.run_id AND wm.task_id = i.task_id AND wm.attempt_id = i.attempt_id
+              AND wm.agent_run_id = i.agent_run_id AND wm.lease_owner = i.lease_owner
+              AND wm.session_id = p.session_id AND wm.session_generation = p.session_generation
+              AND wm.status = 'READY' AND wm.scan_complete
             WHERE p.run_id = '{fresh_run}' AND p.session_generation = 1 AND p.status = 'PUBLISHED'
               AND p.logical_path = 'outputs/generation-fresh.txt' AND p.reserved_bytes = 0
               AND p.object_key = v.object_key AND p.backend = v.storage_backend
-              AND p.sha256 = v.sha256 AND p.size_bytes = v.size_bytes"""))
-        assert published >= 1, "Generated file has no exact publication/version receipt"
+              AND p.sha256 = v.sha256 AND p.size_bytes = v.size_bytes
+              AND o.payload_json->>'runId' = p.run_id::text
+              AND o.payload_json->>'artifactId' = ra.id::text
+              AND o.payload_json->>'fileVersionId' = v.id::text
+              AND wm.file_count = (SELECT count(*) FROM workspace_manifest_entries x WHERE x.manifest_id = wm.id)
+              AND NOT EXISTS (SELECT 1 FROM workspace_manifest_entries x WHERE x.manifest_id = wm.id AND x.publication_id IS NULL)
+              AND wm.total_bytes = (SELECT COALESCE(sum(x.size_bytes), 0) FROM workspace_manifest_entries x WHERE x.manifest_id = wm.id)
+              AND EXISTS (SELECT 1 FROM sandbox_leases sl WHERE sl.org_id = wm.org_id AND sl.user_id = wm.user_id
+                AND sl.run_id = wm.run_id AND sl.task_id = wm.task_id AND sl.attempt_id = wm.attempt_id
+                AND sl.workspace_snapshot_uri = 'workspace-catalog://runs/' || wm.run_id::text || '/attempts/' || wm.attempt_id::text || '/manifests/' || wm.id::text
+                AND sl.workspace_version IS NOT NULL)
+              AND NOT (o.payload_json ? 'objectKey')"""))
+        assert published >= 1, "Generated file has no exact version/artifact/outbox receipt"
         assert int(pg(f"SELECT count(*) FROM file_publications WHERE run_id = '{fresh_run}' AND status IN ('STAGED', 'STORED')")) == 0
-        print("  OK  PG publication receipt matches immutable version and reservation settled")
+        print("  OK  PG pinned checkpoint inventory matches immutable versions, attempt artifacts and outbox")
 
         api(f"/api/agents/{agent}/sessions/{session}", token, method="DELETE", expected=204)
         status, _ = request(f"/api/agents/{agent}/sessions/{session}/read", token, {}, "PATCH")

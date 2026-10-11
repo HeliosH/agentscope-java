@@ -45,6 +45,36 @@ class HarnessConversationCleanupTest {
     private final AtomicReference<List<Msg>> lastBatch = new AtomicReference<>(List.of());
     private final AtomicBoolean released = new AtomicBoolean();
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void finalResultIsObservedBeforeEagerCleanupForCallAndStream(boolean streaming) {
+        var lifecycle = lifecycle();
+        var observed = new AtomicReference<Msg>();
+        doAnswer(
+                        call -> {
+                            assertTrue(!released.get());
+                            observed.set(call.getArgument(1));
+                            return null;
+                        })
+                .when(lifecycle)
+                .observeResult(any(), any());
+        doAnswer(
+                        call -> {
+                            assertEquals("done", observed.get().getTextContent());
+                            released.set(true);
+                            return null;
+                        })
+                .when(lifecycle)
+                .releaseForCall(any());
+        var agent = harness(model(Flux.just(text("done"))), archive(false), lifecycle);
+        if (streaming)
+            agent.streamEvents(List.of(question()), context())
+                    .collectList()
+                    .block(Duration.ofSeconds(10));
+        else agent.call(List.of(question()), context()).block(Duration.ofSeconds(10));
+        assertTrue(released.get());
+    }
+
     @Test
     void successfulSourceIsCommittedBeforeSandboxReleaseWithoutMemoryHooks() {
         var lifecycle = lifecycle();

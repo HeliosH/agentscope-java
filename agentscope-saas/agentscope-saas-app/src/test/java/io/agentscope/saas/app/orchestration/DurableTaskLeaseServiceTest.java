@@ -42,6 +42,7 @@ class DurableTaskLeaseServiceTest {
         DataSource dataSource = dataSource();
         database = MyBatisRepositoryTestSupport.mapper(dataSource, TestDatabaseMapper.class);
         database.createDurableTaskLeaseSchema();
+        database.createLeaseArchiveSchema();
         SaasProperties properties = new SaasProperties();
         properties.getOrchestration().setSchedulerBatchSize(10);
         properties.getOrchestration().setSchedulerLeaseSeconds(60);
@@ -168,6 +169,41 @@ class DurableTaskLeaseServiceTest {
         assertThat(database.taskRecoveryPhase(taskId)).isEqualTo("SCHEDULED");
         assertThat(database.taskRecoveryCount(taskId)).isEqualTo(1);
         assertThat(eventTypes()).contains("RUN_RECOVERY_SCHEDULED");
+    }
+
+    @Test
+    void requestOnlyCleanupStopsLostDirectExecutionWithoutLeavingAnOrphanedQueue() {
+        var lease = leases.claimReady("direct:" + runId, 1).get(0);
+        database.updateAttemptExpiry(lease.attemptId(), OffsetDateTime.now().minusSeconds(1));
+        assertThat(leases.recoverExpired(10, false, false)).isEqualTo(1);
+        assertThat(attemptStatus(lease.attemptId())).isEqualTo("ABANDONED");
+        assertThat(taskStatus(taskId)).isEqualTo("FAILED");
+        assertThat(eventTypes()).doesNotContain("RUN_RECOVERY_SCHEDULED", "TASK_RETRY_SCHEDULED");
+        assertThat(leases.claimReady("later-worker", 10)).isEmpty();
+    }
+
+    @Test
+    void ownerlessHistoricalAttemptCannotBreakValidWorkerLeaseRecovery() {
+        UUID legacyTask = UUID.randomUUID(), legacyAttempt = UUID.randomUUID();
+        UUID org = database.taskOrgId(taskId);
+        insertTask(legacyTask, org, "MANUAL", 3);
+        database.markLeaseTaskRunning(legacyTask);
+        database.insertRunningAttempt(
+                legacyAttempt,
+                org,
+                runId,
+                legacyTask,
+                null,
+                1,
+                null,
+                OffsetDateTime.now().minusMinutes(1),
+                "legacy",
+                OffsetDateTime.now());
+        var valid = leases.claimReady("crashed-worker", 1).get(0);
+        database.updateAttemptExpiry(valid.attemptId(), OffsetDateTime.now().minusSeconds(1));
+        assertThat(leases.recoverExpired(10)).isEqualTo(1);
+        assertThat(attemptStatus(valid.attemptId())).isEqualTo("ABANDONED");
+        assertThat(attemptStatus(legacyAttempt)).isEqualTo("RUNNING");
     }
 
     @Test

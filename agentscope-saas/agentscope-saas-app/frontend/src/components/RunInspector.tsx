@@ -15,11 +15,13 @@ import {
   getEvents,
   getPlan,
   getRun,
+  getRecovery,
   getTasks,
   type ArtifactView,
   type PlanView,
   type RunEventView,
   type RunView,
+  type RecoveryView,
   type TaskView,
 } from '../api/runs';
 import { FilePreviewDialog, type PreviewFile } from './FilePreview';
@@ -44,6 +46,7 @@ interface RunInspectorProps {
 
 export default function RunInspector({ agentId, runId, onClose }: RunInspectorProps) {
   const [run, setRun] = useState<RunView | null>(null);
+  const [recovery, setRecovery] = useState<RecoveryView | null>(null);
   const [tasks, setTasks] = useState<TaskView[]>([]);
   const [plan, setPlan] = useState<PlanView | null>(null);
   const [events, setEvents] = useState<RunEventView[]>([]);
@@ -56,14 +59,16 @@ export default function RunInspector({ agentId, runId, onClose }: RunInspectorPr
 
   const refresh = useCallback(async () => {
     try {
-      const [nextRun, nextTasks, nextPlan, nextArtifacts, nextEvents] = await Promise.all([
+      const [nextRun, nextTasks, nextPlan, nextArtifacts, nextEvents, nextRecovery] = await Promise.all([
         getRun(agentId, runId),
         getTasks(agentId, runId),
         getPlan(agentId, runId),
         getArtifacts(agentId, runId),
         getEvents(agentId, runId, lastSeq.current),
+        getRecovery(agentId, runId),
       ]);
       setRun(nextRun);
+      setRecovery(nextRecovery);
       setTasks(nextTasks);
       setPlan(nextPlan);
       setArtifacts(nextArtifacts);
@@ -148,6 +153,14 @@ export default function RunInspector({ agentId, runId, onClose }: RunInspectorPr
 
       <section className="run-summary">
         {plan?.goal && <p className="run-summary__goal">{plan.goal}</p>}
+        {recovery && recovery.recoveryCount > 0 && recovery.runStatus === 'RUNNING' && (
+          <div className="run-recovery" role="status">
+            <Activity size={14} aria-hidden="true" />
+            <span>{recovery.state.startsWith('WAITING_') ? 'Waiting for execution resources'
+              : recovery.state === 'RECOVERING' ? 'Recovering task' : 'Recovery queued'}
+              {recovery.queueSlaExceeded ? ' · Queue delay exceeded' : ''}</span>
+          </div>
+        )}
         <div className="run-summary__progress-row">
           <span>{tasks.length ? `${completed} of ${tasks.length} tasks complete` : 'Preparing tasks'}</span>
           {run && !TERMINAL.has(run.status) && (

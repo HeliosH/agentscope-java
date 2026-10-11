@@ -54,6 +54,7 @@ class SandboxReconciliationJobTest {
                         MyBatisRepositoryTestSupport.mapper(ds, SandboxReconciliationMapper.class));
         database.createSandboxes();
         database.createReconciliationSandboxLeases();
+        database.createReconciliationRetentionGuard();
         properties = new SaasProperties();
         properties.getSandbox().setEnabled(true);
         properties.getSandbox().setReconciliationBatchSize(20);

@@ -56,6 +56,24 @@ public abstract class AbstractBaseSandbox implements Sandbox {
     private final SandboxState state;
     private final WorkspaceSpecApplier workspaceSpecApplier;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private WorkspaceTransferResources transferResources = WorkspaceTransferResources.DEFAULT;
+    private long archiveTransferLimit =
+            WorkspaceTransferResources.archiveLimit(WorkspaceTransferPolicy.DEFAULT);
+
+    @Override
+    public void configureTransfers(
+            WorkspaceTransferResources resources, WorkspaceTransferPolicy policy) {
+        transferResources = java.util.Objects.requireNonNull(resources);
+        archiveTransferLimit = WorkspaceTransferResources.archiveLimit(policy);
+    }
+
+    protected WorkspaceTransferResources transferResources() {
+        return transferResources;
+    }
+
+    protected long archiveTransferLimit() {
+        return archiveTransferLimit;
+    }
 
     protected AbstractBaseSandbox(SandboxState state) {
         this.state = state;

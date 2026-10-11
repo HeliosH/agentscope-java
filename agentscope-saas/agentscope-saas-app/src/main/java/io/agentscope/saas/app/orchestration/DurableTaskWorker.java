@@ -40,6 +40,10 @@ public class DurableTaskWorker {
     private final RunRecoveryCoordinator recoveryCoordinator;
     private final Executor executor;
     private final String workerId;
+    private final UUID consumerId = UUID.randomUUID();
+    private final RecoveryCapability capability;
+    private volatile long lastSuccessfulPollNanos;
+    private boolean consumerRegistered;
     private final Set<UUID> reserved = ConcurrentHashMap.newKeySet();
     private final Map<UUID, Thread> active = new ConcurrentHashMap<>();
 
@@ -93,6 +97,7 @@ public class DurableTaskWorker {
         this.recoveryCoordinator = recoveryCoordinator;
         this.executor = executor;
         this.workerId = workerId;
+        this.capability = recoveryCoordinator.capability();
     }
 
     @Scheduled(
@@ -104,6 +109,8 @@ public class DurableTaskWorker {
         }
         try {
             pollOnce();
+            lastSuccessfulPollNanos = System.nanoTime();
+            if (!consumerRegistered) publishConsumer();
         } catch (RuntimeException e) {
             log.warn("Durable task polling failed: {}", errorMessage(e));
         }
@@ -116,10 +123,21 @@ public class DurableTaskWorker {
         if (!enabled()) {
             return;
         }
+        if (lastSuccessfulPollNanos != 0
+                && System.nanoTime() - lastSuccessfulPollNanos
+                        < TimeUnit.SECONDS.toNanos(
+                                properties.getOrchestration().getConsumerHeartbeatTtlSeconds())) {
+            try {
+                publishConsumer();
+            } catch (RuntimeException error) {
+                log.warn("Unable to publish runtime consumer heartbeat: {}", errorMessage(error));
+            }
+        }
         active.forEach(
                 (attemptId, thread) -> {
                     try {
-                        if (!leases.heartbeat(attemptId, workerId)) {
+                        if (!leases.heartbeat(attemptId, workerId)
+                                && !leases.archiveHandover(attemptId, workerId)) {
                             log.warn(
                                     "Lost durable task lease attempt={} worker={}",
                                     attemptId,
@@ -133,6 +151,14 @@ public class DurableTaskWorker {
                                 errorMessage(e));
                     }
                 });
+    }
+
+    private synchronized void publishConsumer() {
+        capability.heartbeat(
+                consumerId,
+                Math.max(
+                        0, properties.getOrchestration().getWorkerConcurrency() - reserved.size()));
+        consumerRegistered = true;
     }
 
     int pollOnce() {
@@ -171,10 +197,38 @@ public class DurableTaskWorker {
                 return;
             }
             var result = taskExecutor.execute(toRequest(lease));
-            if (!leases.succeed(lease.attemptId(), workerId, result.outputJson())) {
-                log.warn(
-                        "Durable task result rejected after lease loss attempt={}",
-                        lease.attemptId());
+            if (result == null)
+                throw new io.agentscope.saas.orchestration.TaskResultCommitException(
+                        new IllegalStateException("Executor returned no completed result"));
+            try {
+                if (!leases.succeed(lease.attemptId(), workerId, result.outputJson())) {
+                    log.warn(
+                            "Durable task result rejected after lease loss attempt={}",
+                            lease.attemptId());
+                }
+            } catch (RuntimeException commitError) {
+                if (!alreadyCommitted(lease, commitError)) result.commitFailed(commitError);
+            }
+        } catch (io.agentscope.saas.app.workspace.WorkspaceArchiveDeferredException e) {
+            log.info(
+                    "Durable compute handed over to archive attempt={} job={}",
+                    lease.attemptId(),
+                    e.jobId());
+        } catch (io.agentscope.saas.app.workspace.WorkspaceArchiveRejectedException e) {
+            recordTerminalFailure(
+                    lease.attemptId(), "WORKSPACE_ARCHIVE_HANDOVER_FAILED", errorMessage(e));
+        } catch (io.agentscope.saas.orchestration.TaskResultCommitException e) {
+            Throwable cause = e.getCause();
+            if (cause
+                    instanceof
+                    io.agentscope.saas.app.workspace.WorkspaceArchiveDeferredException deferred) {
+                log.info(
+                        "Durable result submission handed over attempt={} job={}",
+                        lease.attemptId(),
+                        deferred.jobId());
+            } else if (!alreadyCommitted(lease, e)) {
+                recordTerminalFailure(
+                        lease.attemptId(), "TASK_RESULT_COMMIT_FAILED", errorMessage(e));
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -184,6 +238,26 @@ public class DurableTaskWorker {
         } finally {
             active.remove(lease.attemptId(), thread);
             reserved.remove(lease.attemptId());
+        }
+    }
+
+    private boolean alreadyCommitted(TaskLease lease, RuntimeException error) {
+        try {
+            return leases.completedSuccessfully(lease.attemptId(), workerId);
+        } catch (RuntimeException readError) {
+            if (readError != error) error.addSuppressed(readError);
+            return false;
+        }
+    }
+
+    private void recordTerminalFailure(UUID attempt, String code, String message) {
+        try {
+            leases.failTerminal(attempt, workerId, code, message);
+        } catch (RuntimeException stateError) {
+            log.warn(
+                    "Unable to persist completed task submission failure attempt={}: {}",
+                    attempt,
+                    errorMessage(stateError));
         }
     }
 
@@ -200,7 +274,18 @@ public class DurableTaskWorker {
 
     private void recordExecutionFailure(TaskLease lease, Exception error) {
         RunRecoveryCoordinator.Decision decision =
-                recoveryCoordinator.decide(error, lease.attemptNo());
+                recoveryCoordinator.decide(
+                        error,
+                        lease.attemptNo(),
+                        new io.agentscope.saas.domain.modelinvocation.ModelInvocationRepository
+                                .Scope(
+                                lease.orgId(),
+                                lease.userId(),
+                                lease.runId(),
+                                lease.taskId(),
+                                lease.agentRunId(),
+                                lease.attemptId(),
+                                workerId));
         try {
             if (decision.recoverable()) {
                 leases.recover(
@@ -216,7 +301,7 @@ public class DurableTaskWorker {
                         "MODEL_RECOVERY_EXHAUSTED",
                         errorMessage(error));
             } else {
-                leases.fail(
+                leases.failTerminal(
                         lease.attemptId(), workerId, "TASK_EXECUTION_FAILED", errorMessage(error));
             }
         } catch (RuntimeException stateError) {
@@ -253,8 +338,7 @@ public class DurableTaskWorker {
     }
 
     private boolean enabled() {
-        return properties.getOrchestration().isEnabled()
-                && properties.getOrchestration().isSchedulerEnabled();
+        return capability.localConsumerEnabled();
     }
 
     private static String errorMessage(Throwable error) {
@@ -267,6 +351,13 @@ public class DurableTaskWorker {
         active.values().forEach(Thread::interrupt);
         if (executor instanceof ExecutorService service) {
             service.shutdownNow();
+        }
+        try {
+            capability.retire(consumerId);
+        } catch (RuntimeException error) {
+            log.warn(
+                    "Unable to retire runtime consumer; heartbeat will expire: {}",
+                    errorMessage(error));
         }
     }
 }

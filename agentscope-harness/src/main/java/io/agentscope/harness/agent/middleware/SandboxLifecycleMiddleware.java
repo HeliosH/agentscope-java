@@ -26,8 +26,6 @@ import io.agentscope.harness.agent.sandbox.SandboxContext;
 import io.agentscope.harness.agent.sandbox.SandboxLifecycleObserver;
 import io.agentscope.harness.agent.sandbox.SandboxManager;
 import io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -101,6 +99,22 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
         }
         Sandbox inherited = ctx.get(Sandbox.class);
         if (inherited != null && inherited.isRunning()) {
+            var inputs = ctx.get(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class);
+            var materialized =
+                    ctx.get(
+                            io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.Materialized
+                                    .class);
+            if (inputs != null
+                    && (materialized == null
+                            || inherited.getState() == null
+                            || !java.util.Objects.equals(
+                                    materialized.environmentId(),
+                                    inherited.getState().getSessionId())
+                            || !inputs.workspace()
+                                    .workspaceVersion()
+                                    .equals(materialized.version())))
+                throw new IllegalStateException(
+                        "Borrowed sandbox does not have the requested input bindings");
             ctx.put(SandboxCallState.class, SandboxCallState.borrowed(inherited));
             bindEnvironmentSnapshot(ctx, inherited);
             filesystemProxy.setSandbox(inherited);
@@ -119,17 +133,43 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             return;
         }
         long acquireStartNanos = System.nanoTime();
+        if (ctx.get(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class) != null
+                && ctx.get(io.agentscope.harness.agent.sandbox.SandboxIsolationOverride.class)
+                        == null)
+            throw new IllegalStateException(
+                    "Pinned inputs require an explicit isolated runtime slot");
         try {
             SandboxAcquireResult result = sandboxManager.acquire(sandboxContext, ctx);
             Sandbox sandbox = result.getSandbox();
             try {
+                sandbox.configureTransfers(
+                        filesystemProxy.getTransferResources(),
+                        filesystemProxy.getTransferPolicy(ctx));
+                var inputs = ctx.get(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class);
+                if (inputs != null && sandbox.hasPersistentWorkspace())
+                    throw new IllegalStateException(
+                            "Pinned input plans require an isolated non-volume workspace");
                 sandbox.start();
-                filesystemProxy.hydrateRemoteWorkspace(ctx, sandbox);
+                // A retry restores its frozen workspace, not today's mutable remote projection.
+                if (ctx.get(WorkspaceRestorePlan.class) == null) {
+                    if (inputs != null) filesystemProxy.hydrateSystemWorkspace(ctx, sandbox);
+                    else filesystemProxy.hydrateRemoteWorkspace(ctx, sandbox);
+                }
                 restoreWorkspace(ctx, sandbox);
+                if (inputs != null)
+                    ctx.put(
+                            io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.Materialized
+                                    .class,
+                            new io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.Materialized(
+                                    sandbox.getState().getSessionId(),
+                                    inputs.workspace().workspaceVersion()));
                 long durationNanos = System.nanoTime() - acquireStartNanos;
                 ctx.put(Sandbox.class, sandbox);
                 bindEnvironmentSnapshot(ctx, sandbox);
                 ctx.put(SandboxCallState.class, SandboxCallState.owned(result));
+                var resultObserver =
+                        ctx.get(io.agentscope.harness.agent.sandbox.InvocationResultObserver.class);
+                if (resultObserver != null) resultObserver.onStart(ctx);
                 filesystemProxy.setSandbox(sandbox);
                 legacyAcquireResult.set(result);
                 notifyObserver(
@@ -159,6 +199,14 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
         }
     }
 
+    public void observeResult(RuntimeContext ctx, io.agentscope.core.message.Msg result) {
+        var state = ctx == null ? null : ctx.get(SandboxCallState.class);
+        if (state == null || state.borrowed()) return;
+        var resultObserver =
+                ctx.get(io.agentscope.harness.agent.sandbox.InvocationResultObserver.class);
+        if (resultObserver != null) resultObserver.onResult(ctx, result);
+    }
+
     private static void bindEnvironmentSnapshot(RuntimeContext ctx, Sandbox sandbox) {
         String environmentId =
                 sandbox.getState() != null ? sandbox.getState().getSessionId() : null;
@@ -166,6 +214,11 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             throw new IllegalStateException("Active sandbox has no stable session identity");
         }
         WorkspaceRestorePlan restore = ctx.get(WorkspaceRestorePlan.class);
+        if (restore == null
+                && ctx.get(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class) != null)
+            restore =
+                    ctx.get(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class)
+                            .workspace();
         String workspaceVersion = restore == null ? null : restore.workspaceVersion();
         String provider = sandbox.getClass().getName();
         String version =
@@ -183,42 +236,63 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
 
     private void restoreWorkspace(RuntimeContext ctx, Sandbox sandbox) throws Exception {
         WorkspaceRestorePlan plan = ctx.get(WorkspaceRestorePlan.class);
+        var inputs = ctx.get(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class);
+        if (inputs != null) {
+            if (plan == null) plan = inputs.workspace();
+            else {
+                var merged =
+                        new java.util.LinkedHashMap<String, WorkspaceRestorePlan.WorkspaceFile>();
+                for (var file : plan.files()) merged.put(file.path(), file);
+                for (var file : inputs.workspace().files()) merged.put(file.path(), file);
+                plan =
+                        new WorkspaceRestorePlan(
+                                plan.checkpointUri(),
+                                plan.workspaceVersion(),
+                                java.util.List.copyOf(merged.values()));
+            }
+        }
         if (plan == null || plan.files().isEmpty()) {
             return;
         }
-        var policy = filesystemProxy.getTransferPolicy();
+        var policy = filesystemProxy.getTransferPolicy(ctx);
         if (plan.files().size() > policy.maxFiles()) {
             throw new IllegalStateException(
                     "Workspace checkpoint exceeds restore file limit " + policy.maxFiles());
         }
         long totalBytes = 0L;
-        ByteArrayOutputStream archiveBytes = new ByteArrayOutputStream();
-        try (TarArchiveOutputStream archive = new TarArchiveOutputStream(archiveBytes)) {
-            ArchiveOutputStream<TarArchiveEntry> compatibleArchive = archive;
-            archive.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
-            for (WorkspaceRestorePlan.WorkspaceFile file : plan.files()) {
-                if (file.size() > policy.maxFileBytes()) {
-                    throw new IllegalStateException(
-                            "Workspace checkpoint file exceeds restore limit: " + file.path());
+        var resources = filesystemProxy.getTransferResources();
+        try (var permit = resources.acquire();
+                var spool =
+                        resources.spool(
+                                "agentscope-restore-",
+                                io.agentscope.harness.agent.sandbox.WorkspaceTransferResources
+                                        .archiveLimit(policy))) {
+            try (TarArchiveOutputStream archive = new TarArchiveOutputStream(spool.output())) {
+                ArchiveOutputStream<TarArchiveEntry> compatibleArchive = archive;
+                archive.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX);
+                for (WorkspaceRestorePlan.WorkspaceFile file : plan.files()) {
+                    if (file.size() > policy.maxFileBytes()) {
+                        throw new IllegalStateException(
+                                "Workspace checkpoint file exceeds restore limit: " + file.path());
+                    }
+                    totalBytes = Math.addExact(totalBytes, file.size());
+                    if (totalBytes > policy.maxTotalBytes()) {
+                        throw new IllegalStateException(
+                                "Workspace checkpoint exceeds restore byte limit "
+                                        + policy.maxTotalBytes());
+                    }
+                    TarArchiveEntry entry = new TarArchiveEntry(file.path());
+                    entry.setSize(file.size());
+                    entry.setMode(0644);
+                    compatibleArchive.putArchiveEntry(entry);
+                    file.transferTo(archive, resources.bufferBytes());
+                    archive.closeArchiveEntry();
                 }
-                totalBytes = Math.addExact(totalBytes, file.size());
-                if (totalBytes > policy.maxTotalBytes()) {
-                    throw new IllegalStateException(
-                            "Workspace checkpoint exceeds restore byte limit "
-                                    + policy.maxTotalBytes());
-                }
-                byte[] content = file.content();
-                TarArchiveEntry entry = new TarArchiveEntry(file.path());
-                entry.setSize(content.length);
-                entry.setMode(0644);
-                compatibleArchive.putArchiveEntry(entry);
-                archive.write(content);
-                archive.closeArchiveEntry();
+                archive.finish();
             }
-            archive.finish();
-        }
-        try (ByteArrayInputStream input = new ByteArrayInputStream(archiveBytes.toByteArray())) {
-            sandbox.hydrateWorkspace(input);
+            try (var input = java.nio.file.Files.newInputStream(spool.path())) {
+                sandbox.hydrateWorkspace(input);
+            }
         }
         log.info(
                 "[sandbox-mw] Restored workspace checkpoint {} version={} files={} bytes={}",
@@ -255,39 +329,67 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
         Sandbox sandbox = result.getSandbox();
         SandboxContext sandboxContext = ctx != null ? ctx.get(SandboxContext.class) : null;
         try {
-            var report = filesystemProxy.projectSandboxWorkspaceWithReport(ctx);
-            report.verifyComplete();
-            int projected = report.projectedFiles();
-            notifyObserver(obs -> obs.onWorkspaceProjectionSucceeded(ctx, report));
-            if (projected > 0) {
-                log.debug("[sandbox-mw] Projected {} workspace files before release", projected);
+            try {
+                var report = filesystemProxy.projectSandboxWorkspaceWithReport(ctx);
+                report.verifyComplete();
+                int projected = report.projectedFiles();
+                notifyObserver(obs -> obs.onWorkspaceProjectionSucceeded(ctx, report));
+                if (projected > 0) {
+                    log.debug(
+                            "[sandbox-mw] Projected {} workspace files before release", projected);
+                }
+            } catch (Exception e) {
+                notifyObserver(obs -> obs.onWorkspaceProjectionFailed(ctx, e));
+                log.warn(
+                        "[sandbox-mw] Failed to project sandbox workspace to remote fallback: {}",
+                        e.getMessage(),
+                        e);
             }
-        } catch (Exception e) {
-            notifyObserver(obs -> obs.onWorkspaceProjectionFailed(ctx, e));
-            log.warn(
-                    "[sandbox-mw] Failed to project sandbox workspace to remote fallback: {}",
-                    e.getMessage(),
-                    e);
+            try {
+                var retained =
+                        ctx == null
+                                ? null
+                                : ctx.get(
+                                        io.agentscope.harness.agent.sandbox
+                                                .WorkspaceRetentionBackend.Hold.class);
+                if (retained != null && retained.appliesTo(sandbox))
+                    sandboxManager.clearState(sandboxContext, ctx);
+                else sandboxManager.persistState(result, sandboxContext, ctx);
+            } catch (Exception e) {
+                notifyObserver(obs -> obs.onStatePersistFailed(ctx, e));
+                log.warn("[sandbox-mw] Failed to persist sandbox state: {}", e.getMessage(), e);
+            }
+        } finally {
+            // Linkage/VM errors must propagate, but may not strand the local execution slot.
+            try {
+                try {
+                    sandboxManager.release(result, ctx);
+                } catch (Exception e) {
+                    notifyObserver(obs -> obs.onBackendReleaseFailed(ctx, e));
+                    log.warn(
+                            "[sandbox-mw] Failed to release sandbox session: {}",
+                            e.getMessage(),
+                            e);
+                }
+            } finally {
+                try {
+                    result.getLease().close();
+                } finally {
+                    clearScopedSandbox(ctx, sandbox, result);
+                }
+            }
         }
-        try {
-            sandboxManager.persistState(result, sandboxContext, ctx);
-        } catch (Exception e) {
-            notifyObserver(obs -> obs.onStatePersistFailed(ctx, e));
-            log.warn("[sandbox-mw] Failed to persist sandbox state: {}", e.getMessage(), e);
-        }
-        try {
-            sandboxManager.release(result, ctx);
-        } catch (Exception e) {
-            notifyObserver(obs -> obs.onBackendReleaseFailed(ctx, e));
-            log.warn("[sandbox-mw] Failed to release sandbox session: {}", e.getMessage(), e);
-        }
-        result.getLease().close();
-        clearScopedSandbox(ctx, sandbox, result);
     }
 
     private void clearScopedSandbox(
             RuntimeContext ctx, Sandbox sandbox, SandboxAcquireResult result) {
         if (ctx != null) {
+            ctx.put(
+                    io.agentscope.harness.agent.sandbox.WorkspaceRetentionBackend.Hold.class,
+                    (io.agentscope.harness.agent.sandbox.WorkspaceRetentionBackend.Hold) null);
+            ctx.put(
+                    io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.Materialized.class,
+                    (io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.Materialized) null);
             ctx.put(Sandbox.class, (Sandbox) null);
             ctx.put(SandboxCallState.class, (SandboxCallState) null);
             ctx.put(ExecutionEnvironmentSnapshot.class, (ExecutionEnvironmentSnapshot) null);

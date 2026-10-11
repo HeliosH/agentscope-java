@@ -109,6 +109,40 @@ class ModelInvocationLedgerIntegrationTest {
     }
 
     @Test
+    void recoveryCountUsesOnlyFailedReasoningCallsAndTheExactEmployeeRunTaskScope() {
+        Scope owner = runScope(100);
+        var first = ledger.admit(owner, "REASONING", "test", "route", 1, 2, deadline(), 0);
+        ledger.settle(owner, first.id(), "FAILED", 1, 0, 1, true, "ModelException");
+        var second = ledger.admit(owner, "REASONING", "test", "route", 1, 2, deadline(), 0);
+        ledger.settle(owner, second.id(), "SUCCEEDED", 1, 1, 2, true, null);
+        var auxiliary = admit(owner, 1, 2);
+        ledger.settle(owner, auxiliary.id(), "FAILED", 1, 0, 1, true, "ModelException");
+        assertThat(repository.failedReasoningCalls(owner)).isEqualTo(1);
+        assertThat(
+                        repository.failedReasoningCalls(
+                                new Scope(
+                                        owner.orgId(),
+                                        UUID.randomUUID(),
+                                        owner.runId(),
+                                        owner.taskId(),
+                                        null,
+                                        null,
+                                        null)))
+                .isZero();
+        assertThat(
+                        repository.failedReasoningCalls(
+                                new Scope(
+                                        owner.orgId(),
+                                        owner.userId(),
+                                        owner.runId(),
+                                        UUID.randomUUID(),
+                                        null,
+                                        null,
+                                        null)))
+                .isZero();
+    }
+
+    @Test
     void concurrentSweepersCannotDoubleSettleAnAbandonedInvocation() throws Exception {
         var abandoned = admit(scope, 10, 30);
         database.expireModelInvocation(

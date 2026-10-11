@@ -38,6 +38,41 @@ import org.junit.jupiter.api.Test;
 
 class OpenSandboxPlatformHttpTest {
 
+    @Test
+    void providerMustConfirmTheAbsoluteRetentionDeadline() throws Exception {
+        var deadline = java.time.OffsetDateTime.parse("2026-10-09T08:00:00Z");
+        var http =
+                new OpenSandboxPlatformHttp(
+                        options(
+                                chain -> {
+                                    assertTrue(
+                                            chain.request()
+                                                    .url()
+                                                    .encodedPath()
+                                                    .endsWith(
+                                                            "/sandboxes/retained/renew-expiration"));
+                                    assertEquals(
+                                            deadline.toString(),
+                                            MAPPER.readTree(requestBody(chain))
+                                                    .path("expiresAt")
+                                                    .asText());
+                                    return jsonResponse(
+                                            chain, 200, "{\"expiresAt\":\"2026-10-09T08:00:00Z\"}");
+                                }));
+        http.renewExpiration("retained", deadline);
+        var shortened =
+                new OpenSandboxPlatformHttp(
+                        options(
+                                chain ->
+                                        jsonResponse(
+                                                chain,
+                                                200,
+                                                "{\"expiresAt\":\"2026-10-09T07:00:00Z\"}")));
+        assertThrows(IOException.class, () -> shortened.renewExpiration("retained", deadline));
+        var missing = new OpenSandboxPlatformHttp(options(chain -> jsonResponse(chain, 200, "{}")));
+        assertThrows(IOException.class, () -> missing.renewExpiration("retained", deadline));
+    }
+
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -156,6 +191,92 @@ class OpenSandboxPlatformHttpTest {
         OpenSandboxClientOptions options = new OpenSandboxClientOptions();
         options.setHttpClient(new OkHttpClient.Builder().addInterceptor(interceptor).build());
         return options;
+    }
+
+    @Test
+    void uploadsBinaryMultipartWithMetadataFirstAndBothAuthenticationHeaders(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        var source = dir.resolve("workspace.tar");
+        java.nio.file.Files.writeString(source, "binary-fixture");
+        var calls = new AtomicInteger();
+        var opts =
+                options(
+                        chain -> {
+                            calls.incrementAndGet();
+                            assertTrue(
+                                    chain.request()
+                                            .url()
+                                            .encodedPath()
+                                            .endsWith("/proxy/44772/files/upload"));
+                            assertEquals(
+                                    "platform-test-key",
+                                    chain.request().header("OPEN-SANDBOX-API-KEY"));
+                            assertEquals(
+                                    "execd-test-token",
+                                    chain.request().header("X-EXECD-ACCESS-TOKEN"));
+                            String body = requestBody(chain);
+                            assertTrue(
+                                    body.indexOf("name=\"metadata\"")
+                                            < body.indexOf("name=\"file\""));
+                            assertTrue(body.contains("{\"path\":\"/tmp/workspace.tar\"}"));
+                            assertTrue(body.contains("filename=\"metadata.json\""));
+                            assertTrue(body.contains("binary-fixture"));
+                            return jsonResponse(chain, 200, "");
+                        });
+        opts.setApiKey("platform-test-key");
+        opts.setExecdAccessToken("execd-test-token");
+        new OpenSandboxPlatformHttp(opts).uploadFile(state(), "/tmp/workspace.tar", source);
+        assertEquals(1, calls.get());
+    }
+
+    @Test
+    void downloadsMoreThanCommandStdoutLimitWithoutTruncation(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        String expected = "binary-data\n".repeat(100000);
+        var http =
+                new OpenSandboxPlatformHttp(
+                        options(
+                                chain -> {
+                                    assertEquals(
+                                            "/tmp/private path.tar",
+                                            chain.request().url().queryParameter("path"));
+                                    assertTrue(
+                                            chain.request()
+                                                    .url()
+                                                    .encodedPath()
+                                                    .endsWith("/files/download"));
+                                    return response(
+                                            chain,
+                                            200,
+                                            expected,
+                                            MediaType.get("application/octet-stream"));
+                                }));
+        var target = dir.resolve("workspace.tar");
+        http.downloadFile(state(), "/tmp/private path.tar", target, 2 * 1024 * 1024);
+        assertEquals(expected, java.nio.file.Files.readString(target));
+    }
+
+    @Test
+    void rejectsOversizedDownloadAndFailedUploadWithoutCommandFallback(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        var source = dir.resolve("workspace.tar");
+        java.nio.file.Files.writeString(source, "fixture");
+        var tooLarge =
+                new OpenSandboxPlatformHttp(
+                        options(
+                                chain ->
+                                        response(
+                                                chain,
+                                                200,
+                                                "oversized",
+                                                MediaType.get("application/octet-stream"))));
+        assertThrows(
+                IOException.class,
+                () -> tooLarge.downloadFile(state(), "/tmp/archive", dir.resolve("download"), 2));
+        var unavailable =
+                new OpenSandboxPlatformHttp(options(chain -> jsonResponse(chain, 404, "{}")));
+        assertThrows(
+                IOException.class, () -> unavailable.uploadFile(state(), "/tmp/archive", source));
     }
 
     private static OpenSandboxState state() {

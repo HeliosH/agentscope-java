@@ -105,6 +105,39 @@ public class SandboxLeaseService {
     }
 
     @Transactional
+    public boolean checkpointForAttempt(
+            SandboxLeaseContext context,
+            UUID orgId,
+            UUID userId,
+            UUID runId,
+            UUID taskId,
+            UUID attemptId,
+            String workspaceSnapshotUri,
+            String workspaceVersion) {
+        if (context != null && !orgId.equals(context.orgId()))
+            throw new IllegalStateException("SANDBOX_CHECKPOINT_SCOPE_MISMATCH");
+        // Harness-derived contexts do not export newly added lease bindings back to their caller.
+        var found =
+                context == null
+                        ? repository.findByAttemptId(attemptId, orgId)
+                        : repository.findById(context.leaseId(), orgId);
+        if (found.isEmpty()) return context == null;
+        var lease = found.orElseThrow();
+        if (!orgId.equals(lease.orgId())
+                || !userId.equals(lease.userId())
+                || !runId.equals(lease.runId())
+                || !taskId.equals(lease.taskId())
+                || !attemptId.equals(lease.attemptId()))
+            throw new IllegalStateException("SANDBOX_CHECKPOINT_SCOPE_MISMATCH");
+        return repository.checkpoint(
+                        lease.id(),
+                        orgId,
+                        normalize(workspaceSnapshotUri),
+                        normalize(workspaceVersion))
+                == 1;
+    }
+
+    @Transactional
     public boolean release(SandboxLeaseContext context) {
         if (context == null) {
             return false;

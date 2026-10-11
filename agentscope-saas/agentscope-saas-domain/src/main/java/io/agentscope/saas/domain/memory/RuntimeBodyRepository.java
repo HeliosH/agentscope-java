@@ -54,4 +54,20 @@ public interface RuntimeBodyRepository {
     boolean lockQuota(RuntimeMessageRepository.Scope scope);
 
     long usage(UUID orgId, UUID userId);
+
+    void fallback(Body body, String payload);
+
+    Optional<String> fallbackPayload(RuntimeMessageRepository.Scope scope, UUID id);
+
+    long fallbackUsage(UUID orgId, UUID userId);
+
+    List<Body> fallbackCandidates(OffsetDateTime now, int limit);
+
+    int protectFallback(UUID id, OffsetDateTime now, OffsetDateTime leaseUntil);
+
+    int claimFallback(UUID id, UUID token, OffsetDateTime now, OffsetDateTime leaseUntil);
+
+    int offloaded(UUID id, UUID token, OffsetDateTime now);
+
+    int retryFallback(UUID id, UUID token, OffsetDateTime retryAt);
 }

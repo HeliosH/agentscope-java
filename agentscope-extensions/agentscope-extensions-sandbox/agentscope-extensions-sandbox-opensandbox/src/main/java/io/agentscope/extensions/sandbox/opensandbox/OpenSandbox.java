@@ -22,10 +22,7 @@ import io.agentscope.harness.agent.sandbox.ExecResult;
 import io.agentscope.harness.agent.sandbox.SandboxErrorCode;
 import io.agentscope.harness.agent.sandbox.SandboxException;
 import io.agentscope.harness.agent.sandbox.WorkspaceMountSupport;
-import java.io.ByteArrayInputStream;
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,7 +33,6 @@ public class OpenSandbox extends AbstractBaseSandbox {
 
     private static final String CONTROL_CWD = "/";
     private static final int TAR_TIMEOUT_SECONDS = 300;
-    private static final int B64_CHUNK = 4000;
 
     private final OpenSandboxState openSandboxState;
     private final OpenSandboxClientOptions opt;
@@ -80,43 +76,70 @@ public class OpenSandbox extends AbstractBaseSandbox {
     @Override
     protected InputStream doPersistWorkspace() throws Exception {
         String root = openSandboxState.getWorkspaceRoot();
-        StringBuilder script = new StringBuilder("rm -f /tmp/agentscope-ws.tar && tar ");
+        String remote = "/tmp/agentscope-ws-" + java.util.UUID.randomUUID() + ".tar";
+        StringBuilder script = new StringBuilder("tar ");
         for (String ex :
                 WorkspaceMountSupport.tarExcludeArgsForBindMounts(
                         openSandboxState.getWorkspaceSpec())) {
             script.append(ex).append(' ');
         }
-        script.append("-cf /tmp/agentscope-ws.tar -C ")
+        script.append("-cf ")
+                .append(shellSingleQuote(remote))
+                .append(" -C ")
                 .append(shellSingleQuote(root))
-                .append(" . && base64 /tmp/agentscope-ws.tar; ")
-                .append("status=$?; rm -f /tmp/agentscope-ws.tar; exit $status");
-        ExecResult result =
-                platform.runCommand(openSandboxState, root, script.toString(), TAR_TIMEOUT_SECONDS);
-        byte[] tar =
-                Base64.getMimeDecoder().decode(result.stdout().getBytes(StandardCharsets.UTF_8));
-        return new ByteArrayInputStream(tar);
+                .append(" .");
+        boolean handedOver = false;
+        try {
+            platform.runCommand(openSandboxState, root, script.toString(), TAR_TIMEOUT_SECONDS);
+            InputStream stream =
+                    new java.io.FilterInputStream(
+                            platform.openDownload(
+                                    openSandboxState, remote, archiveTransferLimit())) {
+                        private boolean closed;
+
+                        @Override
+                        public synchronized void close() throws java.io.IOException {
+                            if (closed) return;
+                            closed = true;
+                            try {
+                                super.close();
+                            } finally {
+                                cleanupRemoteArchive(remote);
+                            }
+                        }
+                    };
+            handedOver = true;
+            return stream;
+        } finally {
+            if (!handedOver) cleanupRemoteArchive(remote);
+        }
     }
 
     @Override
     protected void doHydrateWorkspace(InputStream archive) throws Exception {
         String root = openSandboxState.getWorkspaceRoot();
-        String b64 = Base64.getEncoder().encodeToString(archive.readAllBytes());
-        platform.runCommand(openSandboxState, CONTROL_CWD, "rm -f /tmp/agentscope-ws.b64", 30);
-        for (int i = 0; i < b64.length(); i += B64_CHUNK) {
-            String chunk = b64.substring(i, Math.min(b64.length(), i + B64_CHUNK));
+        String remote = "/tmp/agentscope-ws-" + java.util.UUID.randomUUID() + ".tar";
+        try {
+            platform.uploadStream(openSandboxState, remote, archive, archiveTransferLimit());
             platform.runCommand(
                     openSandboxState,
                     CONTROL_CWD,
-                    "printf '%s' " + shellSingleQuote(chunk) + " >> /tmp/agentscope-ws.b64",
-                    30);
+                    "tar xf " + shellSingleQuote(remote) + " -C " + shellSingleQuote(root),
+                    TAR_TIMEOUT_SECONDS);
+        } finally {
+            cleanupRemoteArchive(remote);
         }
-        platform.runCommand(
-                openSandboxState,
-                CONTROL_CWD,
-                "base64 -d /tmp/agentscope-ws.b64 | tar xf - -C "
-                        + shellSingleQuote(root)
-                        + "; status=$?; rm -f /tmp/agentscope-ws.b64; exit $status",
-                TAR_TIMEOUT_SECONDS);
+    }
+
+    private void cleanupRemoteArchive(String remote) {
+        try {
+            platform.runCommand(
+                    openSandboxState, CONTROL_CWD, "rm -f " + shellSingleQuote(remote), 30);
+        } catch (Exception cleanup) {
+            log.warn(
+                    "Workspace remote temp cleanup failed ({})",
+                    cleanup.getClass().getSimpleName());
+        }
     }
 
     @Override

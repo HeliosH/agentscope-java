@@ -159,7 +159,7 @@ public interface WorkspaceCatalogMapper {
     String ATTACHMENT_COLUMNS =
             """
             SELECT id, org_id, user_id, agent_id, session_id, message_id, task_id, file_id,
-                   file_version_id, kind, metadata, created_at
+                   file_version_id, logical_path, kind, metadata, created_at
               FROM file_attachments
             """;
 
@@ -205,10 +205,10 @@ public interface WorkspaceCatalogMapper {
             """
             INSERT INTO file_attachments
                 (id, org_id, user_id, agent_id, session_id, message_id, task_id, file_id,
-                 file_version_id, kind, metadata)
+                 file_version_id, logical_path, kind, metadata)
             VALUES
                 (#{id}, #{orgId}, #{userId}, #{agentId}, #{sessionId}, #{messageId}, #{taskId},
-                 #{fileId}, #{fileVersionId}, #{kind},
+                 #{fileId}, #{fileVersionId}, #{logicalPath}, #{kind},
                  #{metadata,typeHandler=io.agentscope.saas.dal.mybatis.type.JsonTypeHandler})
             """)
     int insertAttachment(FileAttachmentEntity attachment);

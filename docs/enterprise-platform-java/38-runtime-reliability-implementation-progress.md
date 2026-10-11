@@ -2,7 +2,7 @@
 
 > 方案来源：[37. 运行时可靠性修复与能力收尾落地方案](./37-runtime-reliability-and-feature-closure-plan.md)
 >
-> 更新日期：2026-10-08。状态：运行时治理、Mem0 投影队列、PG 增量运行消息归档、关键消息提交屏障、大正文分离存储、轻量检查点及总量自适应转存、会话执行代际撤销、文件发布预留和持久补登已实施；最新验收与剩余范围见第 15 节。不代表 B0-B8 全部完成。
+> 更新日期：2026-10-10。状态：运行时治理、Mem0 投影队列、PG 增量运行消息归档、关键消息提交屏障、大正文分离存储、轻量检查点及总量自适应转存、会话执行代际撤销、文件发布预留、持久补登、原子任务产物收据、传输前冻结清单、独立归档接管、准确清单恢复、计算后提交边界、不可变字节源保管、显式附件权威版本恢复、Provider 有界保留、关键正文 PG 降级、已计算结果原子交接、主文件链路有界流式、真实恢复消费者及临时文件失效 owner 回收已实施；最新验收与剩余范围见第 26–28 节，全量矩阵见文档 39。不代表 B0-B8 全部完成。
 
 ## 1. 首批范围
 
@@ -794,3 +794,956 @@ APP_PORT=18082 START_DOCKER_DEPS=false START_DOCKER_DAEMON=false \
 1. 文件级持久补登不等于完整 R02：仍缺期望产物清单、RunArtifact/Outbox 统一发布收据、ARCHIVING 状态及独立 retention lease。原 Worker attempt 已失效时本批明确拒绝恢复，不能把恢复 token 当作重新授权业务 attempt；后续需独立归档生命周期，不能盲目重跑有副作用工具。
 2. 临时故障/过期/拒绝状态的管理页面、超过重试上限的处置、历史意图/收据/墓碑保留策略，以及生产多实例/强杀/数据库中断矩阵和内存性能基准仍需推进。
 3. 文件式记忆后台化、岗位/个人记忆治理、全状态与旧代际键清理等其他范围仍按文档 37 和第 14.5 节推进。JWT、企业身份和内部模型部署保持暂缓；不宣称本轮已经全部完成。
+
+## 16. 第十三批：原子任务产物收据与持久完成门禁
+
+### 16.1 消除文件提交与任务登记之间的崩溃窗口
+
+此前文件版本和 PUBLISHED 已可在同一事务提交，但 RunArtifact 仍由执行结束后的另一个事务登记。进程在两者之间退出，会出现文件已经存在、所属 attempt 却没有产物事实的问题。V43 在现有发布账本新增 `artifact_id`、`receipt_event_id` 和按组织/Run 查询的索引；普通上传两列均为空，任务文件两列必须同时存在且处于 PUBLISHED。不新增事实库、消息队列或并行任务状态机。
+
+正常发布与后台补登共用同一原子顺序：
+
+```text
+事务外：PUT / GET 校验已完成的不可变对象
+短事务：FileVersion + 文件当前版本 + PUBLISHED / 容量结算
+        + 精确 attempt 的 RunArtifact
+        + workspace_file_published Outbox
+        + 发布记录的 artifact/event 链接
+提交后：返回文件收据
+```
+
+其中任何写入失败，整个短事务回滚；恢复开启时保留已传输对象与 STORED/意图，由既有有界恢复器重试，不重新调用模型、工具或沙箱。没有恢复条件时沿用原作废/孤立对象回收机制。此处的事务原子性只涵盖同一 PG 数据域，不把 MinIO 和 PG 宣称为跨系统事务。
+
+RunArtifact 的稳定键仍为 attempt+不可变版本，Outbox 使用由 artifact 导出的稳定 ID。同一 attempt 重复投影相同版本，不再次 PUT、不创建第二个版本/产物/事件；每次发布预留仍分别保存其原子收据。租约/配额锁已对同一员工的写入串行化，不能把检查后插入当成脱离现有锁协议仍安全。
+
+事件只带 event、artifact、Run、task、attempt、文件和版本 ID，不写文件正文、对象键、任意工具元数据或凭证。Outbox 继续至少一次投递，消费者按事件 ID 幂等；收据表示事件意图已提交，不表示所有外部消费者已经成功处理。
+
+### 16.2 完成门禁和展示规则
+
+`WorkspaceArtifactService` 不再从内存文件列表补写产物，也不因产物 ID 存在就直接放行。门禁在同一短事务按会话→Run→attempt 锁定当前执行范围，拒绝取消/终态 Run、非 RUNNING 的 task/AgentRun/attempt 及过期 Worker。随后只读取该精确 attempt 的持久收据，一次关联发布、意图、版本、文件归属、RunArtifact、Outbox 和原 Run/attempt；逐项检查文件 ID、版本、路径、对象键、后端、摘要和长度。重复路径、缺失事件、缺失产物或字段不一致均拒绝 READY；空投影也不能绕过执行有效性检查。
+
+交互请求原有的运行前文件版本基线移入 checkpoint，并由可信投影入口写入有界意图元数据。产物首次登记即可得到稳定的 `producedInRun`，避免文件提前生成/登记后到最终投影时被误判为历史文件。没有交互基线的 Worker 沿用发布意图的原版本比较，不声称本批完成任务级输入清单。用户文件、运行大正文及记忆的既有隔离方式不变。
+
+DDD/MyBatis 边界保持：Domain 定义收据和仓储端口；关联查询、锁和更新均在 DAL；应用协调原子用例；Core/Harness 不引入 PG/SaaS。正常上传不产生虚构的 RunArtifact，普通请求继续使用租户通道，不调用管理 Mapper 绕过 RLS。
+
+### 16.3 部署与历史兼容
+
+先执行 V43，再同时升级文件 writer、补登器和完成门禁；升级前停止新任务并处理在途运行。不支持旧 writer 与新完成门禁长期混跑，也不从 V41/V42 历史缺失链接的记录猜测新收据。历史文件和既有产物查询继续可用；未完成旧任务需要显式排空/处置，不自动篡改其成功状态。
+
+新增链接不对 RunArtifact/Outbox 设置级联外键，发布和删除责任仍须在上层 Run 被删除后保留。新列继承发布表既有强制组织 RLS 和授权；检查约束只描述两列是否同时存在，完整身份与内容一致性由租户关联查询验证。正在归档的收据/Outbox 不能提前按通用事件保留策略物理删除，否则完成门禁会正确拒绝；完整历史保留和运维处置策略仍是后续工作。
+
+### 16.4 验证进度
+
+专项 reactor 返回 **0**：发布集成 **39/39**（本批新增 **13 项**）、持久门禁 **13/13**、Worker 租约 **8/8**、DDD/MyBatis 架构 **11/11**，错误/失败/跳过均为 0。新增集成测试覆盖三个 SQL 提交阶段写入后失败的整体回滚、独立恢复器单版本/单事件补登、同版本重复收据、普通文件无任务副作用、取消/租约失效、PUT 中取消、跨组织/Run/task/attempt 拒绝、缺失 Outbox、持久版本摘要损坏及产物展示基线。门禁单测覆盖七类字段差异、缺失收据、重复路径、失效执行及不能从内存补写事实。
+
+测试使用真实 MyBatis/H2 事务和仓储；对象与故障点由可控端口提供，不称为生产 PG 中断或 JVM 强杀。首轮新增夹具缺少 Delete 注解导入的编译失败不计为通过，修复后重新运行完整专项 reactor。
+
+完整功能 reactor 已返回 **0**，包含真实 MinIO 正文 **14/14**、发布 **39/39**、门禁 **13/13** 及其他功能回归；仍排除原 `AgentPerformanceTest`，不宣称性能验收。真实 PG 已成功执行 V43，原发布表 ENABLE/FORCE RLS 均为 true；新增两列的应用角色 SELECT/UPDATE 四项授权分别为 true。
+
+首轮真实门禁在 OpenSandbox 重新创建容器时遇到 Docker 随机端口 55090 绑定冲突，基础流程返回 **8/13**、根脚本退出 **1**，未计入通过。OpenSandbox 日志确认创建失败的容器已自行清理；只读检查没有遗留测试沙箱容器及冲突端口监听。保持相同验证入口和全部断言重试，不跳过收据测试、不修改业务实现或部署默认配置。
+
+重试真实 PG/Redis/MinIO/OpenSandbox 门禁根脚本返回 **0**：基础任务流程 **13/13**、会话代际与收据 **5/5**、总诊断 **9/9**，所有 FAIL 为 0。实际生成文件的 scoped PG 断言同时核对发布记录、不可变版本、精确 task/attempt 的 RunArtifact、Outbox 及其版本/产物/Run 身份；事件不含对象键。覆盖登录、multipart 上传/下载、HITL、沙箱运行/恢复、SSE、历史读取、执行中重置、删除和资源回收。使用 scripted 模型，不验证企业模型/记忆质量、不调用外部付费模型；未宣称浏览器点击型全量验收、真实故障中断/强杀或 CubeSandbox/E2B 验证。
+
+Spotless、脚本语法检查和 `git diff --check` 通过。根门禁完成后停止临时应用，确认 18082 无监听，四个本轮启动的 PG/Redis/MinIO/OpenSandbox 容器均恢复为 `exited`；镜像、容器、数据卷及 Docker Desktop 保留，其他容器未操作。子 Maven 因清理显示的 143/BUILD FAILURE 不替代根脚本结果。验证进程的正文/检查点阈值不写回部署默认值。本批变更尚未提交、推送。
+
+最终命令：
+
+```bash
+SAAS_RUNTIME_BODY_MINIO_TEST=true mvn -o \
+  -pl agentscope-saas/agentscope-saas-app -am -Djacoco.skip=true \
+  '-Dtest=*,!AgentPerformanceTest' -Dsurefire.failIfNoSpecifiedTests=false test -q
+APP_PORT=18082 START_DOCKER_DEPS=false START_DOCKER_DAEMON=false \
+  SANDBOX_GATE_SESSION_GENERATION=true \
+  SAAS_RUNTIME_ARCHIVE_INLINE_MAX_BYTES=256 \
+  SAAS_RUNTIME_ARCHIVE_CHECKPOINT_INLINE_MAX_BYTES=65536 \
+  SAAS_RUNTIME_ARCHIVE_CHECKPOINT_MAX_JSON_BYTES=4096 \
+  SANDBOX_SMOKE_REQUIRE_OFFLOAD=true \
+  bash agentscope-saas/agentscope-saas-app/scripts/start-opensandbox-local.sh --smoke
+```
+
+日志：`/private/tmp/chugou-artifact-receipts-focused-verified.log`、`/private/tmp/chugou-artifact-receipts-functional-tests.log`、`/private/tmp/chugou-artifact-receipts-opensandbox-gate-verified.log`。失败的首轮真实日志另存为 `/private/tmp/chugou-artifact-receipts-opensandbox-gate.log`，不计入最终通过证据。
+
+### 16.5 后续仍未完成
+
+1. R02 仍缺**传输前持久期望产物清单**、完整扫描/清单收据、ARCHIVING 状态和独立 retention/归档租约；本批闭合文件+任务产物+事件的提交窗口，不把逐文件 PUBLISHED 当成全任务成功。失效原 Worker 的补登仍拒绝，不重放未知工具副作用。
+2. 管理端归档/补登故障处置、历史收据/事件/墓碑保留、真正的 PG/MinIO 中断和 JVM 强杀、多副本并发、流式容量/内存性能基准仍待实施/验收。
+3. 文件式记忆后台提炼及水位、企业只读岗位/个人记忆治理、任务工作集、安全人工重试/副作用对账、实质产物验证和其他 B3-B8 继续按文档 37 推进。JWT、企业身份及内部模型部署保持暂缓。
+
+## 17. 第十四批：传输前冻结清单与完整工作区发布门禁
+
+### 17.1 范围和两阶段投影
+
+本批先完成 R02 的发布预期清单，而非直接扩大业务 attempt 的租约。此前边扫描边上传，清单只存在于 checkpoint 内存：尾部文件超限可能发生在部分文件已经投影后，重启/错误计数也缺乏独立的完整预期事实。
+
+现在从 Provider 获取一次工作区归档，按既有 regular-file 投影范围扫描，先验证规范路径、重复路径、数量、单文件和总字节限制，并计算每个文件的实际长度和 SHA-256。使用受限本地临时 TAR 冻结这些字节，第一次扫描不写远程投影、不创建文件发布预留。非 regular-file 条目不解引用，沿用既有投影策略；两项内部投影/Volume 元数据不作为产物。目录和符号链接的完整备份/业务验收不属于本批。
+
+```text
+一次 Provider 归档 -> 有界扫描/临时快照 -> 冻结完整清单到 PG
+                  -> 从同一快照投影/登记每项文件
+                  -> 记录完整传输扫描 -> 校验持久清单/收据 -> READY
+```
+
+准入失败或完整扫描被拒绝时，任何 regular-file 产物均不开始本次投影。临时快照在正常/异常退出的 finally 中删除，既有完整远程清单保留。上传期间不再调用 Provider 重新扫描；内容不能来自与入库摘要不同的第二份工作区。临时快照是本次进程的受限缓存，不是跨进程恢复事实；本批未把它当成独立 retention lease，JVM 强杀后的缓存清理/容量运维仍需实施。
+
+保留 Provider 配置化选择，不让用户选择 Provider。持久卷按预扫描决定未变化文件和冲突副本目标，目标路径也写入冻结清单，不在传输时重新生成一个随机目标。未变化且没有远程冲突的文件仍触发目录登记，并实际读取不可变对象核对长度/摘要；零额外 PUT 不等于零验证。沙箱原文件未变化但浏览器已更新/删除远程版本时，拒绝本次扫描，不将旧内容谎称为 verified，也不覆盖新的远程版本；两边都改变时继续保留既有冲突副本行为。
+
+### 17.2 权威数据与短事务边界
+
+V44 新增 `workspace_publication_manifests` 和 `workspace_manifest_entries`。头记录保存组织/员工/Agent/根会话/代际、Run/task/AgentRun/attempt/lease owner、单调扫描序号、结构化指纹、预期数量/字节和扫描状态；条目独立保存来源路径、实际发布路径、长度、摘要、未变化标记和发布收据 ID，不保存正文、凭证或整段对话 JSON。
+
+状态为 `DISCOVERED -> SCANNED -> READY`：DISCOVERED 表示完整预扫描清单已冻结，SCANNED 表示实际投影循环完整结束，并不宣称所有目录写入都已成功；READY 只由完整持久门禁产生。此状态属于工作区发布，不是新增的业务任务调度状态，也不表示业务内容验收已完成。
+
+- 准入按会话→Run→attempt 取短事务锁，验证当前用户、代际、状态、准确持有者和租约，随后分批写头/条目。没有 SQL 锁跨 Provider、临时文件或对象存储 IO。
+- 每次成功预扫描产生该 task/attempt 的下一序号。新清单存在后，旧清单的晚到发布与完成检查明确拒绝；旧记录保留审计，不更新为当前清单。
+- 文件发布意图保存可信 `workspaceManifestId`。其条目与 FileVersion、RunArtifact、Outbox、PUBLISHED/容量结算在原短事务内一起链接；范围/摘要/长度/路径不匹配时全部回滚。
+- SQL 暂时失败后，原有恢复器从持久意图读回同一清单 ID，并仅恢复尚有效、尚未被替代的授权范围。不从孤立对象或同名最新文件猜测清单，不重跑模型或工具。
+- 头/条目开启并强制组织 RLS，条目用包含组织/员工的复合外键绑定头记录。删除 Run 不级联丢失清单事实；记录保留/物理对象回收继续需要明确策略。普通请求全部使用 Tenant MyBatis 通道。
+
+Core/Harness 只新增通用 `WorkspaceProjectionPlan` 和关键准入/完成回调，不引用 SaaS/PG。Domain 定义持久清单端口；DAL 实现所有关联查询和更新；应用负责冻结、事务和门禁。Mapper 日志为 INFO，避免私有路径和意图出现在 SQL bind DEBUG 日志中。
+
+### 17.3 完成门禁与重试上下文
+
+完成时先检查既有 checkpoint 和不可变产物收据，再以原冻结身份重验当前租约持有者并锁定最新清单。重读头和全部该清单条目，验证数量、总字节和长度编码的结构化 SHA-256 指纹；关联条目的准确 publication、文件版本、RunArtifact 和 Outbox，逐项比较内存版本、文件 ID、路径、后端、对象键、长度及摘要。少项、错项、未完成扫描、租约换主、旧清单以及条目篡改均拒绝 READY。完整零文件清单可幂等通过，缺少清单的零上传计数不能通过。
+
+持久卷 checkpoint 的数量包含已验证的 unchanged 文件，不只包含上传数量。远程投影返回失败收据而不抛异常时也会停止，不记录成功完成。当前调用的后台补登不会自动把整个任务标为成功。
+
+请求内重试可能复用 `WorkspaceCheckpointContext`。新的合法冻结清单重置上一扫描的文件列表、错误和生命周期标记，避免重复计数或保留已恢复的临时错误；基线版本仍属于原业务任务。同一任务的新合法 attempt/持有者必须先通过冻结准入；不能复用一个 checkpoint 切换组织、员工、会话代际、Run 或 task。旧身份完成时仍按旧持有者拒绝，不因此授权工具重放。
+
+先迁移 V44，再同时升级 Harness、writer、补登器和完成门禁，排空旧实例在途运行。旧 writer 不会绑定完整清单，不能与新门禁长期混跑，也不自动为 V43 历史记录补造清单。历史已提交文件/产物查询不变。
+
+### 17.4 验证进度
+
+初版专项 reactor 返回 **0**：文件发布/清单集成 **50/50**、沙箱文件系统 **27/27**（新增 **6 项**）、持久产物门禁 **13/13**、DDD/MyBatis 架构 **11/11**；沙箱生命周期、计量观察者和目录 sink 一并通过。初版完整功能 reactor（含真实 MinIO）返回 **0**。构造器更新遗漏两个旧 sink 测试的编译失败不计为通过，补齐夹具后重新从 reactor 起点运行。
+
+随后补充清单指纹计数、同上下文重试清单重置、同业务任务边界和既有非 regular-file 投影兼容，最终完整功能回归正在执行，尚未将上一版结果直接作为最终通过。关键集成覆盖冻结清单缺项、未完成扫描、非预期路径/正文、指纹篡改、旧清单晚到、准确租约换主、零文件幂等、伪造员工、unchanged 真实字节校验，以及清单链接写入后 SQL 故障的整体回滚和单版本补登。Harness 覆盖先准入再传输、只读取一次 Provider 归档、重复规范路径、unchanged 目录回执、返回型上传失败、远程冲突拒绝及稳定指纹。
+
+故障注入使用可控端口和真实 MyBatis/H2 事务，不冒充 PG/MinIO 中断或 JVM 强杀。不调用外部付费模型、不把 scripted 模型当成企业模型或记忆质量验收。JWT、身份和内部模型部署不在本批范围。
+
+首轮真实门禁根脚本返回 **1**，基础流程 **7/13**：SaaS 的运行依赖提供旧版 Commons Compress，Harness 编译用的新具体类 TAR 方法签名不存在，触发 `NoSuchMethodError`，继而 SSE 未正常终止且执行槽未释放；没有把该轮计为通过。改用仓库已有的 `ArchiveOutputStream` 基类调用方式，不升级/替换整个依赖图。新增 SaaS 模块依赖图下的真实 TAR 预扫描/投影测试 **1/1**；新夹具先因旧库的非泛型 API、匿名子类私有字段访问失败，修复后重新运行专项，失败轮次不计入最终通过。
+
+同时将释放流程的后台释放尝试、本地执行租约关闭和 scoped sandbox 清理纳入嵌套 finally。projection/persist/release 的致命错误继续传播，不返回假成功，但不能绕过本地执行槽释放；新增三项 LinkageError 注入，生命周期专项 **12/12**。借用父沙箱的子 Agent 仍不拥有释放权。不能以此宣称进程强杀、OOM 或 Provider 永久不可用也必然已删除远程资源；持久回收对账仍承担该职责。
+
+真实 PG 已成功迁移 V44，两个新表的 ENABLE/FORCE RLS 均为 true，应用角色 SELECT/INSERT/UPDATE/DELETE 八项授权分别为 true。错误修复后的最终专项 reactor 返回 **0**：发布/清单 **52/52**、文件系统 **27/27**、生命周期 **12/12**、应用依赖兼容 **1/1**、产物门禁 **13/13**、DDD/MyBatis **11/11**。
+
+最终完整功能 reactor 返回 **0**，包含真实 MinIO 正文 **14/14**、上述清单/兼容/清理及其他功能回归，仍排除原 `AgentPerformanceTest`，不宣称性能验收。中间完整轮次发现旧 Core 取消测试在异步上游实际取消前立即断言的竞态；夹具改为在原 3 秒预算内等待真实取消回调，继续检查取消标记、终态以及没有 dropped errors，生产 ToolExecutor 和等待配置不变。失败轮次不计为通过；重新从完整 reactor 起点运行后取消日志 **8/8**。
+
+本批新增 **23 项**测试：发布/清单 **13 项**、Harness 预扫描/冻结/unchanged/失败 **6 项**、错误清理 **3 项**、应用依赖图兼容 **1 项**。
+
+修复后真实 PG/Redis/MinIO/OpenSandbox 门禁根脚本返回 **0**：基础任务流程 **13/13**、会话及完整清单收据 **5/5**、总诊断 **9/9**，所有 FAIL 为 0。新增 scoped PG 断言将实际输出与冻结条目、READY/scan_complete 头记录、预期数量/字节、不可变版本、准确 task/attempt 的 RunArtifact 和 Outbox 一起核对，要求清单无未链接条目。覆盖登录、上传/下载、HITL、沙箱执行/恢复、SSE、历史读取、执行中重置、删除和后端释放。负向撤销过程的 archive commit 错误是预期拒绝路径，不作为成功提交；不把这些 API 检查称为浏览器点击型全量验收、模型质量验收、真实 PG/MinIO 中断、JVM 强杀或 CubeSandbox/E2B 验证。
+
+Spotless、脚本语法检查和 `git diff --check` 通过。根门禁结束后临时应用停止，确认 18082 无监听；本轮从停止状态启动的 PG/Redis/MinIO/OpenSandbox 四容器均恢复为 `exited`，镜像、容器、数据卷和 Docker Desktop 保留，其他容器未操作。子 Maven 清理时的 143/BUILD FAILURE 不替代根脚本退出码。测试的归档阈值仅作用于本轮进程，不改部署默认值。本批及上一批变更尚未提交、推送。
+
+最终命令：
+
+```bash
+SAAS_RUNTIME_BODY_MINIO_TEST=true mvn -o \
+  -pl agentscope-saas/agentscope-saas-app -am -Djacoco.skip=true \
+  '-Dtest=*,!AgentPerformanceTest' -Dsurefire.failIfNoSpecifiedTests=false test -q
+SAAS_MODEL_TYPE=scripted APP_PORT=18082 \
+  START_DOCKER_DEPS=false START_DOCKER_DAEMON=false \
+  SANDBOX_GATE_SESSION_GENERATION=true \
+  SAAS_RUNTIME_ARCHIVE_INLINE_MAX_BYTES=256 \
+  SAAS_RUNTIME_ARCHIVE_CHECKPOINT_INLINE_MAX_BYTES=65536 \
+  SAAS_RUNTIME_ARCHIVE_CHECKPOINT_MAX_JSON_BYTES=4096 \
+  SANDBOX_SMOKE_REQUIRE_OFFLOAD=true \
+  bash agentscope-saas/agentscope-saas-app/scripts/start-opensandbox-local.sh --smoke
+```
+
+日志：`/private/tmp/chugou-workspace-manifest-runtime-focused.log`（最终专项）、`/private/tmp/chugou-workspace-manifest-functional-tests-final-verified.log`（最终完整功能）、`/private/tmp/chugou-workspace-manifest-opensandbox-gate-verified.log`（最终真实门禁）。首轮 ABI 故障日志为 `/private/tmp/chugou-workspace-manifest-opensandbox-gate.log`，以及中间编译/取消夹具失败轮次，均不计入最终通过。
+
+### 17.5 仍需继续
+
+以下为第 14 批结束时的待办；独立归档的后续实施范围见第 18 节，不能将历史待办等同于最新状态。
+
+1. R02 仍缺业务调度层 `ARCHIVING`、独立归档/retention lease、缺字节时的有界 Provider/快照保留，以及原业务 attempt 失效后的独立归档接管。清单和逐文件补登已具备事实基础，但不能自动续期旧 Worker、更不能盲目重放未知工具副作用。
+2. 此清单是**工作区发布清单**，不替代执行前输入版本/任务工作集（R06），也不证明模型达成业务验收目标（R09）。业务要求三项产物却只生成两项时，本批不能单独证明目标已达成；仍需确定性验证器及独立只读验证流程。
+3. 全链路流式 IO、临时快照强杀清理/并发磁盘容量、历史清单/收据/墓碑保留与管理处置、多副本/真实故障/压测和灾备矩阵仍待推进。文件式记忆后台提炼及水位、岗位/个人记忆治理、安全人工重试/副作用对账和其他 B3-B8 继续按文档 37。
+
+## 18. 第十五批：已材料化输出的独立归档接管
+
+### 18.1 闭合范围
+
+本批处理一个确定的故障窗口：模型和工具已经返回结果，工作区扫描完整，预期文件全部有不可变 `STORED`/`PUBLISHED` 对象，但目录登记或发布收据提交失败。此时不应把归档失败当成业务执行失败，更不能重跑已经完成、可能产生外部副作用的工具。
+
+保留正常即时发布路径。只有成功计算结果的工作区发布失败进入接管判断；计算没有返回结果、扫描不完整、缺少持久字节、清单被替换、原执行租约过期或会话已经撤销，都不伪造后台归档成功。接管提交本身失败返回明确的归档交接失败；Durable Worker 使用终止策略，不走普通业务重试。此保证针对本批新增的归档交接异常边界，不等同于已经闭合所有数据库全断、最终答复提交异常和 JVM 强杀窗口。
+
+### 18.2 状态与存储
+
+新增 V45，两种方言均维护相同事实结构：
+
+| 事实 | 保存内容 | 用途 |
+|---|---|---|
+| `workspace_archive_jobs` | 完整员工/Agent/session/generation/run/task/attempt 范围、原执行 owner、冻结 manifest ID、待交付结果 body ID/字节、状态、独立 token/租约、deadline、重试次数与下次时间 | 有界、可接管的归档任务，不授予模型、工具或 Provider 执行权限 |
+| `workspace_archive_items` | 冻结清单路径与本次选定的 publication ID；同一 job 不得重复路径或重复 publication | 恢复只能补齐选定的原对象，不能读取一个后来改变的“当前工作区” |
+| `runtime_message_bodies` | 待交付结构化结果与完整答复块的私有不可变正文、摘要、大小和存储后端 | 复用 PG/MinIO 存储、配额、校验及正文回收；job 表不放大正文，不出现在用户输入/输出文件目录或记忆目录 |
+
+正文对象 PUT/GET 校验发生在事务外；随后在短事务内锁定 session → Run → 原 attempt，校验清单指纹、完整扫描与每个选定源的大小/摘要，附着正文引用、写 job/items，原 task、agent run 和 attempt 同时转为 `ARCHIVING`。原 attempt 的执行租约清空，原 owner 仅用于追溯，不能恢复执行授权。写入 `TASK_ARCHIVING` Run 事件及对应 Outbox；事件只携带归档 ID，不携带文件正文或存储密钥。
+
+Run 保持 `RUNNING`，因为一个 Run 可以同时有其他仍在执行的 DAG 节点；`ARCHIVING` 是节点/attempt 生命周期，不把整个 DAG 错误地改成单一归档状态。普通 Worker 只领取 READY 节点，过期执行接管只扫描 LEASED/RUNNING attempt，不能领取或重跑 ARCHIVING 节点。交接异常释放本地 Worker 槽位；心跳识别已交接的执行，避免中断已经完成交接的线程。
+
+两张新表使用 FORCE RLS、组织隔离策略、应用角色四类 CRUD 权限、owner/due/body/publication 索引与带组织/员工的 items → jobs 外键。原 session/Run 删除不级联删除归档证据，以便晚到 IO 与有界保留仍可发现。继续使用同一个数据库的租户和管理角色连接，未新增第三套数据库；所有生产 SQL 仍在 DAL MyBatis，App 仅依赖领域端口。
+
+### 18.3 接管与交付
+
+1. 后台扫描 PENDING 或已失效的归档 RUNNING 租约，先重新锁定员工、session 代际、Run 和 ARCHIVING attempt，条件抢占一个新的独立 token。旧 token 在后续补登和最终提交处均拒绝。
+2. 校验读取待交付正文。逐项跳过已 PUBLISHED 对象；STORED 对象只能在归档授权、选定 item、准确 task/attempt/owner 和最新完整清单共同成立时补登。GET 后再次核对字节数和 SHA-256，IO 不占事务锁。
+3. 目录版本、RunArtifact、Outbox 与清单条目链接继续在原短发布事务中原子提交。归档路径不使用原业务 lease，也不能把归档 token 传给模型或工具执行。
+4. 全部条目有精确收据后，校验清单指纹、数量、大小和完整关联，置 READY，计算不可变工作区引用。若存在对应已释放沙箱租约，只更新其快照引用/版本，供后续合法业务 attempt 恢复；不重新启用、续期或创建沙箱。
+5. 保留原任务 CompletionGate。规则未通过不交付最终答复，也不启动业务重试。通过时先在归档 token 和会话 fence 下幂等保存最终答复，再由管理侧短事务结算 attempt、节点、DAG 后续调度/Run、事件/Outbox 和 job。二者通过 durable job 与幂等答复键收敛，不在持有租户事务锁时嵌套管理写事务或进行对象 IO。
+6. 临时失败只重试归档。归档 actor 仅释放自己持有的逐文件 recovery token，避免等完整文件租约才能下一轮重试，也不能释放另一个 actor 的租约。deadline 或次数耗尽后按终止/人工处置策略结算，不生成新的业务 attempt；过期发现不受未来退避时间阻碍，锁等待后按新时间再次校验授权。取消、重置、删除或员工范围失配会撤销接管，不能重新写文件或回复；取消同时结算 ARCHIVING AgentRun，原普通成功入口不能绕过归档门禁。
+
+收尾另发现并修复旧候选竞态：普通补登 actor 可能在交接前已经读到 DTO，随后被新的 ARCHIVING 执行 fence 拒绝。仅从扫描列表排除新 job 不够，旧 actor 的异常处理仍可能中止它。普通 reclaim/abort/abandon/defer 的更新条件现同样排除独立归档持有的对象，只有正在持有准确归档 token 的 actor 才能释放自己的逐文件 token。定向测试验证旧候选没有破坏 STORED 字节，独立归档仍能完成。
+
+对象保留同步纳入已有机制：未结束且 deadline 未到的归档保护选定 publication 与待交付正文，普通补登队列不得抢占它们；文件 GC、正文 GC 在候选/claim/引用复查处尊重该保护。即使逐文件 lease 失效，存储容量预留和路径互斥仍计算归档保留，不能借交接绕过配额或覆盖原路径。保留是有界的，并不延长原文件恢复的硬 deadline；结束后回到原正文 grace 与文件 GC/tombstone 回收策略。
+
+### 18.4 配置与用户交互
+
+```yaml
+saas:
+  file-store:
+    workspace-archive-enabled: true
+    workspace-archive-lease-seconds: 60
+    workspace-archive-deadline-seconds: 900
+    workspace-archive-max-attempts: 8
+    workspace-archive-retry-seconds: 5
+    workspace-archive-fixed-delay-seconds: 2
+```
+
+对应环境变量为 `SAAS_WORKSPACE_ARCHIVE_ENABLED`、`SAAS_WORKSPACE_ARCHIVE_LEASE_SECONDS`、`SAAS_WORKSPACE_ARCHIVE_DEADLINE_SECONDS`、`SAAS_WORKSPACE_ARCHIVE_MAX_ATTEMPTS`、`SAAS_WORKSPACE_ARCHIVE_RETRY_SECONDS`、`SAAS_WORKSPACE_ARCHIVE_FIXED_DELAY_SECONDS`。非法预算在装配时失败；本批接管还要求已有文件补登策略启用。禁用新交接不会让已经接收的 job 永久失去后台收敛；后台仍按原 deadline 完成或终止它们。
+
+HTTP 接管成功发出 `run_archiving`，携带准确 Run/session/job ID，不发最终 RUN_FINISHED，也不伪装成模型恢复。前端显示归档状态；新会话同样保存 session 关联，刷新页面会从节点状态恢复等待。待 Run 终止后自动加载持久历史及产物，并保留当前输入草稿。等待不再次提交任务；状态、任务列表与窄屏图标操作使用原设计系统。修正已有恢复提示与答复挤在同一行的问题，移动端不隐藏归档提示。
+
+### 18.5 验证证据
+
+本批新增 **21 项 Java 测试**：文件发布/归档 **16 项**、Worker **2 项**、Harness 交接 **2 项**、恢复分类 **1 项**。完整功能 reactor 返回 **0**（该轮文件发布/归档 66/66）；之后补强截止时间、GC claim、重新授权、旧候选竞态和生命周期一致性，最后专项再次返回 **0**：文件发布/清单/归档 **68/68**、Worker **5/5**、Harness durable executor **8/8**、恢复分类 **7/7**、编排服务 **3/3**、DDD/MyBatis 边界 **11/11**、真实 MyBatis 领域仓储 **2/2** 均通过。此前完整回归中正文存储 **14/14** 通过，真实 MinIO 项显式启用；以上列出的专项无跳过。不把 reactor 其他环境相关可选跳过计作外部集成已经实测。
+
+覆盖：完整扫描/持久源准入、已发布与待补登混合清单、旧业务租约/旧成功入口不能续期或成功提交、旧归档 token、锁等待后的重新授权、取消/代际撤销及 AgentRun 收尾、配额/路径保留、正文完整性故障与 GC claim 保护、目录重试时的逐文件 token 释放、退避不阻碍 deadline 终止、旧普通补登候选不能中止或抢占归档、业务验收失败不交付、已释放租约的快照元数据更新，以及伪造员工不能消费或撤销另一个归档 job。
+
+真实 PG/Redis/MinIO/OpenSandbox 根门禁返回 **0**：基础任务流程 **13/13**、新增归档故障恢复 **4/4**、会话代际/收据验证 **5/5**、总门禁 **10/10**，FAIL 均为 0。新脚本仅允许本机地址，并对独立测试 Run 的 RunArtifact 插入暂时注入 SQLSTATE 40001；观察 ARCHIVING 和原执行租约失效后撤销故障，验证自动补登完成、唯一业务 attempt、唯一 execute 工具调用、模型调用次数不增长、READY 完整清单、工作区快照、可下载产物与唯一最终回复。另验证 FORCE RLS、八项独立角色权限与外组织不可读取，临时触发器/函数均清理。它是受控收据提交故障，不是断开整个 PG/MinIO 服务或 JVM 强杀试验。
+
+前端生产构建通过；新增 Playwright/Chrome API 夹具在 **1440×1000**、**390×844** 两种尺寸验证：归档状态、刷新恢复、自动载入最终答复/产物、等待时禁止再发起任务、后台完成保留草稿、无页面脚本错误与无横向溢出。截图已逐张检查，移动端任务详情使用图标按钮，归档状态与正文各占独立行。这是浏览器交互契约测试，不把夹具和真实 API 门禁拼成“真实后端浏览器全量验收”。
+
+最终命令与日志：
+
+```bash
+SAAS_RUNTIME_BODY_MINIO_TEST=true mvn -o \
+  -pl agentscope-saas/agentscope-saas-app -am -Djacoco.skip=true \
+  '-Dtest=*,!AgentPerformanceTest' -Dsurefire.failIfNoSpecifiedTests=false \
+  spotless:apply test -q
+SAAS_MODEL_TYPE=scripted APP_PORT=18082 \
+  START_DOCKER_DEPS=false START_DOCKER_DAEMON=false \
+  SANDBOX_GATE_SESSION_GENERATION=true SANDBOX_GATE_WORKSPACE_ARCHIVE=true \
+  SAAS_RUNTIME_ARCHIVE_INLINE_MAX_BYTES=256 \
+  SAAS_RUNTIME_ARCHIVE_CHECKPOINT_INLINE_MAX_BYTES=65536 \
+  SAAS_RUNTIME_ARCHIVE_CHECKPOINT_MAX_JSON_BYTES=4096 \
+  SANDBOX_SMOKE_REQUIRE_OFFLOAD=true \
+  bash agentscope-saas/agentscope-saas-app/scripts/start-opensandbox-local.sh --smoke
+# NODE_PATH 使用本机已有 Playwright 依赖路径，无需下载浏览器。
+BROWSER_CHANNEL=chrome node agentscope-saas/agentscope-saas-app/scripts/workspace-archive-ui-smoke.cjs
+```
+
+日志：`/private/tmp/chugou-archive-lease-functional-tests-final.log`（完整回归）、`/private/tmp/chugou-archive-lease-closure-verified.log`（最后收尾专项）、`/private/tmp/chugou-archive-lease-opensandbox-gate-final.log`（强化后重新运行的真实门禁）、`/private/tmp/chugou-archive-ui-smoke-final-verified.log`、`/private/tmp/chugou-archive-ui-build-verified.log`。截图：`/private/tmp/chugou-workspace-archive-ui/archiving-{1440,390}.png`、`completed-{1440,390}.png`。首轮 H2 JSON 字符串断言、运行期间编辑导致的中间 Spotless 检查、测试夹具 `org` 变量对包名的遮蔽，以及浏览器可执行路径/夹具拦截/文本选择器失败均已修正，不计入最终通过。真实门禁根进程的成功结果不以清理时子 Maven 的 143 退出码替代。
+
+验证后确认临时故障触发器/函数及未结算归档 job 均为 0；应用 18082 和前端 5190 均无监听。本轮从停止状态启动的 PG/Redis/MinIO/OpenSandbox 四个容器恢复为 exited，镜像、容器、数据卷和 Docker Desktop 保留，其他服务未操作。
+
+### 18.6 尚未闭合
+
+1. **R02 剩余**：缺持久字节时的 Provider/独立不可变快照 retention、计算完成到 durable result 交接之间的强杀窗口、其他最终答复/状态提交异常路径、运行中断后已冻结输出的独立归档调和，以及真实多副本/进程崩溃验证。准确清单恢复及多次投影/路径变更问题在后续第 19 节处理。本批不能安全接管未完成扫描或仅保存在易失临时文件中的数据，也没有把正常即时发布改成全任务强制独立结算。
+2. **R06/R09**：冻结发布清单不替代执行前输入版本/任务工作集，更不替代具体业务的确定性验收与独立只读验证器。本批保留现有 CompletionGate，但不宣称它能判断“要求三份报告却只生成两份”的全部业务语义。
+3. **后续工程**：全链路流式 IO、快照临时盘并发容量/强杀清理、历史清单/收据/归档证据保留与管理处置、文件式记忆后台提炼/水位和个人/岗位治理、安全人工重试/副作用对账、压测/多副本/灾备矩阵，仍依文档 37 推进。JWT、企业 IAM 和内部模型部署继续遵循此前延期范围。
+
+本批只使用 scripted 模型与真实 OpenSandbox，不验证 CubeSandbox、E2B 或外部付费模型；沙箱 Provider 仍是部署侧配置。已完成批次的变更尚未提交或推送。
+
+## 19. 第十六批：准确清单驱动的检查点恢复
+
+### 19.1 问题与决策
+
+同一个 attempt 可以因请求内恢复、多次释放投影而产生多份冻结清单。RunArtifact 是不可变历史事实，不能作为某个检查点的文件集合：同路径的多个版本会造成重复路径；被删除、移走或替换的路径也可能被错误带回。只选择“最新 READY 清单”同样不准确，它未必就是沙箱租约已经提交的那份检查点。
+
+正常发布与独立归档统一写入明确绑定清单的目录引用：
+
+```text
+workspace-catalog://runs/<run-id>/attempts/<attempt-id>/manifests/<manifest-id>
+```
+
+`workspace_version` 仍是路径、不可变 version ID 和内容摘要的整体指纹，`plan_hash` 仍是预期扫描清单指纹，二者不混用。引用是逻辑目录标识，不是 Provider 地址或 MinIO key；使用 URI 解析并验证精确 Run/attempt 和规范格式，不允许任意 URL、查询参数或片段。
+
+本批复用 V44 的清单事实，不新增表、数据库或数据源。Domain 扩展读取端口；DAL 以 MyBatis 实现准确 ID/员工/Run/task/attempt 查询，并复用现有唯一索引和 FORCE RLS；App 负责恢复编排与校验，不引入 JDBC 或业务 SQL。
+
+真实门禁还发现普通发布的持久关联缺口：Harness 的 `ensureSessionDefaults` 派生 RuntimeContext，运行期间新增的 `SandboxLeaseContext` 没有回写外层，而发布原先仅依据外层内存绑定决定是否写检查点，可能出现 READY 文件清单却没有对应的租约引用。普通发布现在复用沙箱领域服务，内存绑定存在时核对指定租约；缺失时按准确 attempt 查询已持久租约，并检查组织、员工、Run、task 和 attempt 全部一致后写引用。资源 lease owner 与业务执行 owner 是不同职责，不混作同一个授权。已释放租约允许补写元数据，不激活或续期；明确传入的错误/不存在绑定不得回退或更新其他任务的租约。确实没有资源租约的目录发布维持原可用性，本批不凭空创建资源。
+
+### 19.2 恢复流程与授权
+
+1. 仅在 RUN_ISOLATED、ATTEMPT_ISOLATED、DEDICATED_SANDBOX 的合法后继 attempt 恢复；共享/NONE 模式维持原行为。从数据库解析当前执行范围，必须匹配调用 Worker 明确传入的 lease owner。旧 Worker 不能从数据库重新读取新 owner 后冒用它。
+2. 短事务锁定 session → Run → 当前 attempt，校验员工、Agent、session 代际、取消状态、节点/AgentRun 状态和执行租约。取得同一 task 的前序检查点；读取准确引用的 READY 且扫描完整清单，而不是查询当前最新扫描。锁等待后重新取时间校验，不能用等待前的时间放行已过期租约。
+3. 校验清单归属、数量、总字节、安全路径和扫描指纹；每条 entry 必须通过 publication → intent → RunArtifact → file_version → Outbox 的精确持久关联，匹配路径、大小、摘要、任务和原执行 owner。缺收据、缺版本、范围失配或工作区版本不一致均拒绝，不从历史产物补猜。
+4. 关闭 SQL 事务后读取选定不可变版本。校验真实内容 SHA-256、目录大小、清单大小以及恢复容量，再组装 Provider 中立的恢复计划。修复旧 `readOnly` 外层事务与 `FileCatalogService.readVersion(NEVER)` 冲突；对象 GET 不持有数据库锁。
+5. GET 完成后再进入短事务，校验当前 Worker 授权、会话代际、原检查点引用/版本和准确清单集合是否仍成立。取消、重置、租约转移、读取期间检查点替换均不能返回可用计划；失败不生成新的业务 attempt。
+6. 沙箱启动时只要存在恢复计划，就不再先加载当天的整个可变远程投影。文件来自选定检查点；显式空清单同样不加载旧输出、后来上传的文件或当前可变记忆。没有检查点的新任务仍保持原初始化流程。任务重试不借恢复偷偷改用新的输入版本；完整执行前任务工作集仍属于 R06。
+
+因此，同一 attempt 的旧产物继续保留用于审计，但不参与已选检查点恢复；目录后来改名不改变原检查点路径/版本；出现后续未完成扫描，不会覆盖或阻止已绑定的旧 READY 快照。
+
+### 19.3 兼容与边界
+
+- 仅当该前序 attempt 完全不存在 V44 清单时，兼容旧未绑定清单的检查点，仍核对 Run/task、员工版本读取权限、路径、内容与整体指纹。重复历史路径或版本不一致仍拒绝，不尝试猜测。
+- 已存在清单却保存旧未绑定引用、明确引用不存在/未完成清单或准确收据缺失时拒绝恢复。升级中的此类异常检查点需重新通过正常发布产生明确引用，不能静默回退为全部历史产物。
+- 本批不清空用户文件或整个持久 Volume，也不改变部署侧 Provider 配置。真实恢复验证针对新建 OpenSandbox；复用/恢复 Provider 自有快照或 Volume 时对既有残留文件的完整替换、隔离与清理仍需独立设计和故障验证，不能把“不再下载历史远程投影”宣传为所有持久卷残留都已解决。
+- 工作区文件集合不等于模型上下文完整快照，也不等于确定性业务验收。缺持久字节 retention、流式传输、强杀与最终结果交接等 R02/R03 剩余仍未闭合。
+
+### 19.4 验证
+
+本批 Java 测试净增 **39 项**：恢复服务 **20 项**、文件发布/恢复集成 **10 项**（含真实 OpenSandbox 两种恢复）、沙箱租约绑定 **7 项**、Harness 生命周期 **2 项**。最终完整功能 reactor 返回 **0**，最后业务代码未经后续修改：恢复服务 **24/24**、文件发布/清单/归档/恢复 **78/78**、租约服务 **9/9**、生命周期 **14/14**、文件系统 **27/27**、工作区发布校验 **13/13**、DDD/MyBatis 架构边界 **11/11**、领域仓储 **2/2** 和正文存储 **14/14** 均通过；上述专项无跳过。真实 MinIO 正文测试显式启用，真实 OpenSandbox 恢复探针显式启用。性能测试被排除；其他环境相关可选跳过不视为已经验证的外部集成。
+
+恢复覆盖同 attempt 的多版本和历史路径排除、准确绑定的旧 READY 清单在新扫描未完成时仍可读取、目录后来改名、明确空清单、缺/坏收据、目录摘要与真实字节不一致、容量和安全路径、会话重置、旧 owner、读取期间检查点替换及员工隔离。对象存储夹具明确断言 GET/PUT 不处于 SQL 事务。真实 OpenSandbox 探针使用 MyBatis/H2 与受控对象存储夹具构造目录事实，再通过生产生命周期中间件在新建 Provider 内验证选定文件、空清单及不载入可变远程历史输出；它不是 PG/MinIO 整链路恢复或浏览器验收。
+
+真实 PG/Redis/MinIO/OpenSandbox 发布门禁最终根进程返回 **0**：基础任务 **13/13**、归档恢复 **4/4**、会话代际/清单绑定 **5/5**、总门禁 **10/10**，FAIL 均为 0。新增 SQL 断言核对正常发布及归档的租约 URI 精确包含 READY manifest ID，并保留不可变版本/产物/Outbox、完整清单、员工隔离与 FORCE RLS 验证。仍使用 scripted 模型，无外部付费调用；本批未改前端，也未重新做浏览器全量页面验收。
+
+最初受限 JVM 附加导致 Mockito 失败，后已获授权正常执行；完整回归发现旧文件 GC 夹具未安装 V45，已补齐而不是弱化生产归档保护；强化的正常检查点关联门禁揭示派生上下文绑定缺失，已修复持久租约关联并重新运行完整回归和真实门禁。中间失败日志不计入最终通过证据。
+
+```bash
+SAAS_CHECKPOINT_OPENSANDBOX_TEST=true SAAS_RUNTIME_BODY_MINIO_TEST=true mvn -o \
+  -pl agentscope-saas/agentscope-saas-app -am -Djacoco.skip=true \
+  '-Dtest=*,!AgentPerformanceTest' -Dsurefire.failIfNoSpecifiedTests=false \
+  spotless:apply test -q
+SAAS_MODEL_TYPE=scripted APP_PORT=18082 \
+  START_DOCKER_DEPS=false START_DOCKER_DAEMON=false \
+  SANDBOX_GATE_SESSION_GENERATION=true SANDBOX_GATE_WORKSPACE_ARCHIVE=true \
+  SAAS_RUNTIME_ARCHIVE_INLINE_MAX_BYTES=256 \
+  SAAS_RUNTIME_ARCHIVE_CHECKPOINT_INLINE_MAX_BYTES=65536 \
+  SAAS_RUNTIME_ARCHIVE_CHECKPOINT_MAX_JSON_BYTES=4096 \
+  SANDBOX_SMOKE_REQUIRE_OFFLOAD=true \
+  bash agentscope-saas/agentscope-saas-app/scripts/start-opensandbox-local.sh --smoke
+```
+
+最终日志：`/private/tmp/chugou-checkpoint-manifest-functional-closure.log`、`/private/tmp/chugou-checkpoint-manifest-opensandbox-gate-verified.log`。脚本语法和 Python 编译检查通过。验证后临时故障触发器/函数和未结算归档 job 均为 0；临时应用已停止。本轮启动的四个测试容器恢复关闭，镜像、容器、数据卷和 Docker Desktop 保留，不操作其他服务。
+
+### 19.5 后续顺序
+
+1. R02：缺持久字节时的保留策略、冻结输出的中断调和、计算完成至 durable result 之间的强杀窗口、其余最终答复/状态提交失败，以及复用 Provider 快照/Volume 的精确替换边界。
+2. R06/R09：执行前冻结输入版本和任务工作集、确定性业务产物验收与独立只读验证器。
+3. R03 与 B3-B8：流式 IO/临时盘治理、历史清单及归档证据保留和管理处置、安全人工重试/副作用对账、文件式记忆后台提炼/水位及岗位/个人治理、多副本与灾备门禁。
+
+继续遵守 JWT、企业 IAM、内部模型部署及 PromptGuard 的既定延期范围；本批不验证 CubeSandbox/E2B，不调用付费模型，不自动提交或推送。
+
+## 20. 第十七批：计算后提交失败不重跑任务
+
+### 20.1 闭合范围
+
+第十五批已经区分工作区发布失败与模型失败，但成功计算后的最终答复保存、Worker 成功状态提交和网页协调器状态提交仍位于原执行失败路径中。Worker 收到成功结果后，`succeed` 抛错可能进入普通任务重试；网页端则可能把已经执行过工具的任务直接判失败。异常带有 ModelException 因果链时，风险更明显。
+
+本批闭合上述提交边界，保留正常即时发布路径。只有已经返回计算结果、扫描完整、文件已有不可变材料且仍持有有效执行授权的失败，才复用独立 ARCHIVING 交接；没有可封存材料不承诺归档自动恢复，也不重新运行已经完成的计算。本批没有实现缺字节时的 Provider/独立快照保留协议。
+
+### 20.2 处理机制
+
+1. 编排执行端口增加 `TaskResultCommitException`，明确表示计算已返回、失败属于结果提交。恢复分类先检查完整的受限因果链，再识别模型错误；外层 ModelException 不能覆盖内层结果提交或归档边界。
+2. Harness 在计算返回之后，分别保护交付范围查询、检查点发布、输出序列化和最终答复保存。可以安全交接的发布/答复异常使用原完整 ContentBlock 答复，不用有界任务摘要代替完整内容；交付范围无法确认或序列化本身失败时明确终止，不猜测是否应向用户发送答复。
+3. `ExecutionResult` 保留旧单参数构造器，并增加仅本次调用内使用的提交故障回调。Worker 提交成功状态失败时，回调只能交接已经计算出的内容，不再次调用执行器。回调和内存上下文不写入 PG/JSON，不作为跨进程恢复事实；真正的跨进程交付仍由完整正文与 V45 job/items 承担。
+4. Worker 遇到提交异常，先以准确 attempt ID 与 lease owner 查询已提交成功事实。确认只是成功提交的响应丢失时直接收敛，不创建第二个归档 job；首次查询与交接之间发生成功提交的竞态，在决定终止前再次核对。显式返回租约失效则不使用旧 owner 的回调。旧执行器没有回调、回调失败或结果为空时使用终止策略，不落入普通 `fail/recover` 的业务重试。
+5. 网页端把检查点、最终答复和协调器成功结算纳入同一个结果提交异常边界。正常成功仍发 RUN_FINISHED；已成功提交但响应丢失时核对 attempt 事实后发正常完成；需要归档时发原 `run_archiving` 事件，由既有网页轮询机制等待持久交付，不发送错误的最终完成事件。
+6. 归档交接自身也可能已提交但确认响应丢失。`defer` 保留本次准备的 job 标识；收到提交异常后，只读取这个已知 ID 并核对完整执行范围、manifest、正文 ID/大小和可接管/已完成状态。符合时返回该 job，不按“当前最新任务”猜测，不制造新 job，不撤销已完成的接管。没有匹配事实或读取仍失败时保留原异常，不能假报接管成功。
+7. 交接成功继续使用原独立租约、deadline、次数限制、会话代际/取消门禁、幂等答复、文件收据和 CompletionGate。状态提交前已经保存的答复，在归档中仍只保留一份；归档失败不重新运行模型或工具。业务验收本身的既有语义没有被绕过。
+
+DDD/MyBatis 边界保持：编排端口不依赖 App、Spring 或 ORM；新增成功事实查询经 Domain Port 与 DAL 管理角色 MyBatis Mapper 执行，只按内部可信的准确 attempt/owner 读取，不新增公开的越租户查询 API；App 不写业务 SQL。复用既有 V45 表和两种数据库角色，无数据库迁移或第三个数据源。
+
+### 20.3 边界与剩余风险
+
+- 本批不能保证计算返回与 durable result 交接之间遭遇 JVM 强杀时仍能完整交付；提交故障回调不是持久队列。
+- PG/对象存储整体不可用、执行租约已失效、材料缺失或扫描不完整时，不能建立可信交接。尽力登记终止并避免当前调用普通重试，不等同于已经解决整库不可用后的过期调度、所有跨进程竞态或断电窗口。
+- 不改变沙箱部署侧切换；不以延长业务 lease 代替独立归档，也不在没有持久材料时仅凭内存标志阻止释放。
+- 不实现 Provider/独立不可变快照的保管、取回、TTL、配额与回收；不实现任务输入工作集、确定性业务验收、人工安全重试或副作用对账。以上仍按文档 37 和第 19.5 节推进。
+
+### 20.4 验证
+
+最终完整功能 reactor 返回 **0**；Java 测试净增 **19 项**：Worker **8 项**、Harness **5 项**、恢复分类 **2 项**、MyBatis/H2 文件发布与交付集成 **4 项**。最后 Worker **13/13**、Harness **13/13**、恢复分类 **9/9**、文件发布/归档/恢复/交付 **82/82**、DDD/MyBatis 边界 **11/11**、领域仓储 **2/2**、正文存储 **14/14** 均通过。真实 OpenSandbox 恢复与 MinIO 正文探针显式启用；这些专项无跳过，性能测试和其他环境相关可选集成不计作已验证。
+
+覆盖提交失败后执行器调用次数不增长、原构造器兼容、嵌套模型异常仍不重试、显式 lease loss、空结果、提交确认丢失、交接期间成功提交的竞态，以及真实事务提交后的确认异常。数据库交付用例验证任务摘要被截断时完整答复末尾仍可交付、只产生一个 attempt/回复/文件收据、已有回复不会重复保存。归档确认丢失通过事务管理器在真实 H2 commit 后抛错验证，不用假设未提交的内存对象代表成功。
+
+新增 `result-commit-smoke.py`，由 `SANDBOX_GATE_RESULT_COMMIT=true` 纳入本机 OpenSandbox 发布门禁。分别对准确测试 Run 的 assistant 消息 INSERT 和 attempt 成功状态 UPDATE 暂时注入 PostgreSQL SQLSTATE 40001，观察 `run_archiving`、业务 lease 失效和 READY 清单，撤销故障后核对后台交付、唯一 attempt/tool/reply、模型调用次数不增长，以及真实文件下载和历史 API。脚本不允许非本机目标，并在 finally 清理故障触发器/函数和测试 Agent。
+
+真实 PG/Redis/MinIO/OpenSandbox 门禁最终根进程返回 **0**：基础任务 **13/13**、已材料化输出归档 **4/4**、新增结果提交故障 **2/2**、会话代际与清单关联 **5/5**、总门禁 **11/11**，FAIL 均为 0。两种提交故障都在生成 READY 文件清单后交接，恢复期间模型/工具调用次数未增长；状态提交故障前已经保存的最终回复没有重复插入。管理诊断无阻断聊天的降级，Prometheus 计量正常。
+
+```bash
+SAAS_CHECKPOINT_OPENSANDBOX_TEST=true SAAS_RUNTIME_BODY_MINIO_TEST=true mvn -o \
+  -pl agentscope-saas/agentscope-saas-app -am -Djacoco.skip=true \
+  '-Dtest=*,!AgentPerformanceTest' -Dsurefire.failIfNoSpecifiedTests=false \
+  spotless:apply test -q
+SAAS_MODEL_TYPE=scripted APP_PORT=18082 \
+  START_DOCKER_DEPS=false START_DOCKER_DAEMON=false \
+  SANDBOX_GATE_SESSION_GENERATION=true SANDBOX_GATE_WORKSPACE_ARCHIVE=true \
+  SANDBOX_GATE_RESULT_COMMIT=true \
+  SAAS_RUNTIME_ARCHIVE_INLINE_MAX_BYTES=256 \
+  SAAS_RUNTIME_ARCHIVE_CHECKPOINT_INLINE_MAX_BYTES=65536 \
+  SAAS_RUNTIME_ARCHIVE_CHECKPOINT_MAX_JSON_BYTES=4096 \
+  SANDBOX_SMOKE_REQUIRE_OFFLOAD=true \
+  bash agentscope-saas/agentscope-saas-app/scripts/start-opensandbox-local.sh --smoke
+```
+
+最终日志：`/private/tmp/chugou-result-commit-functional-verified.log`、`/private/tmp/chugou-result-commit-opensandbox-gate.log`。初轮新集成夹具未启用原文件补登策略，导致交接按设计拒绝，已修正夹具并完整重跑，不弱化生产准入。脚本语法、Python 编译及差异空白检查通过。验证后故障触发器/函数和未结算归档任务均为 0，临时应用已停止，四个本轮测试容器恢复关闭；保留镜像、容器、数据卷和 Docker Desktop，不操作其他服务。本批未改前端，HTTP/SSE 故障脚本不视为新的浏览器全量验收；SQL 事务故障和模拟确认异常不等同于整库断开或 JVM 强杀验证。
+
+### 20.5 后续顺序
+
+1. R02 缺持久字节：建立独立不可变快照或有界 Provider retention 的准入、存储引用、恢复授权、配额、TTL 和回收协议；完整字节未交接前不能销毁唯一来源。
+2. R02 强杀/中断：计算结果封存与释放的顺序、冻结输出调和、整库故障后的过期调度、复用 Provider 快照/Volume 的精确替换，以及多副本和真实崩溃验证。
+3. R06/R09 与 R03：冻结输入版本/任务工作集、确定性产物验收和独立只读 Verifier、流式传输与临时盘治理。
+4. 其余 B3-B8：安全人工重试/副作用对账、文件式记忆后台提炼/水位、岗位与个人记忆治理、生产部署/压测/灾备门禁。
+
+JWT、企业 IAM、内部模型部署和 PromptGuard 继续暂缓；只验证 OpenSandbox，不验证 CubeSandbox/E2B，不使用付费模型。本批变更未提交或推送。
+
+## 21. 第十八批：不可变字节源保管与缺文件归档恢复
+
+### 21.1 闭合范围
+
+释放时已有完整冻结 TAR，但逐文件传输/预留失败可能尚无 STORED/PUBLISHED 文件对象。以前归档拒绝这类缺字节任务，随后临时 TAR 和沙箱都被释放。本批在逐文件发布前将同一份冻结 TAR 保管到独立对象命名空间，再允许独立归档恢复原清单内尚未材料化的文件。恢复不启动新沙箱，不运行模型或工具。
+
+这不是对 Provider 最新快照或会话可变目录的盲目重放，也不是在 PG 中保存巨型 JSON/Base64。PG 只记录授权、清单关联、摘要、容量、文件版本基线和回收状态；生产字节由 MinIO/S3 流式保存。已有材料化输出仍可以沿用原 V45 路径，不强制依赖快照恢复。
+
+### 21.2 存储与授权
+
+1. Harness 在完整扫描、安全路径、数量、容量和摘要预检之后增加 `onProjectionCaptured` 回调，传入只在当前调用有效的冻结 TAR 路径；回调位于所有逐文件上传之前。路径不是持久引用，原临时文件仍在 finally 清理。
+2. V46 新增 `workspace_sources` 和 `workspace_source_files`。快照与准确 manifest、org/user 绑定，通过组合外键和 FORCE RLS 保护；不级联绑定会被删除的 Run/session。源 UUID、对象键、大小和 SHA-256 固定，不能用部署变化或“最新快照”替代。
+3. 对象键位于 `runtime/workspace-sources/org=.../user=.../<source>.tar`，不加入 files/file_versions、附件、下载清单或用户预览 API。源保管、用户上传/任务产物与记忆文件的读写授权保持分离。
+4. 短事务锁组织配额与原会话/Run/attempt，确认最新清单和有效执行 owner，然后预留 STAGING 记录、冻结每个目标路径的 file ID/version/status。对象 PUT 和完整读回验证在事务外进行；校验后再以有效执行授权将源标记 RETAINED。
+5. SCANNED 表示完整字节清单已冻结并已保管，并不表示任务交付成功。READY 仍要求全部文件版本、任务产物和 Outbox 原子收据通过原门禁。正常完成仍走原同步文件发布路径。
+6. 归档准入在原授权有效时锁定 RETAINED 源。V46 允许 archive item 在缺字节时暂时没有 publication ID；只有存在完整源时才允许该状态，未保管源不能单凭元数据声明自动恢复。归档 deadline 不晚于源 deadline，原业务执行 lease 仍按原设计撤销。
+7. 恢复 worker 以独立 job token、session generation 和取消门禁授权读源；数据库事务外限量复制到私有临时盘，核对整个 TAR 大小/摘要，再完整验证所有条目的路径、类型、唯一性、数量、长度及摘要，随后只发布缺失条目。已 PUBLISHED/STORED 文件继续复用原收据/补登，不生成重复版本或产物。
+8. 缺文件的 publication 创建、archive item 绑定与 intent 在同一个短事务内进行。DAL 条件写同时验证 job token/lease/deadline、准确执行范围、最新 manifest、RETAINED 源、清单大小/摘要和冻结版本基线。用户后续上传/修改同一路径时拒绝覆盖；更换 token、取消或代际撤销后不能继续发布。
+9. 归档 PUT 失败可以撤销自己尚未 STORED 的预留，再用自己的有效 token 替换 ABORTED/DELETED 或已过期 STAGED 记录。不能忽略其他任务的预留，也不能替换已材料化文件；最终结算继续使用 V45 完成门禁、幂等回复和有界次数。
+
+App 只依赖 Domain Port；持久化 SQL 均在 DAL MyBatis Mapper，租户角色处理业务授权，管理角色仅执行系统回收。没有增加数据源、JDBC 业务代码或用户侧沙箱切换选项。
+
+### 21.3 容量、期限与回收
+
+- `workspace-source-enabled` 默认 true，仅当文件目录和新归档准入同时启用时捕获；关闭新捕获不停止已有归档/回收。禁用后的缺字节任务明确拒绝自动归档。
+- 单份 TAR 默认上限 320 MiB，硬上限 512 MiB；组织保管预留默认 2 GiB，包括 STAGING、RETAINED、COLLECTING，不能因上传超时或回收失败释放预算。预算由组织行锁串行准入，独立于用户逻辑文件配额。
+- 源期限为捕获时归档 deadline 预算加 600 秒交接余量，默认 1500 秒；不随业务重试无限延长。归档另有原有独立 lease、次数和 deadline。
+- 每 60 秒扫描到期源。候选扫描与带 token 的回收 claim 均排除 deadline 内的 PENDING/RUNNING 归档引用，防止旧候选在交接后删除源。读取/上传不持有 SQL 锁。
+- 回收只按记录中的 org/key/backend 删除私有对象。失败记录保留并延迟重试，不从组织预算中消失；删除后保留每日复查的 COLLECTED 墓碑，处理超时上传晚于删除完成的孤儿对象。当前不包含历史源元数据自身的归档删除策略。
+- MinIO/S3 新增流式路径上传与有界流式下载，不为完整 TAR 分配 byte[]。PG/测试 fallback 明确限制为 32 MiB，不将大快照塞入 PG；归档条目仍按单文件上限分配，R03 的全链路流式与临时盘总配额尚未全部完成。
+
+```yaml
+saas:
+  file-store:
+    workspace-source-enabled: true
+    workspace-source-max-bytes: 335544320
+    workspace-source-max-org-bytes: 2147483648
+    workspace-source-gc-fixed-delay-seconds: 60
+```
+
+对应环境变量为 `SAAS_WORKSPACE_SOURCE_ENABLED`、`SAAS_WORKSPACE_SOURCE_MAX_BYTES`、`SAAS_WORKSPACE_SOURCE_MAX_ORG_BYTES`、`SAAS_WORKSPACE_SOURCE_GC_FIXED_DELAY_SECONDS`。生产采用 MinIO/S3；初始捕获需要额外完整 PUT/GET 完整性校验，部署时应为网络、临时盘和执行 deadline 预留相应预算。
+
+### 21.4 验证
+
+最终完整功能 reactor 返回 **0**，最后一次收紧对象键校验后已重跑。Java 测试净增 **10 项**，均为真实 MyBatis/H2 集成：完整缺字节恢复、混合 PUBLISHED/缺字节恢复、PUT 失败再次恢复、整个源损坏拒绝、较新用户上传保护、取源时会话撤销、源到期/回收拒绝、伪造 token 拒绝、跨 attempt 源容量预留、旧 GC 候选交接后不能 claim。文件发布/归档/恢复集成最终 **92/92**；Harness 文件系统 **27/27**，补充捕获先于文件传输、引用同一冻结清单和临时源删除的断言；DDD/MyBatis 边界 **11/11**、领域仓储 **2/2**、正文存储 **14/14** 均通过。真实本地 OpenSandbox 和 MinIO 可选探针已显式启用；这些专项无跳过，性能测试和其他环境相关可选集成不计作已验证。
+
+真实 PG/Redis/MinIO/OpenSandbox 门禁根进程返回 **0**：基础任务 **13/13**、已材料化输出归档 **4/4**、计算后提交故障 **2/2**、新增缺字节源恢复 **6/6**、会话代际 **5/5**、总门禁 **12/12**，全部 FAIL=0。新增 `SANDBOX_GATE_WORKSPACE_SOURCE=true` 使用 `workspace-archive-smoke.py --missing-bytes`，对准确测试 Run 的 file_publications INSERT 注入 SQLSTATE 40001，阻止任何文件字节材料化到目录发布对象：
+
+- 在沙箱释放后确认 RETAINED 源、archive item 无 publication、原 attempt ARCHIVING 和业务 lease 撤销，不把 Redis/Provider 最新快照当恢复凭据。
+- 撤销故障后，只从独立源恢复，核对原始唯一 attempt/tool/reply、模型调用次数不增长、准确 READY 清单与持久检查点，以及用户文件下载、完整最终答复和历史 API。
+- 核对 V46 两表的 FORCE RLS、app 角色权限与外组织不可读；原 V45 两表仍通过相同门禁。
+- 仅将已完成测试源的 eligible_at 提前，等待真实后台 GC 从 MinIO 删除并记为 COLLECTED，再下载已发布用户文件确认内容不变。没有删除业务文件、修改活跃任务或放宽生产 deadline。
+
+```bash
+SAAS_CHECKPOINT_OPENSANDBOX_TEST=true SAAS_RUNTIME_BODY_MINIO_TEST=true mvn -o \
+  -pl agentscope-saas/agentscope-saas-app -am -Djacoco.skip=true \
+  '-Dtest=*,!AgentPerformanceTest' -Dsurefire.failIfNoSpecifiedTests=false \
+  spotless:apply test -q
+SAAS_MODEL_TYPE=scripted APP_PORT=18082 \
+  START_DOCKER_DEPS=false START_DOCKER_DAEMON=false \
+  SANDBOX_GATE_SESSION_GENERATION=true SANDBOX_GATE_WORKSPACE_ARCHIVE=true \
+  SANDBOX_GATE_RESULT_COMMIT=true SANDBOX_GATE_WORKSPACE_SOURCE=true \
+  SAAS_RUNTIME_ARCHIVE_INLINE_MAX_BYTES=256 \
+  SAAS_RUNTIME_ARCHIVE_CHECKPOINT_INLINE_MAX_BYTES=65536 \
+  SAAS_RUNTIME_ARCHIVE_CHECKPOINT_MAX_JSON_BYTES=4096 \
+  SANDBOX_SMOKE_REQUIRE_OFFLOAD=true \
+  bash agentscope-saas/agentscope-saas-app/scripts/start-opensandbox-local.sh --smoke
+```
+
+最终日志：`/private/tmp/chugou-source-functional-final.log`、`/private/tmp/chugou-source-final-scoped.log`、`/private/tmp/chugou-source-opensandbox-gate.log`。过程中发现并修复恢复 PUT 失败的原路径预留阻塞，以及 Harness 带斜杠路径与 DAL 标准化清单的指纹兼容；没有放宽普通调用的路径互斥或完整性门禁。初次默认沙盒 JVM attach 受限，测试未运行，使用已授权的本地 JVM attach 后重跑；编译/格式修正后的最终回归和门禁均成功，不将早期失败计作验收。
+
+脚本 bash 语法、Python 编译及差异空白检查通过。验证后故障触发器/函数和活跃归档任务均为 **0**，没有运行中的临时沙箱，应用已退出。仅关闭本轮原先停止的四个服务容器，保留镜像、容器、数据卷和 Docker Desktop，不操作其他服务。本批未修改前端；HTTP/SSE 故障脚本不是新的浏览器全量验收，也不是整库中断、真实进程崩溃、多副本或大容量压测证明。
+
+### 21.5 明确剩余边界
+
+1. 只有已完成不可变源交接的缺字节任务具备本批恢复能力。对象存储整体中断、源超限/配额拒绝、保管未提交或无支持的大文件后端时，会继续尝试原正常逐文件路径；正常收据全部提交仍可成功，否则明确终止，不假报 ARCHIVING 恢复。**本批没有实现这种情况下的 Provider retention；唯一字节源仍在 Provider 而所有持久化不可用时，释放顺序的问题尚未全部闭合。**
+2. 完整答复仍在计算返回之后才交接到 durable body/job。JVM 强杀、整库故障、捕获/交接中断与过期调度的调和不因有 TAR 就自动解决。不能把本批记作完整 R02 或跨副本崩溃恢复。
+3. 复用 Provider 快照/Volume 的精确替换、R06/R09 输入工作集与确定性业务验收、R03 全链路流式/临时盘治理、历史清单保留、人工安全重试/副作用对账、记忆后台提炼/岗位治理和生产灾备门禁仍需继续。新缺字节恢复发布的是权威文件目录与准确任务检查点，不补写可变 BaseStore/Provider 镜像；后续任务必须从权威版本构建工作集，不能以可变镜像是否存在代替对准确产物的恢复。
+
+JWT、企业 IAM、内部模型部署、PromptGuard 继续暂缓。本批仅验证本地 OpenSandbox，不验证 CubeSandbox/E2B，不调用付费模型，不自动提交或推送。
+
+## 22. 第十九批：显式附件权威恢复与局部工作集发布保护
+
+### 22.1 闭合范围
+
+已有附件记录固定了 version ID，但运行时初始化仍读取可变 BaseStore/Provider 快照；确认暂停期间重新上传同名文件，可能使实际执行读到新版本。独立归档补齐目录文件后，下一任务也没有显式版本初始化通道。另外，附件路径原先临时取自 files 当前路径，文件改名后历史引用会变；恢复旧版输入再释放沙箱，旧工作副本还可能重新发布，覆盖用户的新上传。
+
+本批解决显式附件的上述链路，不将用户持久文件域当作任务工作集。复用现有附件与版本记录，没有把文件正文或清单塞进消息 JSON。这里是 R06 的显式输入子范围，不是全部任务工作集功能已经完成。
+
+### 22.2 绑定与取回
+
+1. V47 给 file_attachments 增加独立 logical_path 字段与版本引用索引。新绑定同时固定 path/file ID/version ID；路径改名不改变历史消息引用。旧记录在迁移时按组织、员工、file ID 回填当时路径，无法反推迁移前已改名的原路径，不宣称重建历史。
+2. 对话附件允许 inputs/ 与 outputs/ 用户文件，仍拒绝记忆、技能、runtime 及逃逸路径。开始 Run 时复用既有事务验证当前版本、文件归属并绑定到触发消息；确认恢复使用原 Run 的绑定，不接受确认请求中的新版本重新绑定。历史版本在运行中仍可读，但创建新附件时保持原有“必须为当前版本”的门禁。
+3. WorkspaceInputRepository 查询仅选择本 Run 的触发消息附件及准确 task 绑定，以 limit + 1 限量读取；同时验证 org/user/agent/session/generation，并核对文件和版本所有者，不扫描员工所有文件来推断输入。子任务可以继承同 Run 触发输入；依赖产物自动清单尚未纳入本批。
+4. WorkspaceInputService 短事务核对当前 Run/attempt/task、lease owner、会话代际和取消状态，并冻结本次读取的绑定事实。大小、总量、文件数、冲突路径、后端和摘要先校验；对象 GET 在事务外，以已授权的限额读取。读完再锁定并按新时间复查授权及全部绑定，损坏、撤销或读取期间变更都拒绝启动。
+5. 初始化形成 Provider-neutral WorkspaceInputPlan，使用版本和摘要生成稳定指纹。文件是任务工作副本，不能改变持久化原版本；目前单文件读取硬上限 32 MiB，仍受任务总传输和数量预算约束。对象字节不写入 Runtime input JSON，授权和历史版本保留继续由 PG 附件引用承担。
+6. 交互与 Durable Worker 均接入取回；显式输入使用 Run 隔离槽，原有更严格的 attempt 隔离可以保留。同任务重试的准确 checkpoint 与原绑定输入合并，输入路径以权威绑定为准，不回退到当前可变缓存；checkpoint 输出和进度仍保留。
+
+DDD/MyBatis 边界不变：查询和附件列读写只在 DAL Mapper，Domain Port 不依赖框架；App 编排短事务和对象 IO。继续使用原两种数据库角色，无第三数据源。
+
+### 22.3 系统资源与共享沙箱
+
+- 显式输入调用只初始化固定系统资源 AGENTS.md、MEMORY.md、tools.json，以及 skills/、subagents/、memory/ 前缀，再加载明确绑定的文件。系统文件数/字节与输入共享预算。
+- BaseStore 增加 key-only 前缀分页能力。Redis 使用 ZRANGEBYLEX，不 HGET 未选中文件正文；InMemoryStore 提供同等契约。不支持的适配器明确拒绝，不能静默回退全用户正文搜索。已知固定文件仍按直接 key 取回；系统资源本身的不可变版本锁定不属于本批。
+- 父沙箱已加载的输入指纹和环境 ID 记录在调用上下文。子 Agent 借用时校验二者与请求一致，匹配时仍共享父沙箱，不新建。不同附加输入需要显式工作集准入，当前拒绝隐式借用错误文件，不声称已支持动态扩展。
+- 显式输入要求隔离运行槽。当前未提供持久 Volume 的 Run 子目录适配，所以在 start 前明确拒绝这类输入与非隔离持久工作区组合，不删除卷数据、不冒充可安全覆盖。非 Volume Provider 保持接口中立；真实验证只做 OpenSandbox。
+
+### 22.4 发布保护
+
+1. 显式输入调用的 inputs/ 是工作副本，释放时不进入文件发布或归档清单，不回写用户已经更新的版本。输入副本中的临时修改不会被当作用户新上传。
+2. 显式引用的 outputs/ 文件未改变时不重新发布；原地改变时发布为新的 outputs/revisions/ 路径，冻结新目标路径并走原版本/产物/Outbox 收据，不覆盖原引用或用户较新版本。用户应以实际产物收据路径读取结果。
+3. 局部工作集不是员工全局文件的完整扫描结果。因此不按它做全局删除调和，也不覆盖用户全局投影清单；只发布本次扫描的系统变化和新产物。
+4. 新发布清单中不含输入副本，所以 checkpoint 恢复必须与显式输入绑定合并；否则 fresh sandbox 上会缺输入。子 Agent 仍使用父沙箱现有工作副本，不用重复恢复覆盖父任务进度。
+5. 显式工作集中的文件工具写入不再立即双写可变 BaseStore，避免绕过上述发布保护。工作副本先留在当前沙箱，随后按完整冻结清单发布系统变化与实际产物；旧调用与对话外上传保持原有行为。新增用例同时核对输入、已有输出与新输出不会在工具写入时污染持久缓存。
+
+真实 5 MiB 输入验证暴露了 OpenSandbox 原适配器的传输缺陷：TAR 先 Base64 编码，按 4 KB 每块调用一次 command，导致约 1700 次请求；持久化又经受限 stdout 输出 Base64，存在截断风险。本批按[官方 execd 文件 API](https://github.com/opensandbox-group/OpenSandbox/blob/main/specs/execd-api.yaml)改用 metadata-first multipart 二进制上传和有界流式下载。平台与 execd 认证头保持原配置；不支持接口时明确失败，不回退慢速命令通道。
+
+Provider 传输使用独立 UUID 远端 TAR 与私有本地临时文件，避免共享固定临时文件名。单份传输硬上限 512 MiB、单次文件 HTTP call deadline 300 秒；创建/解包 TAR 仍用少量命令，检查执行结果。下载核对 Content-Length（存在时）与实际字节限额，不经过命令 stdout；返回快照流关闭时删除本地临时文件，远端临时文件在 finally 清理。上层仍有 byte[]/内存 TAR，不能把这一修复计作 R03 已全链路流式或已有全局临时盘配额。
+
+实测 execd 镜像要求 metadata part 是有文件名的 JSON 文件：不带 filename 的普通 part 返回 400 INVALID_FILE_METADATA。适配器固定发送 metadata.json，并增加 multipart 次序、文件名及两类认证头的协议断言；独立诊断沙箱已删除。连续任务还暴露 dev scripted 模型忽略最新用户轮次、复用历史工具结果的缺陷；已按最新 USER 边界查找工具结果，两个回归用例覆盖新任务发起工具调用与本轮工具结果结束响应。不通过更换会话来掩盖该问题。
+
+### 22.5 验证
+
+完整 SaaS reactor 功能回归返回 0，保留性能测试排除与可选外部集成边界。最终补入文件工具缓存保护后，重新构建并执行相关测试，返回 0：文件系统 31/31、生命周期 18/18、文件发布集成 101/101、Redis key-only 前缀 1/1、OpenSandbox HTTP 协议 7/7、scripted 连续轮次 2/2、Durable Worker 13/13、App 数据访问架构 11/11；交互附件、Worker 执行与运行时发布兼容用例同次通过。启用本地 OpenSandbox/MinIO 探针，没有用跳过探针替代成功。
+
+真实 PG/Redis/MinIO/OpenSandbox 门禁返回 0：基础用户任务 13/13、不可变源故障恢复及 GC 6/6、会话代际撤销 5/5、显式输入 4/4，整体门禁 11/11。显式输入脚本验证：
+
+1. multipart 上传真实 5 MiB 文件，PG 附件固定原版本及原路径。
+2. 首次调用暂停后通过工作区 API 写入新内容；确认请求故意携带较新版本，实际任务仍读取原绑定的 5 MiB 版本。
+3. 释放后的输出可下载；员工新上传内容未被旧工作副本覆盖。
+4. 同一逻辑会话创建第二个 Run，显式引用第一轮生成输出，成功生成并下载新的产物；两个 Run 与原输出都保留。不把无工具执行的 RUN_FINISHED 当作通过。
+
+```bash
+SAAS_CHECKPOINT_OPENSANDBOX_TEST=true SAAS_RUNTIME_BODY_MINIO_TEST=true mvn -o \
+  -pl agentscope-saas/agentscope-saas-app -am -Djacoco.skip=true \
+  '-Dtest=*,!AgentPerformanceTest' -Dsurefire.failIfNoSpecifiedTests=false \
+  spotless:apply test -q
+SAAS_MODEL_TYPE=scripted APP_PORT=18082 \
+  START_DOCKER_DEPS=false START_DOCKER_DAEMON=false \
+  SANDBOX_GATE_WORKSPACE_SOURCE=true SANDBOX_GATE_WORKSPACE_INPUT=true \
+  SANDBOX_GATE_SESSION_GENERATION=true \
+  SAAS_RUNTIME_ARCHIVE_INLINE_MAX_BYTES=256 \
+  SAAS_RUNTIME_ARCHIVE_CHECKPOINT_INLINE_MAX_BYTES=65536 \
+  SAAS_RUNTIME_ARCHIVE_CHECKPOINT_MAX_JSON_BYTES=4096 \
+  SANDBOX_SMOKE_REQUIRE_OFFLOAD=true \
+  bash agentscope-saas/agentscope-saas-app/scripts/start-opensandbox-local.sh --smoke
+```
+
+功能回归日志：`/private/tmp/chugou-input-batch19-functional-final.log`；最终相关回归：`/private/tmp/chugou-input-batch19-scoped-final.log`；完整真实门禁：`/private/tmp/chugou-input-final-release-gate.log`。早期 Base64 通道超时、metadata 文件 part 400、连续任务复用历史工具结果的失败均已记录并修复，不计作通过。该门禁使用 scripted 模型，不证明企业模型的推理质量或记忆提炼质量；本批没有前端改动，HTTP/SSE 与静态入口检查不是新的浏览器全量交互验收。
+
+最终工具回写保护编译进应用后，再运行 `SANDBOX_GATE_RUN_SMOKE=false SANDBOX_GATE_WORKSPACE_INPUT=true`：5 MiB 显式输入仍为 4/4，补验门禁 9/9、启动脚本根退出码 0，日志 `/private/tmp/chugou-input-batch19-input-final.log`。该补验明确跳过基础任务，不将跳过项当作新增任务成功。`--smoke` 结束会主动停止 Maven 启动的应用进程，因此被终止的内部 Maven 子进程可能记录 BUILD FAILURE；验收取实际门禁结果与启动脚本根退出码，两个 Maven 测试命令自身均返回 0。
+
+验证后故障触发器/函数与活跃归档任务均为 0，应用 18082 端口无监听，没有运行中的临时沙箱。仅将本轮启动、原先已停止的 PG/Redis/MinIO/OpenSandbox 四个容器恢复为停止状态，保留数据卷、镜像、容器及 Docker Desktop，不操作其他服务。脚本语法、Python 编译与差异空白检查通过。
+
+### 22.6 剩余范围
+
+无显式附件的旧调用仍保留原初始化兼容行为，包括全用户可变投影读取；不将本批计作所有任务都已停止全量扫描。完整 RunWorkspaceManifest、依赖产物自动冻结、按需授权取回与清单扩展、历史产物选作输入的前端入口、只读/路径级执行策略、子任务输出命名空间和失联资源引用、Volume Run 子目录、系统资源版本锁定、输入基线的限量元数据查询，以及 R03 全链路流式/临时盘配额还需继续。
+
+R02 对象存储整体中断时的 Provider retention、计算结果 durable 封存与进程强杀调和仍未闭合；本批不以可变缓存存在替代独立源保管，不改变原有完成门禁。其余业务产物验收、人工安全重试/副作用对账、记忆治理及生产灾备按文档 37 继续。JWT、企业 IAM、内部模型部署和 PromptGuard 继续暂缓；不验证 CubeSandbox/E2B，不使用付费模型。本批未提交或推送。
+
+## 23. 第二十批：对象存储故障下的 Provider 有界保留
+
+### 23.1 实施范围
+
+补齐“源保管 PUT 失败、尚未取得全部发布收据，生命周期仍销毁唯一文件副本”的正常计算完成路径。PG 与 Provider 可用时，冻结的完整 TAR 可以改由原沙箱保管；计算结果提交后，原 attempt 进入 ARCHIVING，归档消费者只取回封存字节，不恢复用户执行、更不重跑模型或工具。
+
+本批不是完整 R02 崩溃恢复，也不把“资源仍运行”当作已经发布成功。用户最终完成仍取决于准确文件清单、版本/摘要、产物及 Outbox 收据和最终答复全部通过原门禁。
+
+### 23.2 保留与授权
+
+1. 增加 Provider-neutral WorkspaceRetentionBackend：seal/retrieve/terminate。真实实现为 OpenSandbox；不耦合业务层到其 SDK，不改变部署时选 Provider 的机制。缺少适配器时不声称有这项恢复能力，正常配置切换保持兼容。
+2. V48 增加 workspace_provider_retentions，绑定既有 source、manifest、org/user、实际 Provider/resource、tracking/lease 及绝对 deadline。FORCE RLS、应用角色权限与索引同步建立；新增查询和 CAS 仅在 DAL MyBatis Mapper，继续使用原 tenant/admin 数据库角色，不新增数据源。
+3. 原 MinIO 源 PUT 失败后，其 STAGING 记录、大小/摘要和文件基线仍保留。短事务重新核对 Run/session/generation、准确 task/attempt/owner、源内容、租户资源数预算，锁定资源相关记录并持久登记保留意图。不把尚未成功的 MinIO 对象标为已保管；恢复能力由独立保留记录证明。
+4. 生命周期在外层 Harness、资源登记在内层 middleware，复制上下文不会反向导出新增 lease/tracking 标记。因此先补齐已运行沙箱的 Provider 身份登记；释放阶段必要时按准确 attempt、org/user、agent、执行会话和实际资源从 PG 取回绑定，不依赖缺失的内存标记。
+5. OpenSandbox 将已验证的投影 TAR 二进制上传至独立 /tmp/agentscope-retained-<source UUID>.tar，并以[官方绝对到期接口](https://github.com/opensandbox-group/OpenSandbox/blob/main/specs/sandbox-lifecycle.yml)设置有界 TTL。要求 Provider 确认不早于指定 deadline；使用秒精度，避免 Java 纳秒与服务端精度差异。再通过原资源的二进制下载核对完整大小及 SHA-256，最后短事务登记 RETAINED 与 SCANNED。
+6. 正常释放只认可实际环境身份匹配、未到期且已完成持久登记的 Hold；跳过 stop/snapshot/shutdown，关闭本地计算互斥槽位并清除原复用槽。后续任务不能把保留沙箱当作可继续执行的缓存；Hold 在退出时清除，错误环境或过期 Hold 不得抑制正常清理。
+7. sandboxes/sandbox_leases 以独立 retention_held 阻止旧候选的 CAS 删除；同一资源的关联记录共同受保护。普通对账候选和最终 claim 还按实际资源排除未清理的保留记录，不能只靠扫描时的状态判断。已经进入删除流程的资源不再接受保留交接。
+
+源文件大小与租户字节预算沿用 workspace-source；另外默认每组织最多保留 4 个资源、900 秒，范围分别为 1-100 和 60-3600 秒。保留配额独立于计算并发槽位；超限或不支持明确拒绝归档接管，不无限占用业务 attempt。
+
+### 23.3 结果封存与恢复
+
+- 对于已经确认的 Provider 封存，归档 job 将不超过 1 MiB UTF-8 的 PendingResult 保存为独立 result_json，body_id 为 NULL，不再依赖故障中的 MinIO。文件字节和消息历史没有塞入这个字段；它只保存计算后提交所需的有限答复、输出与交付标志。
+- 封存结果与常规运行正文共享 org/user 容量配额，组织行锁统一串行准入；常规正文提交也计入已有 PG 封存用量，不能各走一套配额。超过单份或租户预算不进入 ARCHIVING。终态 job 经过 deadline 加原 body grace 后，分批清除临时 result_json 并释放容量；已发布用户文件、问答和结果审计元数据保留。
+- 重用原独立归档消费者、任务状态转换、恢复 token/lease、版本基线和原子收据。它只下载原 Provider/resource 上按 source UUID 定位的封存文件，不调用 resume/create/start，不从可变工作区或最新快照猜测内容。
+- 先验证整个 TAR、全部路径/数量/大小/摘要，再补登缺失文件。SQL 发布门禁同时认可正确的 Provider 保留记录，仍核对源/清单/基线、准确业务归属、归档 token、deadline 和会话代际。覆盖、取消、会话重置、内容损坏或过期均不能绕过门禁。
+- NULL body ID 的完成及撤销授权使用 IS NOT DISTINCT FROM，避免 PostgreSQL 对独立 NULL 参数无法推断类型；H2 与真实 PG 均验证。任务最终收尾继续生成准确 checkpoint、文件/产物/Outbox 与答复，不授予新的模型或工具执行权限。
+- 归档失败对网页只返回固定提示，不向用户拼接内部对象存储地址等根异常内容；详细原因留在服务端日志。辅助模型脚本返回无文本不是记忆提炼质量验证，本批不修改记忆语义。
+
+### 23.4 清理与配置
+
+独立清理作业对终态归档、取消/失效会话、到期源进行带 token 的有界接管。删除 Provider 资源的 IO 不携带 SQL 锁，成功或资源已不存在才登记 CLEANED 并解除关联保护；中断或失败可在清理租约到期后重试。Agent 删除导致父 tracking/lease 行已级联消失时，仍能按保留记录清理原资源，不无限卡住元数据。Provider 自身的已确认 TTL 是最后一道上限，不依赖 JVM 内存中的延时任务。
+
+```yaml
+saas:
+  file-store:
+    workspace-provider-retention-enabled: true
+    workspace-provider-retention-seconds: 900
+    workspace-provider-retention-max-org-resources: 4
+    workspace-provider-retention-gc-fixed-delay-seconds: 10
+```
+
+相应环境变量为 SAAS_WORKSPACE_PROVIDER_RETENTION_ENABLED、SAAS_WORKSPACE_PROVIDER_RETENTION_SECONDS、SAAS_WORKSPACE_PROVIDER_RETENTION_MAX_ORG_RESOURCES、SAAS_WORKSPACE_PROVIDER_RETENTION_GC_FIXED_DELAY_SECONDS。切换部署 Provider 前应先排空保留资源；消费者不会用新 Provider 的客户端处理旧 Provider 的资源。
+
+### 23.5 验证
+
+最终完整 SaaS reactor 功能回归返回 0，命令保留 AgentPerformanceTest 排除及可选外部集成边界，启用本地 OpenSandbox/MinIO 探针。相关测试为：文件发布 109/109、运行正文 14/14、生命周期 21/21、HTTP 协议 8/8、资源登记 5/5、释放对账 5/5、交互附件/错误提示 3/3、数据访问架构 11/11。覆盖封存恢复、复制上下文、损坏拒绝、会话撤销、过期失败、1 MiB 与租户配额、终态封存结果回收及正常释放兼容。
+
+默认 `mvn -o -pl agentscope-saas/agentscope-saas-app -am -Djacoco.skip=true -DskipTests spotless:apply package -q` 返回 0，包括 Javadoc。初次发现已有 Mem0AddRequest Javadoc 链接未导入，只将链接改为完整类型名，不改变记忆行为；没有以持续跳过 Javadoc 掩盖打包失败。
+
+真实本地 MinIO 整体中断门禁 5/5、补验门禁 9/9，启动脚本根退出码 0：
+
+1. 注册独立夹具员工与 Agent，HITL 后真正执行 shell 生成唯一标记产物；工具运行期间停止测试 MinIO，验证冻结字节封存在原 OpenSandbox、结果封存在 PG。
+2. 核对原业务 attempt ARCHIVING、计算 lease 已撤销、sandbox lease RELEASED 但 retention_held；等待多个普通对账周期，实际容器仍存在，且没有向网页谎报 RUN_FINISHED。
+3. 核对新表 FORCE RLS、外组织应用角色不可见。
+4. 恢复原 MinIO 后，独立消费者自动补登准确文件、收据与完整最终答复。核对工具执行仅一次、model invocation 数量不增长、attempt 仍只有一个、网页 API 可下载原始标记产物并读取最终答复。
+5. 准确归档完成后，保留记录 CLEANED，原沙箱实际已删除。未重建沙箱来冒充恢复原文件。
+
+```bash
+SAAS_CHECKPOINT_OPENSANDBOX_TEST=true SAAS_RUNTIME_BODY_MINIO_TEST=true mvn -o \
+  -pl agentscope-saas/agentscope-saas-app -am -Djacoco.skip=true \
+  '-Dtest=*,!AgentPerformanceTest' -Dsurefire.failIfNoSpecifiedTests=false \
+  spotless:apply test -q
+SAAS_MODEL_TYPE=scripted APP_PORT=18082 \
+  START_DOCKER_DEPS=false START_DOCKER_DAEMON=false \
+  SANDBOX_GATE_RUN_SMOKE=false SANDBOX_GATE_WORKSPACE_RETENTION=true \
+  SAAS_RUNTIME_ARCHIVE_INLINE_MAX_BYTES=65536 \
+  bash agentscope-saas/agentscope-saas-app/scripts/start-opensandbox-local.sh --smoke
+```
+
+最终完整回归日志 `/private/tmp/chugou-retention-functional-final.log`；真实中断验收 `/private/tmp/chugou-retention-opensandbox-accepted.log`；最终打包 `/private/tmp/chugou-retention-package-complete.log`。实测修正了复制上下文未导出租约、已运行资源未登记实际 ID，以及 H2 不能暴露的 PostgreSQL NULL 参数推断缺陷。早期失败不计作成功；最初权限审查超时的完整回归没有启动，授权重试后的完整测试才是验收依据。`--smoke` 的内部 Maven 应用进程结束会被主动终止，可能记录 143/BUILD FAILURE；实际验收取门禁与启动脚本根退出码，不混淆失败测试与正常停止。
+
+最终联合门禁同样返回 0、整体 **12/12**：正常用户任务 13/13、独立归档源恢复及 GC 6/6、会话代际撤销 5/5、整站 MinIO 中断恢复 5/5、真实 5 MiB 显式输入与同会话产物复用 4/4。保留路径没有破坏正常任务释放、原字节源恢复或输入版本保护。命令在上述启动行增加 `SANDBOX_GATE_WORKSPACE_SOURCE=true SANDBOX_GATE_SESSION_GENERATION=true SANDBOX_GATE_WORKSPACE_INPUT=true`，移除 `SANDBOX_GATE_RUN_SMOKE=false`；日志 `/private/tmp/chugou-retention-regression-gate.log`。这些检查使用真实本地服务和 scripted 模型，不是企业模型质量、全部浏览器交互、全库中断或 JVM 崩溃演练。
+
+验证后故障触发器/函数、活跃归档 job、活跃 Provider 保留、tracking/lease 的保留保护位均为 **0**，没有运行中的临时沙箱，应用 18082 无监听。将本轮启动、原先停止的四个服务容器恢复为停止状态；不删除镜像、数据卷、测试历史或无关文件，保留 Docker Desktop。脚本 bash 语法、Python 编译与差异空白检查通过。
+
+### 23.6 剩余边界
+
+1. 当前真实实现仅覆盖 OpenSandbox 的原资源封存能力。Docker、E2B、CubeSandbox 尚未接入该能力；缺适配器、保留预算不足、源元数据未提交或验证失败时，不假报自动归档接管。没有验证 CubeSandbox/E2B，也没有为它们宣称相同的保留语义。
+2. PG 整体不可用、Provider 故障或不支持绝对 TTL、执行/捕获时 JVM 强杀、意图提交 ACK 不确定与计算返回到结果封存之间的强杀窗口，尚不能据本批宣称闭合。已验证 RETAINED 和计算结果交接的正常路径具备恢复；没有完整持久证据时仍明确失败。故障验证保持运行消息在正常 PG inline 窗口内；需要 MinIO 转存的大运行正文在关键对话提交阶段失败，不属于本批已经验证的计算后交接路径，不据此声称对话正文也具备同等降级能力。
+3. 完整父子后台资源引用/进程调和、保留资源的专项管理页面和指标、重启/多副本/大容量故障演练、Run 工作集清单和依赖冻结、Volume Run 子目录、全链路流式/临时盘预算、记忆治理和生产灾备按文档 37 继续。资源有关联行的保护不等于已经实现全部子任务引用计数。
+4. JWT、企业 IAM、内部模型部署和 PromptGuard 继续暂缓；不自动提交或推送。本批不改前端交互，API/SSE 故障测试不是浏览器全量验收。
+
+## 24. 第二十一批：关键运行正文的有界 PG 降级
+
+### 24.1 目标与边界
+
+第二十批故障验收将运行正文保留在普通 PG inline 窗口，尚未覆盖“工具已完成、关键消息需转存 MinIO、正文提交失败阻断归档交接”的路径。本批补齐这段提交链路，不改变文件源封存、结果门禁、消息 seq/cursor 或部署时 Provider 选择。
+
+仅在已选择 MinIO 且正文 PUT/读回校验失败时，允许将原始可信 JSON 保存为有界 PG 降级正文。正常对象存储路径保持原样，PG 文件存储本身故障不再转入第二套 PG 存储。没有对象存储配置、PG 不可用、超限或授权失效时，仍明确拒绝，不把未持久化消息计入成功。
+
+### 24.2 存储与准入
+
+1. V49 增加独立 runtime_body_fallbacks 表，一份原始正文对应一个已有 body_id。org/user/agent/session 的复合外键约束保证归属一致；FORCE RLS、租户策略与应用角色权限同步建立。SQL 只在 DAL MyBatis Mapper，领域接口不引入 Spring、JDBC 或存储 SDK，保持原 tenant/admin 角色及数据源边界。
+2. 消息依旧按独立 seq 存储并引用 runtime_message_bodies；不是把全部会话、文件和记忆重新合并到一个字段。普通消息的预览与索引不包含大正文，includeContent=false 不读取对象或降级 payload。
+3. 默认单份最多 1 MiB UTF-8、用户累计 16 MiB、组织累计 128 MiB。数据库同时校验真实字节数与单份硬上限 1 MiB，不能通过多字节文本绕过。组织行锁串行准入，随后锁定所属 session；正文 READY 和降级 payload 在同一短事务提交，失败不分配消息序号。并发、未发布正文和此前归档 result_json 仍计入原共享正文容量预算；降级正文另外受较小的 PG 专项预算限制。
+4. 原 object_key、backend、大小、SHA-256、body_id 不变。故障中的 PUT 可能已经完成，保留同一个不可变对象标识，不制造无法发现的第二对象。失败或回滚遗留的预留仍可由原 GC 发现。
+5. 读取先校验准确 org/user/agent/session、READY、预期大小和对象前缀，再从独立 PG payload 或原对象取得字节，统一核对完整大小和 SHA-256。外用户不得借 UUID 读取正文；降级正文无需访问故障中的 MinIO。
+
+### 24.3 恢复、并发与回收
+
+独立 runtimeBodyRecoveryScheduler 默认每 10 秒扫描有界候选。按 next_attempt_at/body_id 索引扫描，仅在正文 READY 时取得 120 秒持久 token/lease；短事务先锁正文并延后 GC，再 CAS 降级记录。MinIO PUT 与完整读回校验均在 SQL 事务外，只有校验成功且 token/lease 仍有效才删除 PG payload。消息 ID、seq、引用、历史和对象 key 全部不变，不重新执行模型、工具或创建沙箱。关闭新的降级写入后，已有暂存仍继续排空。
+
+单轮最多沿用 body-gc-batch-size，轮次启动 IO 预算为 30 秒；一份失败登记 30 秒后重试并结束本轮，避免一次故障放大为整批同步 IO。单次存储 IO 仍受既有客户端超时控制，这个轮次预算不是强制取消正在进行的请求。独立线程避免阻塞默认执行租约、deadline 与资源对账调度。
+
+引用有效的降级历史没有自动 TTL 删除。容量满时拒绝新增降级正文，而不是丢弃有效用户历史。消息/检查点/活跃归档 job 均无引用且经过原 grace 后，正文 GC 才能清理；候选扫描和最终 claim 同时排除恢复中的有效 lease。物理对象删除成功后，在同一短事务将正文设为 DELETED 并删除降级 payload，释放两类容量。保留原周期复核 tombstone，覆盖 PUT 超时后迟到完成的对象；已过期或旧 token 的转存收据不能删除新消费者持有的暂存。
+
+### 24.4 配置
+
+```yaml
+saas:
+  runtime-archive:
+    body-fallback-enabled: true
+    body-fallback-max-bytes: 1048576
+    body-fallback-max-user-bytes: 16777216
+    body-fallback-max-org-bytes: 134217728
+    body-fallback-recovery-delay-seconds: 10
+```
+
+环境变量对应 SAAS_RUNTIME_BODY_FALLBACK_ENABLED、SAAS_RUNTIME_BODY_FALLBACK_MAX_BYTES、SAAS_RUNTIME_BODY_FALLBACK_MAX_USER_BYTES、SAAS_RUNTIME_BODY_FALLBACK_MAX_ORG_BYTES、SAAS_RUNTIME_BODY_FALLBACK_RECOVERY_DELAY_SECONDS。单条不得超过数据库硬上限，用户预算不得小于单条预算，组织预算不得小于用户预算。已有降级未排空时，不应把部署文件存储从 MinIO 换成不兼容后端；不会用其他后端冒充已验证的 MinIO 对象。
+
+### 24.5 验证
+
+完整 SaaS reactor 功能回归返回 0：运行正文 23/23、文件发布 109/109、数据访问架构 11/11；启用本地 OpenSandbox/MinIO 探针，保留 AgentPerformanceTest 排除和可选外部集成边界。正文新增 9 项测试覆盖 UTF-8 字节计数、稳定序号与重复准入、故障期授权读取与预览、配置关闭/单份超限、个人及跨员工组织配额、并发配额、校验失败不删除暂存、关闭新增降级后的排空、有效引用保留、GC/恢复租约竞争、旧或过期收据拒绝以及消息事务回滚后的孤儿清理。
+
+真实本地 OpenSandbox/PG/MinIO 故障门禁 **7/7**、外围门禁 **9/9**，启动脚本根退出码 0。将普通正文阈值降到 256 字节，HITL 确认工具开始运行后停止整个 MinIO，工具产生 8 KiB stdout 和独立标记文件：
+
+1. 不出现 RUN_FINISHED 或错误终止；原 attempt 进入 ARCHIVING，原资源的输出 TAR 和有限 PendingResult 完成持久封存，计算槽位释放。
+2. 确认确实存在 runtime_body_fallbacks，不能靠普通 inline 窗口冒充降级；故障期按 afterSeq 读取新增完整运行正文返回 200，includeContent=false 仅返回有界预览。此前已经仅在 MinIO 的历史正文不包含在故障期完整读取保证中。
+3. 新表真实 PG FORCE RLS 生效；外组织 app 角色查询不可见。原沙箱经过多个普通对账周期仍保留。
+4. 恢复 MinIO 后，原归档消费者补齐文件、收据和答复，Run 自动 SUCCEEDED；工具只执行一次、attempt 只有一个、model invocation 数不增长。网页 API 下载原标记文件成功。
+5. 正文恢复消费者排空全部该会话暂存，再通过完整历史 API 读取正文；原 body_id 均存在且 READY/backend=minio，没有替换消息身份。最终 retention CLEANED、原容器已删除。
+
+```bash
+SAAS_CHECKPOINT_OPENSANDBOX_TEST=true SAAS_RUNTIME_BODY_MINIO_TEST=true mvn -o \
+  -pl agentscope-saas/agentscope-saas-app -am -Djacoco.skip=true \
+  '-Dtest=*,!AgentPerformanceTest' -Dsurefire.failIfNoSpecifiedTests=false \
+  spotless:apply test -q
+SAAS_MODEL_TYPE=scripted APP_PORT=18082 \
+  START_DOCKER_DEPS=false START_DOCKER_DAEMON=false \
+  SANDBOX_GATE_RUN_SMOKE=false SANDBOX_GATE_WORKSPACE_RETENTION=true \
+  SANDBOX_GATE_RUNTIME_BODY_FALLBACK=true SAAS_RUNTIME_ARCHIVE_INLINE_MAX_BYTES=256 \
+  bash agentscope-saas/agentscope-saas-app/scripts/start-opensandbox-local.sh --smoke
+```
+
+日志为 `/private/tmp/chugou-body-fallback-functional.log` 和 `/private/tmp/chugou-body-fallback-opensandbox-accepted.log`。最初受限环境中 Mockito attach 失败，授权重跑后的 scoped 与完整回归才计为成功；第一次门禁在启动前被 DAL 格式检查拒绝，格式化后重跑通过，不把失败日志纳入成功证据。只使用 scripted 模型，不验证 CubeSandbox/E2B、付费模型或全部浏览器功能；故障门禁中的辅助模型无文本不属于记忆语义质量验收。
+
+默认 `mvn -o -pl agentscope-saas/agentscope-saas-app -am -Djacoco.skip=true -DskipTests spotless:apply package -q` 返回 0，包含 Javadoc；日志 `/private/tmp/chugou-body-fallback-package.log`。
+
+最终联合门禁根退出码 0、整体 **12/12**：正常任务 13/13、独立归档源恢复 6/6、会话代际撤销 5/5、整站 MinIO 中断及正文降级 7/7、真实 5 MiB 显式附件与产物复用 4/4。命令在本节启动行增加 `SANDBOX_GATE_WORKSPACE_SOURCE=true SANDBOX_GATE_SESSION_GENERATION=true SANDBOX_GATE_WORKSPACE_INPUT=true`，移除 `SANDBOX_GATE_RUN_SMOKE=false`，保持正文阈值 256；日志 `/private/tmp/chugou-body-fallback-regression-gate.log`。`--smoke` 内部 Maven 应用被主动终止时出现 143/BUILD FAILURE 是正常停止记录，验收依据为各门禁与启动脚本的根退出码。
+
+最终只读核对正文降级记录、活跃归档 job、活跃 Provider 保留、tracking/lease 保护位及测试故障触发器/函数全部为 **0**；真实数据库已迁移至 V49。应用 18082 无监听，没有运行中的临时沙箱。bash 语法、Python 编译和差异空白检查通过；恢复本轮原先停止的四个服务容器，不删除 Docker Desktop、镜像、数据卷、历史夹具或无关文件。本批未提交或推送。
+
+### 24.6 仍未闭合
+
+PG 与对象存储同时故障、JVM 强杀和提交 ACK 不确定窗口、原先已经只在 MinIO 的历史正文在 MinIO 中断时读取、超过降级单条/累计预算的结果、其他 Provider 的原资源封存、全量流式 IO/临时盘预算、完整父子资源引用、Run 工作集及依赖冻结、记忆治理与生产灾备仍按文档 37 继续。本批不将“新增正文有界降级”解释为“全量对象存储高可用或完整 R02 崩溃恢复”。
+
+## 25. 第二十二批：已计算结果与字节源的原子交接
+
+### 25.1 问题与范围
+
+第二十一批覆盖对象存储中断的正常收尾，但原链路先完成独立源封存和资源释放，再由 Controller/Worker 保存答复、提交业务状态或登记 ARCHIVING。JVM 在两者之间退出，可能留下可恢复的文件源，却没有完整最终答复的交接凭据；普通过期 attempt 恢复仍有机会重跑计算。
+
+本批将“已验证的独立源 + 已计算的最终结果”登记为原子待提交凭据。正常请求继续按原方式完成，不将所有任务强制改成异步返回；只有收尾异常或进程退出，才转入归档消费者。保证从这份双重持久证据提交后开始；不声称已解决工具运行中、内存结果尚未封存或 PG 整体不可用的全部崩溃窗口。
+
+### 25.2 捕获与封存
+
+1. Harness 增加可选、Provider-neutral InvocationResultObserver：阻塞 call 和 streamEvents 在 eager cleanup 前观察最终 Msg。只有拥有该沙箱的调用执行观察；借用父沙箱的子 Agent 不观察或重置父凭据，转发的子 Agent result 事件也不作为顶层结果。框架层不依赖 SaaS、SQL、Spring 或 Provider SDK。
+2. WorkspaceComputedResult 以可信 task/attempt 绑定共享上下文对象，拒绝其他任务、USER 消息、空消息和仍含 ToolUseBlock 的暂停回合。调用重试只重置自身结果。Worker 捕获时临时绑定准确租户并在 finally 恢复线程上下文，不依赖模型回调线程继承 ThreadLocal。冻结完整答复、有限任务输出及是否递交答复的标记，不从可变会话“猜”最后一条消息。
+3. MinIO 源 PUT/完整读回校验或 OpenSandbox 原资源 seal/完整取回校验仍在事务外进行。最后短事务先锁组织配额，再核对 session/generation、Run、task/attempt/owner 和准确冻结清单；源 RETAINED/保留记录 RETAINED、清单 SCANNED 与 prepared 结果在同一事务提交。登记结果失败时不会单独提交“可恢复源已经就绪”的新断言；已有外部字节与 STAGING 意图仍由原回收路径发现。
+4. prepared 结果使用原 workspace_archive_jobs 的独立 result_json，单份不超过 1 MiB UTF-8，并计入原 org/user 共享正文配额。它不是完整会话或文件字节字段。重复登记以完整可信 scope 和唯一 attempt/manifest 核对既有凭据，持久冻结结果优先，不将重试时的局部答案覆盖进去。
+
+### 25.3 状态、接管与撤销
+
+V50 为原表增加 prepared 布尔字段及约束、到期扫描索引，延续原 FORCE RLS 和应用角色授权，不新增数据源。prepared 只能是带有 PG 封存结果的 PENDING job。初始给正常请求 30 秒提交优先期，业务 attempt/task/agent_run 此时仍为 RUNNING，不提前宣称完成。
+
+普通过期计算扫描与最终 finishAttempt CAS 同时排除 prepared PENDING 凭据，阻止扫描旧候选在凭据提交后重新安排计算。原归档消费者到期后按 session、Run、attempt、job 的锁序重新核对全部所有权、当前执行代际和取消状态，再原子转换原 attempt/task/agent_run 为 ARCHIVING，撤销计算租约并写 TASK_ARCHIVING 事件与 Outbox。接管允许原计算租约已经过期，但只授予提交冻结字节和结果的权限，不恢复模型、工具或沙箱执行。
+
+正常 owner 已成功完成时，消费者只将 prepared 记录置 COMPLETED，不再递交答案。取消、会话重置、父实体删除或所有权失效会撤销凭据；预算过期按原归档失败路径终态收尾，不再创建新 attempt。调用方收尾失败可主动激活同一 prepared job，复用原 job ID；关闭新登记开关不会停止已经准入的消费者。
+
+接管之前原 owner 可能已发布部分文件。归档消费者在当前 token/lease/deadline 授权下，把准确 manifest 的已有 PUBLISHED 收据绑定到尚为空的 job item，核对 org/user、Run/agent/session/generation、路径、大小和摘要，再补缺失文件。不会把后来用户上传的版本当作当前清单收据；最终仍通过原 manifest/版本/产物/Outbox 与任务验收门禁。并发消费者和迟到旧租约继续用原归档 CAS，不能重复答复或生成重复版本。
+
+### 25.4 配置与兼容
+
+```yaml
+saas:
+  file-store:
+    workspace-completion-handover-enabled: true
+```
+
+环境变量 SAAS_WORKSPACE_COMPLETION_HANDOVER_ENABLED，默认 true；关闭时保持原正常收尾及显式 defer 机制。该优化依赖已启用的文件源、归档和发布恢复链路，仍受各自容量、保留期和权限预算。部署时 Provider 配置不变，用户端不暴露切换；MinIO 独立源路径是 Provider-neutral，Provider 原资源保留的真实适配仍仅为 OpenSandbox。
+
+### 25.5 验证
+
+完整 SaaS reactor 功能回归最终返回 0，保留 AgentPerformanceTest 排除及可选外部集成边界，启用本地 OpenSandbox/MinIO 探针。关键测试：文件发布 **118/118**、捕获身份/线程租户 **3/3**、正文 **23/23**、Harness call/stream 清理顺序 **6/6**、生命周期/借用保护 **22/22**、独立租约恢复 **9/9**、数据访问架构 **11/11**。覆盖原子回滚、正常 owner 收尾、prepared 到期及主动接管、准确冻结答案、部分已发布文件复用、旧过期候选 CAS、两个消费者竞争、取消、预算和开关兼容。日志 `/private/tmp/chugou-prepared-functional-complete.log`。
+
+实测还发现一条历史 ownerless 且已过期的 RUNNING 行会让 Worker 回收批次在 workerId 校验处报错。Worker 扫描只处理有合法非空 owner 的租约，不越权给 ownerless 请求/历史行安排计算；新增与有效 Worker 租约并存的测试。没有删除或改写历史行，遗留数据治理与真正的 Worker 过期恢复区分处理。早期独立租约测试只创建最小 H2 表，不含归档表，现补齐夹具结构；没有撤销生产 CAS 守卫或跳过失败测试。
+
+真实本地强杀探针 **10/10**，根退出码 0。新脚本 `workspace-crash-smoke.py` 只启动自己拥有的独立进程组，拒绝覆盖已有 18082 listener；固定本地 E2E 数据库、scripted 模型、OpenSandbox/MinIO/Redis，不继承远程 Provider 选择。PG 故障触发器严格限定夹具 org/Run，取消数据库残余查询按本轮唯一 ApplicationName 定位，不终止其他应用。
+
+1. 第一场景：最终模型结果与验证后的 MinIO TAR 已原子登记 prepared，但正常文件发布尚未完成。用夹具触发器控制该窗口，确认原 attempt 仍 RUNNING，再对自建 JVM 进程组发 SIGKILL。重启后消费者完成原 attempt，不新建模型调用、工具执行、沙箱租约或业务 attempt。
+2. 第二场景：工具真实运行时停止整个 MinIO，原 OpenSandbox 中封存 TAR，最终结果/大运行正文进入 PG。确认原 attempt ARCHIVING 且消费者持有 RUNNING token/lease，再强杀进程。恢复 MinIO并重启，旧归档租约到期后自动接管；原文件、收据及答复仍准确，Provider 保留与正文降级全部排空。
+3. 两场景均经用户 API 下载唯一标记文件，确认只有一个 PUBLISHED 文件收据及一条最终 assistant 问答；读取 turns/window 的 ASSISTANT 内容，与强杀前 PG 封存的实际答案逐字一致。不会因为 USER 消息里有标记而误判，也不把 scripted 模型主动选择的工具输出摘要误当作平台正文截断。
+4. 确认原 job 完成且 prepared=false，模型调用数、工具成功次数、业务 attempt 和 sandbox lease 数不增长；真实 PG FORCE RLS 下，外组织 app 角色不可见。
+
+```bash
+SAAS_CHECKPOINT_OPENSANDBOX_TEST=true SAAS_RUNTIME_BODY_MINIO_TEST=true mvn -o \
+  -pl agentscope-saas/agentscope-saas-app -am -Djacoco.skip=true \
+  '-Dtest=*,!AgentPerformanceTest' -Dsurefire.failIfNoSpecifiedTests=false \
+  spotless:apply test -q
+PYTHONUNBUFFERED=1 python3 agentscope-saas/agentscope-saas-app/scripts/workspace-crash-smoke.py
+```
+
+强杀日志 `/private/tmp/chugou-workspace-crash-smoke-complete.log`，自建应用各次启动日志位于 `/private/tmp/chugou-crash-<fixture UUID>-boot-<n>.log`。最初探针把 SIGKILL 造成的正常 SSE IncompleteRead 当作失败，随后一次重启被未格式化的新源文件拒绝，再一次错误地要求最终答案包含全部 8 KiB 工具输出；均修正后完整重跑，不把这些失败记录算作通过。最终封存答案精确比较，而不是降低校验或删掉断言。
+
+默认 `mvn -o -pl agentscope-saas/agentscope-saas-app -am -Djacoco.skip=true -DskipTests spotless:apply package -q` 返回 0，包含 Javadoc；日志 `/private/tmp/chugou-prepared-package.log`。真实数据库已迁移至 V50；强杀演练完成后 prepared/活跃归档、运行正文降级、活跃 Provider 保留及 computed_crash 故障触发器/函数均为 0，应用 18082 无监听。
+
+最终联合门禁根退出码 0、整体 **12/12**：正常用户流程 13/13、独立源恢复与 GC 6/6、会话代际撤销 5/5、整站 MinIO 中断及正文降级 7/7、真实 5 MiB 附件权威版本及产物复用 4/4。保持正文转存阈值 256 字节及默认新交接开关，命令为第二十一批联合启动命令；日志 `/private/tmp/chugou-prepared-regression-gate-final.log`。第一次联合门禁因 Docker 选择了被无关本地应用监听的临时端口而启动失败，工具尚未执行；未停止该应用或加入盲目创建/计算重试，核对无失败沙箱残留后原命令完整重跑通过。失败日志 `/private/tmp/chugou-prepared-regression-gate.log` 保留，不算成功。内部 Maven 应用按脚本正常停止可记录 143/BUILD FAILURE，验收以各门禁和启动脚本根退出码为准。
+
+联合脚本退出时，最后一个已删除父 Run 的短期 prepared 记录仍在 30 秒优先期内。另启动自建测试应用，让正式消费者按“父实体已删除”路径自动撤销并排空，不通过手工 SQL 改状态；日志 `/private/tmp/chugou-prepared-final-drain.log`，根退出码 0。这验证了启动发现和删除后清理，而不是把停止前的残余忽略为已完成。
+
+最终 prepared、活跃归档、正文降级、活跃 Provider 保留、tracking/lease 保护位及 archive_fault/computed_crash 故障触发器/函数全部为 **0**。应用 18082 无监听，没有运行中的临时沙箱；bash 语法、Python 编译、差异空白检查通过。将本轮原先停止的 PG/Redis/MinIO/OpenSandbox 四个容器恢复为停止状态，保留 Docker Desktop、镜像、数据卷和无关历史；只清理夹具 Agent，不删除无关应用或文件。本批未提交或推送。
+
+这些验证使用真实本地服务和确定性模型，不是企业模型质量、CubeSandbox/E2B、整套双副本应用混沌或全量浏览器点击验收。
+
+### 25.6 剩余边界
+
+源和结果原子交接以前的执行/捕获强杀、PG 与 Provider/对象存储同时故障、超过 1 MiB 或租户预算的封存、工具外部副作用对账、整套多副本/多机混沌、其他 Provider 保留适配、全链路流式 IO/临时盘预算、完整父子资源引用、工作集与依赖冻结、记忆治理和生产灾备仍按文档 37 继续。原对象存储中断时不能自动读取此前仅在 MinIO 的旧历史正文。JWT、企业 IAM、内部模型部署及 PromptGuard 继续暂缓；不自动提交或推送。
+
+## 26. 第二十三批：主文件链路有界流式传输
+
+### 26.1 传输与资源准入
+
+- Framework 增加进程共享 `WorkspaceTransferResources`，统一 I/O 并发、缓冲及临时盘预留。默认两路传输、1 MiB 缓冲、1 GiB spool；准入可有界等待，取消/异常释放许可。创建前预留最坏临时空间并检查实际磁盘余量；写入越界拒绝，删除失败不会假装已释放临时盘预算。
+- `WorkspaceFile` 允许不可变大小/摘要加惰性流来源，逐项校验真实长度及 SHA-256；大文件不再通过 `.content()` 隐式还原整份数组。旧 byte[] 入口仅作不超过 32 MiB 的兼容；PG 开发文件后端也明确保留这一能力边界。
+- SaaS 装配向 Harness、Provider、上传、下载、目录、恢复和源保管注入同一资源池。启动校验 spool 至少覆盖并发捕获和一份校验归档，OpenSandbox transport 仍有明确总大小能力限制。
+
+### 26.2 文件全链路
+
+1. 上传使用 `PartEvent` 流直接进入应用受控 spool，再扫描与目录准入。不能先让 Spring multipart decoder 为整文件作第二份不受应用预算控制的磁盘副本；明确拒绝超限、附加 Part、不完整 Part 和非法声明。容量错误分别返回 413 或带 Retry-After 的 503。
+2. MinIO `openRead/putStream` 真实流式，目录使用 Path/流上传和逐块读回验证，不绕过原授权、预留、配额、代际、attempt fencing、收据和短事务提交。旧 byte[] 接口保留小文件兼容。
+3. 附件与检查点恢复只构建版本描述，读取前后重验准确绑定；在取得沙箱前预校验完整性，再逐项生成有界 TAR。预校验会增加一次读取，这是防止先启动沙箱再发现输入损坏的明确成本，而不是“零初始化 IO”的宣传。
+4. OpenSandbox 使用原生文件流传输；工作区捕获只取一次源，逐项摘要与冻结，再将每个产物以 spool Path 交给目录。输入副本与输出计入同一个实际工作区总量；未变化的绑定输出不会再发布，变更副本流式比较后写到新 revisions 目标。
+5. 捕获必须拒绝绝对/父路径、重复项、链接、设备和 FIFO 等非普通条目，拒绝时整份报告不完整且不会发布部分“成功”结果。不能仅相信归档库宽松的 `isFile()` 判断。
+6. 源校验、归档-only 补发布及恢复使用有界 TAR/spool，不整文件 `readNBytes(size)`；恢复已材料化发布时通过既有对象的流式完整性证据完成目录登记，不重新从内存写一份。
+7. 当前版本和历史版本下载支持授权单 Range、206/416、ETag 和完整长度；取消关闭对象流并释放 I/O 许可。文本预览在打开对象前检查独立的 512 KiB 上限，版本恢复也采用目录流式路径。收紧新写入上限不会让已有历史版本无法下载。
+
+### 26.3 已验证证据
+
+最新 scoped 回归返回 0，日志 `/private/tmp/chugou-stream-security-contract-complete.log`。覆盖共享物理容量、链接/设备/FIFO 拒绝、绑定输出不回写、流式输入长度/摘要、磁盘预留和中断释放、上传 Part 边界、Range、预览和历史下载、文件发布/归档原事务及 DDD/MyBatis 边界。环境可选用例未启用者仍记为跳过，不算真实沙箱验收。
+
+真实 PG/Redis/MinIO/OpenSandbox、scripted 模型联合门禁根退出码 0，日志 `/private/tmp/chugou-stream-live-aligned.log`：
+
+- 新流式 probe **7/7**：31 MiB 上传/准确摘要、默认 33 MiB 明确 413、原始版本实际进入沙箱并生成归档产物、完整流式下载、206/416、取消后四路下载完成、超大文本不预览及历史大文件恢复后准确下载。
+- 基础用户流程 **13/13**；目录发布故障归档恢复 **4/4**；计算后提交故障 **2/2**；缺材料化字节的独立源恢复与 GC **6/6**；会话撤销 **5/5**；整站 MinIO 中断、Provider 封存和正文降级 **7/7**；5 MiB 原绑定输入与较新用户版本保护 **4/4**；总门禁 **14/14**，FAIL=0，归档队列排空。
+- 64 MiB 策略下真实 33 MiB 旧版 probe **6/6** 已通过，日志 `/private/tmp/chugou-stream-large-complete.log`；该次发生在后来新增预览/版本恢复断言之前，不能据此宣称最新七项大文件门禁已全部重跑。
+
+实测修复了三处真实问题：multipart 默认 32 MiB 预解析曾让 33 MiB 返回 500，而不是应用的 413；基础 probe 未携带前端使用的不可变附件版本，上传移除 Redis 重复文件后错误地期待文字路径自动成为输入；MinIO 的旧 commons-compress 1.21 间接依赖覆盖 Harness 1.27.1，导致运行时 NoSuchMethodError。应用依赖管理现与 Harness 对齐 1.27.1，完整重跑后才记录成功。另修复释放记录的 nullable 时间参数，在 PG 中改用列类型明确的 COALESCE，保留原失败/重试语义。
+
+失败日志保留，包括 `/private/tmp/chugou-stream-live-complete.log`；之前脚本/编译/异常分类失败不能计作通过。探针只操作自身应用进程和明确授权的本地依赖，不调用 CubeSandbox/E2B 或付费模型。
+
+### 26.4 仍未闭合
+
+本批不将主链路流式和四路下载通过解释为全量 R03 完成。接受时策略版本与收紧后的恢复/归档契约、Cube/E2B 及增量兼容路径的全流式、进程强杀后的 spool 回收、真实多任务 heap/磁盘压力仍需实施与验收。四路下载不是四个完整任务的容量压测。其他 R01–R17 工作项继续以文档 39 为准；JWT、企业 IAM、内部模型部署和 PromptGuard 继续暂缓，未提交/推送。
+
+## 27. 第二十四批：真实恢复消费者与网页交付闭环
+
+### 27.1 能力与持久心跳
+
+新增 Domain `WorkerPresenceRepository`、DAL MyBatis 管理/租户 Mapper 及 App `RecoveryCapability`，不新增业务 JDBC 或数据源。V51 的 `worker_heartbeats` 按 deployment_scope + 启动期 Worker UUID 唯一；能力摘要包含运行协议、Provider 类型、目录后端及工作区容量，而不包含模型凭证。
+
+心跳以数据库时钟续期，报告可用槽位；实际消费循环成功后才登记消费者。暂时饱和与进程离线分别显示 WAITING_FOR_CAPACITY、WAITING_FOR_WORKER；优雅退出使自己的心跳过期，未退出的进程靠 TTL 判定。保留过期注册信息是为了临时中断时不丢弃已接受队列，不把过期心跳当作活跃消费者或业务授权。
+
+`worker_heartbeats` 是跨租户运维事实，不是员工数据表；普通 app 数据库角色被撤销读写权限，不能从用户连接枚举或伪造消费者。任务读取仍走 tenant MyBatis 和原 FORCE RLS，恢复 API 同时核对 org/user/agent/Run。
+
+部署决策：
+
+- LOCAL + DURABLE 必须启用编排和本地调度器，非法组合启动拒绝。
+- EXTERNAL 必须设置明确共享 deployment_scope；Web 可以不轮询，但未出现匹配注册证据时，不把配置字符串解释为已安排后台恢复。首次消费者暂未登记时仍可做有界请求内恢复，耗尽则明确失败。
+- 已登记 Worker 临时离线时，恢复入队事务仍保留，界面显示等待资源。`RecoveryConsumerMonitor` 记录消费者健康、等待任务数、最老等待秒数；超过队列 SLA 告警，不把等待的任务错误地标记为完成。
+- REQUEST_ONLY 的过期直接执行也由独立巡检终止，不依赖关闭的任务消费器，不留下不能消费的 READY 恢复队列。归档-only 消费器和原 prepared 凭据保护保持不变。
+
+### 27.2 重试预算与异常边界
+
+模型调用账本的准确 org/user/Run/task 失败 REASONING 记录同时供请求和 Worker 使用；用途不同的辅助失败、成功调用及其他员工/任务不混入这份计数。DURABLE 下有可登记消费者时，请求把剩余预算交给 Worker，而不是先耗尽请求预算再从头重试。
+
+受治理调用明确向模型 SDK 传入单次执行配置，禁止默认 SDK 三次隐藏重试绕开持久账本。单路模型实测跨 HTTP 与 Worker 总共最多三次真实模型请求，且对应三条调用收据；不将这一测试扩大解释为所有 failover Provider 子调用的计量已经闭合。
+
+OpenAI 兼容 SDK 的原生 OpenAIException/HttpTransportException 不是 ModelException。只有受治理模型调用边界将其规范化：已输出的断流变为 ModelStreamInterruptedException，无输出连接异常保留原始 typed cause；401 等永久错误仍按状态判断并禁止重试。工具、业务、权限、上下文、撤销和结果交接错误不会仅因有“重试策略”被重新执行。Worker 对不可恢复执行错误使用终态失败，而不是通用的自动重试。退避加入有界抖动，继续受原 Run/Task/调用 deadline 和租约约束。
+
+### 27.3 网页与事件
+
+恢复入队事件在提交后包含原因、次数和 nextRecoveryAt。Controller 再读取权威 Run/queue 状态；租约已丢失、任务已失败/取消或已经被其他消费者接管时，不盲目报告“刚刚安排成功”。用户可通过 GET `/api/agents/{agentId}/runs/{runId}/recovery` 重建状态，事件丢失不丢弃恢复事实。
+
+ChatPanel 和 RunInspector 显示等待资源或恢复状态。恢复事件保留准确 session，页面刷新后从后端重新发现等待；后台完成时自动读取最终问答及产物，保留下一条输入草稿，不需要用户再发“继续”。排队期间禁止重复发送，取消后 Worker 不能再领取。原归档自动交付行为仍保留。
+
+### 27.4 配置
+
+```yaml
+saas:
+  model:
+    stream-recovery:
+      enabled: true
+      mode: DURABLE
+      max-attempts: 3
+  orchestration:
+    enabled: true
+    consumer-mode: EXTERNAL
+    deployment-scope: chugou-enterprise
+    scheduler-enabled: false # Web；Worker 使用同一部署配置，将此项设为 true
+    consumer-heartbeat-ttl-seconds: 90
+    scheduler-heartbeat-seconds: 20
+    recovery-queue-sla-seconds: 300
+```
+
+新增环境变量：`SAAS_ORCHESTRATION_CONSUMER_MODE`、`SAAS_ORCHESTRATION_DEPLOYMENT_SCOPE`、`SAAS_ORCHESTRATION_CONSUMER_HEARTBEAT_TTL_SECONDS`、`SAAS_ORCHESTRATION_RECOVERY_QUEUE_SLA_SECONDS`。文件目录和需要恢复的工作区持久化仍是前置条件，不把 EXTERNAL 开关当成对象存储高可用方案。
+
+### 27.5 验证
+
+恢复、持久心跳、调用账本、Worker、权限及架构 scoped 回归返回 0，日志 `/private/tmp/chugou-consumer-model-normalized-tests.log`。覆盖 LOCAL/EXTERNAL 配置、缺目录、心跳 TTL、未注册/离线/饱和/恢复、真实 MyBatis/H2 数据库时钟、次数跨执行阶段不重置、准确用途/owner 过滤、异常 cause、SDK 单次配置、REQUEST_ONLY 过期清理。
+
+真实双应用 + PG/Redis/MinIO/OpenSandbox 门禁 `worker-consumer-smoke.py` 最终 **8/8**、根退出码 0，日志 `/private/tmp/chugou-consumer-real-browser-complete.log`。模型为本地 HTTP 协议夹具，会真实输出部分 SSE 后截断连接，或返回 401；没有外部模型调用，也没有 paid/Cube/E2B 验证。
+
+1. 未注册消费者时明确失败，没有虚假的恢复入队事件。
+2. 独立 Worker 登记后停止，任务仍进入持久等待队列；重启后原任务完成，用户历史可读取完整最终答复。
+3. 另一员工无法读取恢复状态；app PG 角色不能 SELECT/INSERT 心跳。
+4. 持续断流跨请求和 Worker 只有三次真实模型调用；永久 401 只有一次，排队取消后重启 Worker 不会继续请求模型。
+5. 真实浏览器在 Web 应用上登录、发起新任务；Worker 离线时显示等待，移动页面刷新后继续等待。Worker 重启后页面自动加载最终回答，保留草稿，前端只提交过一次任务。截图位于 `/private/tmp/chugou-real-recovery-ui/`，已人工检查桌面/移动布局。
+
+原归档及恢复交互的 API fixture 浏览器门禁也各覆盖 1440×1000 和 390×844，日志 `/private/tmp/chugou-archive-ui-current.log`、`/private/tmp/chugou-recovery-ui-current.log`，与上述真实后端验证分别记录。前端 TypeScript/Vite build 返回 0。
+
+期间失败包括未格式化源文件被启动脚本拒绝、最初未识别 SDK 原生断流异常，以及浏览器探针读取 SPA 导航后已失效的 Chrome SSE 缓存。最后一项改为读取准确的后端恢复状态，保留真实网页提交、等待、刷新和交付断言；完整八项重跑后才计通过。失败日志保留，不将“页面看见部分内容”当作最终完成。
+
+### 27.6 剩余边界
+
+这不是全套生产双副本混沌完成。接受时策略冻结、跨部署策略变更的排队/恢复、兼容 Worker 任务选择、所有 Provider failover 子调用账本、PG 和对象存储同时失效、Source 封存前进程强杀及人工副作用对账仍需继续。结构化个人记忆/企业岗位、依赖冻结、持久父子资源引用、定时任务、MCP 凭据、完整快照、远端进程、纠偏及提前执行等仍按文档 39 推进。JWT、企业 IAM、内部模型部署及 PromptGuard 保持暂缓，不自动提交/推送。
+
+## 28. 第二十五批：临时文件私有化与失效 owner 回收
+
+所有新 spool 使用进程资源池所属的私有 UUID 目录。在支持 POSIX 的系统中目录原子创建为 0700，文件由原安全临时文件接口创建；owner 标记使用 NoFollow 的专用 FileChannel 和进程文件锁。资源池保持 owner 锁，不在尚有传输进行时解锁；不能仅凭旧 PID 或文件年龄删除其他进程的活跃缓存。
+
+新目录首次建立时有限扫描同一临时目录下的专用格式：只处理 UUID 命名、相同 OS owner、正确的有界标记、普通受管 `.part` 文件，且能够取得排他 owner 锁的失效目录。锁仍被持有、标记不匹配、未知文件、链接、其他 owner、访问失败或扫描超限时保留，不跟随链接、不递归猜测、不回收已发布业务对象。仅回收新格式；旧共享临时目录中的无归属 `.part` 不会被盲目删除。
+
+临时盘除了字节预算，还限制同时保留的 spool 数，默认并发两路时最多 32 份（8 × 并发 + 16），防止零字节产物在删除失败时无限消耗 inode/元数据。删除失败同时保留字节与数量预留；等待时间验证上限为五分钟，默认仍为 30 秒，避免超大等待参数的纳秒溢出。
+
+测试验证：失效目录回收、同进程另一活跃 owner 保护、未知文件与链接保护、POSIX 私有目录权限、空 spool 数量限值，以及一个独立 JVM 写入后使用 Runtime.halt(0) 突然退出，后继 owner 确实回收其目录。macOS `/var` 与 `/private/var` 的规范路径差异曾导致探针断言失败，修正为 realPath 后保留实际字节存在和回收断言。源文件系统测试 33/33、spool 目录测试 3/3；这些不是新的“工具执行中强杀后业务结果必定恢复”保证。
+
+完整功能 reactor 已返回 0，日志 `/private/tmp/chugou-stream-consumer-functional-final.log`，显式启用本地 OpenSandbox 与 MinIO 探针：文件发布/归档/恢复 119/119，无跳过；调用账本 14/14；DDD/MyBatis 11/11。保留既有 AgentPerformanceTest 排除；旧 SnapshotRoundTripProbeTest 已无源文件，仅为历史 target 中的临时编译产物，单独排除，不排除实际源码回归。恢复计数的末轮边界修正另有 scoped 日志 `/private/tmp/chugou-stream-consumer-boundaries-final.log`。
+
+最新 64 MiB 单文件策略下真实 33 MiB probe 七项全部重跑通过，根退出码 0，日志 `/private/tmp/chugou-stream-large-seven-final.log`，替代第 26 节旧六项记录作为当前大文件证据。使用真实 PG/Redis/MinIO/OpenSandbox 和 scripted 模型，已排空归档与 Provider retention；新增目录资源池也参与本次实际文件链路。不是 Cube/E2B、企业模型、四个完整任务或 heap 压测证明。
+
+末轮恢复边界还修正：有持久失败收据时，不将成功的协调器 Task attempt 号误当模型失败次数；禁用恢复不额外读取失败计数；即使已经产生部分输出，具有永久 4xx cause 的异常也不进入恢复。受治理的 SDK 单次配置保留调用方更短的正数 timeout，不能把其扩大到平台总 deadline；心跳配置比较避免 Long.MAX_VALUE 乘二溢出。
+
+剩余：接受时策略版本及跨部署变更契约、兼容 Worker 选择、其他 Provider/增量兼容路径流式、实际多任务 heap/磁盘压力、完整故障/灾备与 R05–R17 功能仍按文档 39 继续。不将临时盘回收或这两批链路验收视为全部方案完成；保持用户暂缓范围，无自动提交/推送。
+
+最后一次完整回归包含上述末轮计数、调用方 timeout 和心跳溢出修正，根退出码 0，日志 `/private/tmp/chugou-stream-consumer-functional-accepted.log`；默认 `mvn -o -pl agentscope-saas/agentscope-saas-app -am -Djacoco.skip=true -DskipTests spotless:apply package -q`（含 Javadoc）也返回 0，日志 `/private/tmp/chugou-stream-consumer-package-final.log`。Python/JavaScript/bash 语法及差异空白检查通过。
+
+最终真实 PG 迁移为 V51；prepared/活跃归档、Provider retention、正文降级、tracking/lease 保留位和本轮故障触发器均为 0，app 角色对心跳运维表无读写权限。已关闭拥有的 Web/Worker/Vite 验证进程，18082、18083、5190 无监听；恢复原先停止的四个依赖服务容器，不关闭 Docker Desktop、不删除镜像、卷、历史用户记录或无关文档。当前仍为未提交工作区，不自动推送。
+
+## 29. 第二十六批：任务接受策略冻结与兼容消费者筛选
+
+2026-10-10 用户取消 R08 结构化企业记忆，2026-10-11 继续实施其余范围。保留原对话、记忆来源和 Mem0 投递，不新增企业岗位、记忆卡片或提炼管理 UI。文档 37 的历史设计和文档 39 的当前门禁已分别注明，不删除既有数据。
+
+### 29.1 不可变接受契约
+
+新增 Domain 值对象/Port、DAL MyBatis Adapter 和 App 策略用例。V52 PG/H2 新建 `run_execution_policies`，单独列保存版本、部署范围、非秘密能力摘要、文件数/单文件/工作集限额、恢复开关/模式/次数/退避及接受时间；不是把这些信息塞进对话 JSON。记录与 Run 通过组织组合外键关联；PG 强制 RLS，app 角色只有 SELECT/INSERT，没有更新、删除权限。
+
+接受事务在原 Run、触发消息和不可变附件绑定同一事务内保存策略。重复 requestId 返回原 Run，不重新采集配置。主调用、审批继续和 Worker 经同一 RuntimeContext 绑定策略；输入恢复、投影、目录发布、源归档、清单冻结、检查点恢复读取原 Run 的容量契约。历史已授权版本下载仍不受当前写入限额收紧影响；用户/组织总存储配额和实时权限检查没有被取消。
+
+Harness 使用调用级 `WorkspaceTransferPolicy`，不修改共享 Filesystem 的默认值，避免并发任务互相改变限额。物理 I/O 并发、临时盘和 Provider 运输能力仍由当前 Worker 限制，不因旧任务限额较大而无限分配资源。
+
+V53 增加 `assistant_runs.execution_policy_version`，对已有接受记录进行前向补标记，不改写已应用的 V52。新接受任务的记录和标记一起提交。必须有快照但快照丢失时，抛 `RUN_POLICY_SNAPSHOT_MISSING`，不伪装成旧数据读取今日默认值；领取过滤拒绝该任务，恢复查询显示 `MANUAL_ACTION`。无快照的真正旧任务仅保留 LOCAL 兼容路径，外部部署受控转换仍待实施。
+
+### 29.2 领取、恢复和状态一致
+
+消费者协议摘要包含沙箱类型/集群/镜像或模板、对象存储位置，不包含凭证或可变逻辑限额。凭证轮换不改变摘要；不同集群或桶不会错误接管旧任务。Worker 心跳新增物理归档/单文件能力，恢复状态按原契约寻找能承载该任务的消费者，不只判断“有 Worker 在线”。
+
+领取在 SQL LIMIT 之前按部署、协议和物理容量筛选，不能先抢走不兼容任务再失败；过期 attempt 巡检也按原部署范围筛选。恢复决策沿用接受时开关、次数和退避，共享失败账本不在 Web/Worker 之间重置。旧任务使用旧策略，新任务使用新策略，不改变已有取消 fencing 和发布收据检查。
+
+### 29.3 功能回归与真实依赖边界
+
+最终源码完整功能 reactor 返回 0，日志 `/private/tmp/chugou-accepted-policy-fenced-regression.log`；启用 `SAAS_RUNTIME_BODY_MINIO_TEST=true`，保留原性能测试和无源码历史 probe 排除。任务策略集成 7/7，消费者协议 6/6，物理心跳 3/3，DDD/MyBatis 11/11，检查点恢复 24/24；文件发布报告 118 项、1 项 OpenSandbox 环境用例跳过，零失败，不能称为真实沙箱全量通过。
+
+新增门禁覆盖接受原子性、重复提交不更新、旧/新限额区分、固定附件读取、清单冻结、不兼容任务不占据 LIMIT、旧恢复预算、缺失快照阻断及历史下载。真实 PG 已前向迁移 V53，并验证 FORCE RLS 和 app 无 UPDATE/DELETE 权限。
+
+失败实证也保留：最初受限 JVM attach 导致 Mockito 失败；旧容量测试构造单文件上限大于总量的非法配置，改为合法但不足的策略，保留读取前拒绝断言后重跑。真实 OpenSandbox 首次在拉取 `ubuntu:latest` 时 TLS 超时；固定本地标签和镜像 ID 后仍在服务创建容器阶段返回 `DOCKER::SANDBOX_START_FAILED / No such container`，没有进入模型调用。这些日志分别为 `/private/tmp/chugou-accepted-policy-real-gate.log`、`...-real-offline-gate.log` 和 `...-real-imageid-gate.log`，不计通过，不改为 Cube/E2B。
+
+双进程/浏览器新门禁明确支持 `WORKER_CONSUMER_POLICY=true` 与 `WORKER_CONSUMER_SANDBOX=false`，后者只验证 PG/Redis/MinIO、模型协议和网页恢复，不代替 OpenSandbox 文件初始化/恢复。浏览器首次因本机 Node 未配置 Playwright 路径而未进入页面；使用应用自带 NODE_PATH 重跑，不安装或下载依赖。最终门禁结果在下方追加。
+
+最终真实 PG/Redis/MinIO + 双应用 + 浏览器门禁 **9/9**、根退出码 0，日志 `/private/tmp/chugou-accepted-policy-browser-accepted.log`。明确设置 `WORKER_CONSUMER_SANDBOX=false`，模型仍为本地 HTTP 协议夹具。覆盖无消费者不得假入队、离线持久等待、另一员工 404、独立 Worker 接管、Worker 当前恢复关闭/次数为 1 时旧 Run 仍遵循原三次预算、永久 401 不重试、取消后不领取，以及重启 Web 后新 Run 使用恢复关闭/次数为 1 的新策略。新单文件 1 MiB 限额加 1 字节返回真实 413；原 5 MiB 负向客户端曾因提前拒绝出现 Broken pipe，未把连接错误计为 413 或成功。
+
+真实浏览器完成登录、提交、桌面等待、移动刷新、Worker 重启和最终答复自动交付，保留草稿、只有一次任务提交；1440x1000/390x844 四张截图位于 `/private/tmp/chugou-policy-recovery-ui-20261011/`，已检查布局。真实 PG app 角色不能更新/删除接受策略，设置其他组织后读不到当前 Run 的策略。最终迁移 V53，本轮消费者作用域内活跃 Run/Attempt、全库待归档和 Provider retention 均为 0；Web/Worker/前端验证端口没有监听。
+
+最终打包/Javadoc 返回 0，日志 `/private/tmp/chugou-accepted-policy-package.log`；Python 语法和 `git diff --check` 通过。测试创建的应用和浏览器进程已退出，四个本轮启动的依赖容器恢复为停止状态；未关闭 Docker Desktop，未删除镜像、容器、卷、用户历史或其他线程文档，未自动提交/推送。
+
+### 29.4 仍需完成
+
+新策略收紧后的 OpenSandbox 文件恢复真实复验、其他 Provider/增量兼容路径全流式、容量/heap 和完整故障矩阵仍未完成。R05 有界历史、R06 持久父子资源引用/依赖冻结、R07 重试对账、R09 产物验证、R10 生产交付，以及 R11–R17 仍按文档 39 推进；R08 不实施。没有将本批策略冻结解释为整个方案完成，没有自动提交/推送。

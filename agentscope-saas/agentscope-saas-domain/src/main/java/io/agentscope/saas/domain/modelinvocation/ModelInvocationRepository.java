@@ -111,6 +111,9 @@ public interface ModelInvocationRepository {
 
     Totals runReservations(Scope scope, boolean taskOnly, OffsetDateTime now);
 
+    /** Shared failed reasoning count across direct requests, reconnects and worker attempts. */
+    long failedReasoningCalls(Scope scope);
+
     void insert(NewInvocation invocation);
 
     Optional<Receipt> find(UUID orgId, UUID id);

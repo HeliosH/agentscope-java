@@ -71,6 +71,24 @@ export interface ArtifactView {
   createdAt: string;
 }
 
+export interface RecoveryView {
+  runId: string;
+  runStatus: string;
+  state: string;
+  recoveryCount: number;
+  attemptCount: number;
+  reasonCode?: string | null;
+  nextRecoveryAt?: string | null;
+  queueSlaExceeded: boolean;
+  queueWaitSeconds: number;
+}
+
+export async function getRecovery(agentId: string, runId: string): Promise<RecoveryView | null> {
+  const response = await fetch(`${base(agentId, runId)}/recovery`);
+  if (response.status === 404) return null;
+  return json(response, 'Failed to load recovery state');
+}
+
 const base = (agentId: string, runId: string) =>
   `/api/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}`;
 

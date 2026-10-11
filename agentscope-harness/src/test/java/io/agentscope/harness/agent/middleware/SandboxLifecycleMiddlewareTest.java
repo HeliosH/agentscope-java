@@ -53,8 +53,93 @@ import java.util.List;
 import java.util.Queue;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class SandboxLifecycleMiddlewareTest {
+
+    @Test
+    void borrowedChildCannotObserveOrResetItsParentsComputedResult() {
+        var sandbox = new RecordingSandbox("parent");
+        sandbox.running = true;
+        var lifecycle =
+                new SandboxLifecycleMiddleware(
+                        new RecordingSandboxManager(sandbox), new SandboxBackedFilesystem());
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var context = RuntimeContext.empty();
+        context.put(Sandbox.class, sandbox);
+        context.put(
+                io.agentscope.harness.agent.sandbox.InvocationResultObserver.class,
+                new io.agentscope.harness.agent.sandbox.InvocationResultObserver() {
+                    public void onStart(RuntimeContext ctx) {
+                        calls.incrementAndGet();
+                    }
+
+                    public void onResult(
+                            RuntimeContext ctx, io.agentscope.core.message.Msg result) {
+                        calls.incrementAndGet();
+                    }
+                });
+        lifecycle.acquireForCall(context);
+        lifecycle.observeResult(
+                context,
+                io.agentscope.core.message.Msg.builder()
+                        .role(io.agentscope.core.message.MsgRole.ASSISTANT)
+                        .textContent("child")
+                        .build());
+        lifecycle.releaseForCall(context);
+        assertEquals(0, calls.get());
+        assertTrue(sandbox.running);
+    }
+
+    @Test
+    void matchingUnexpiredRetentionSkipsSnapshotAndDestruction() {
+        var sandbox = new RecordingSandbox("retained");
+        sandbox.running = true;
+        var manager =
+                new SandboxManager(
+                        new NoopSandboxClient(),
+                        new SessionSandboxStateStore(new InMemoryAgentStateStore(), "retention"),
+                        "retention");
+        var ctx = RuntimeContext.empty();
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceRetentionBackend.Hold.class,
+                new io.agentscope.harness.agent.sandbox.WorkspaceRetentionBackend.Hold(
+                        "retained",
+                        java.util.UUID.randomUUID(),
+                        java.time.OffsetDateTime.now().plusMinutes(5)));
+        manager.release(
+                SandboxAcquireResult.selfManaged(
+                        sandbox, SandboxLease.noop(), AcquisitionSource.CREATE),
+                ctx);
+        assertTrue(sandbox.running);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void expiredOrForeignRetentionCannotSuppressCleanup(boolean expired) {
+        var sandbox = new RecordingSandbox("owned");
+        sandbox.running = true;
+        var manager =
+                new SandboxManager(
+                        new NoopSandboxClient(),
+                        new SessionSandboxStateStore(new InMemoryAgentStateStore(), "retention"),
+                        "retention");
+        var ctx = RuntimeContext.empty();
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceRetentionBackend.Hold.class,
+                new io.agentscope.harness.agent.sandbox.WorkspaceRetentionBackend.Hold(
+                        expired ? "owned" : "foreign",
+                        java.util.UUID.randomUUID(),
+                        expired
+                                ? java.time.OffsetDateTime.now().minusSeconds(1)
+                                : java.time.OffsetDateTime.now().plusMinutes(5)));
+        manager.release(
+                SandboxAcquireResult.selfManaged(
+                        sandbox, SandboxLease.noop(), AcquisitionSource.CREATE),
+                ctx);
+        assertTrue(!sandbox.running);
+    }
 
     @Test
     void restoresFilesAboveLegacyFourMiBLimit() throws Exception {
@@ -125,6 +210,45 @@ class SandboxLifecycleMiddlewareTest {
 
         middleware.releaseForCall(ctx);
         assertNull(ctx.get(ExecutionEnvironmentSnapshot.class));
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void checkpointRestorationNeverHydratesTheMutableRemoteWorkspace(boolean empty)
+            throws Exception {
+        var remote =
+                new io.agentscope.harness.agent.filesystem.remote.RemoteFilesystem(
+                        new io.agentscope.harness.agent.filesystem.remote.store.InMemoryStore(),
+                        c -> List.of("restore", "remote"));
+        var context = RuntimeContext.empty();
+        remote.write(context, "/outputs/historical.txt", "old");
+        remote.write(context, "/MEMORY.md", "newer mutable context");
+        var filesystem = new SandboxBackedFilesystem();
+        filesystem.configureRemoteFallback(remote);
+        var sandbox = new RecordingSandbox("restore-exact");
+        var middleware =
+                new SandboxLifecycleMiddleware(new RecordingSandboxManager(sandbox), filesystem);
+        context.put(SandboxContext.class, SandboxContext.builder().build());
+        context.put(
+                WorkspaceRestorePlan.class,
+                new WorkspaceRestorePlan(
+                        "workspace-catalog://attempt/previous",
+                        "verified",
+                        empty
+                                ? List.of()
+                                : List.of(
+                                        new WorkspaceFile(
+                                                "outputs/current.txt",
+                                                "selected".getBytes(StandardCharsets.UTF_8)))));
+        middleware.acquireForCall(context);
+        if (empty) {
+            assertNull(sandbox.hydratedArchive);
+        } else {
+            assertEquals("selected", restoredFile(sandbox.hydratedArchive, "outputs/current.txt"));
+            assertNull(restoredFile(sandbox.hydratedArchive, "outputs/historical.txt"));
+            assertNull(restoredFile(sandbox.hydratedArchive, "MEMORY.md"));
+        }
+        middleware.releaseForCall(context);
     }
 
     @Test
@@ -280,7 +404,55 @@ class SandboxLifecycleMiddlewareTest {
                 observer.events);
     }
 
-    private static final class RecordingSandboxManager extends SandboxManager {
+    @ParameterizedTest
+    @ValueSource(strings = {"projection", "persist", "release"})
+    void fatalLifecycleErrorsStillReleaseTheLocalSlotAndClearTheScopedSandbox(String stage) {
+        var sandbox = new RecordingSandbox("fatal-cleanup");
+        var closed = new java.util.concurrent.atomic.AtomicInteger();
+        var result =
+                SandboxAcquireResult.selfManaged(
+                        sandbox, closed::incrementAndGet, AcquisitionSource.CREATE);
+        var fatal = new LinkageError("fixture archive ABI failure");
+        RecordingSandboxManager manager =
+                new RecordingSandboxManager(result) {
+                    @Override
+                    public void persistState(
+                            SandboxAcquireResult r, SandboxContext c, RuntimeContext context) {
+                        if (stage.equals("persist")) throw fatal;
+                        super.persistState(r, c, context);
+                    }
+
+                    @Override
+                    public void release(SandboxAcquireResult r, RuntimeContext context) {
+                        super.release(r, context);
+                        if (stage.equals("release")) throw fatal;
+                    }
+                };
+        var filesystem =
+                new SandboxBackedFilesystem() {
+                    @Override
+                    public io.agentscope.harness.agent.sandbox.WorkspaceProjectionReport
+                            projectSandboxWorkspaceWithReport(RuntimeContext c) throws Exception {
+                        if (stage.equals("projection")) throw fatal;
+                        return super.projectSandboxWorkspaceWithReport(c);
+                    }
+                };
+        var middleware = new SandboxLifecycleMiddleware(manager, filesystem);
+        var context = RuntimeContext.empty();
+        context.put(SandboxContext.class, SandboxContext.builder().build());
+        middleware.acquireForCall(context);
+        assertSame(
+                fatal, assertThrows(LinkageError.class, () -> middleware.releaseForCall(context)));
+        assertEquals(1, closed.get());
+        assertEquals(List.of(sandbox), manager.released);
+        assertNull(context.get(Sandbox.class));
+        assertNull(context.get(ExecutionEnvironmentSnapshot.class));
+        assertNull(filesystem.getSandbox());
+        middleware.releaseForCall(context);
+        assertEquals(1, closed.get());
+    }
+
+    private static class RecordingSandboxManager extends SandboxManager {
 
         private final Queue<SandboxAcquireResult> acquisitions = new ArrayDeque<>();
         private final List<Sandbox> released = new ArrayList<>();
@@ -323,6 +495,64 @@ class SandboxLifecycleMiddlewareTest {
         public void release(SandboxAcquireResult result, RuntimeContext runtimeContext) {
             released.add(result.getSandbox());
         }
+    }
+
+    @Test
+    void pinnedInputsOverlayCheckpointFilesAndBindWorkspaceVersion() throws Exception {
+        var sandbox = new RecordingSandbox("pinned-input");
+        var middleware =
+                new SandboxLifecycleMiddleware(
+                        new RecordingSandboxManager(sandbox), new SandboxBackedFilesystem());
+        var ctx = RuntimeContext.empty();
+        ctx.put(SandboxContext.class, SandboxContext.builder().build());
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.SandboxIsolationOverride.class,
+                new io.agentscope.harness.agent.sandbox.SandboxIsolationOverride("run/fixture"));
+        ctx.put(
+                WorkspaceRestorePlan.class,
+                new WorkspaceRestorePlan(
+                        "checkpoint://fixture",
+                        "checkpoint-version",
+                        List.of(
+                                new WorkspaceFile(
+                                        "outputs/progress.txt",
+                                        "progress".getBytes(StandardCharsets.UTF_8)),
+                                new WorkspaceFile(
+                                        "inputs/pinned.txt",
+                                        "wrong".getBytes(StandardCharsets.UTF_8)))));
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class,
+                new io.agentscope.harness.agent.sandbox.WorkspaceInputPlan(
+                        new WorkspaceRestorePlan(
+                                "input://fixture",
+                                "input-version",
+                                List.of(
+                                        new WorkspaceFile(
+                                                "inputs/pinned.txt",
+                                                "original".getBytes(StandardCharsets.UTF_8))))));
+        middleware.acquireForCall(ctx);
+        assertEquals("original", restoredFile(sandbox.hydratedArchive, "inputs/pinned.txt"));
+        assertEquals("progress", restoredFile(sandbox.hydratedArchive, "outputs/progress.txt"));
+        middleware.releaseForCall(ctx);
+    }
+
+    @Test
+    void pinnedInputsWithoutRuntimeIsolationAreRejectedBeforeAcquisition() {
+        var middleware =
+                new SandboxLifecycleMiddleware(
+                        new RecordingSandboxManager(new RecordingSandbox("pinned")),
+                        new SandboxBackedFilesystem());
+        var ctx = RuntimeContext.empty();
+        ctx.put(SandboxContext.class, SandboxContext.builder().build());
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class,
+                new io.agentscope.harness.agent.sandbox.WorkspaceInputPlan(
+                        new WorkspaceRestorePlan(
+                                "input://fixture",
+                                "input-version",
+                                List.of(new WorkspaceFile("inputs/pinned.txt", new byte[0])))));
+        assertThrows(IllegalStateException.class, () -> middleware.acquireForCall(ctx));
+        assertNull(ctx.get(Sandbox.class));
     }
 
     private static final class FailingProjectionFilesystem extends SandboxBackedFilesystem {
@@ -375,6 +605,12 @@ class SandboxLifecycleMiddlewareTest {
     }
 
     private static final class RecordingSandbox implements Sandbox {
+        boolean persistent;
+
+        @Override
+        public boolean hasPersistentWorkspace() {
+            return persistent;
+        }
 
         private final SandboxState state = new SandboxState() {};
         private boolean running;
@@ -453,6 +689,57 @@ class SandboxLifecycleMiddlewareTest {
             }
         }
         return null;
+    }
+
+    @Test
+    void unscopedPersistentVolumeIsRejectedBeforeStart() {
+        var sandbox = new RecordingSandbox("volume");
+        sandbox.persistent = true;
+        var manager = new RecordingSandboxManager(sandbox);
+        var middleware = new SandboxLifecycleMiddleware(manager, new SandboxBackedFilesystem());
+        var ctx = RuntimeContext.empty();
+        ctx.put(SandboxContext.class, SandboxContext.builder().build());
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.SandboxIsolationOverride.class,
+                new io.agentscope.harness.agent.sandbox.SandboxIsolationOverride("run/fixture"));
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class,
+                new io.agentscope.harness.agent.sandbox.WorkspaceInputPlan(
+                        new WorkspaceRestorePlan(
+                                "input://fixture",
+                                "input-version",
+                                List.of(new WorkspaceFile("inputs/pinned.txt", new byte[0])))));
+        assertThrows(RuntimeException.class, () -> middleware.acquireForCall(ctx));
+        assertTrue(!sandbox.running);
+        assertEquals(List.of(sandbox), manager.released);
+    }
+
+    @Test
+    void borrowedSandboxMustMatchAlreadyMaterializedInputVersion() {
+        var sandbox = new RecordingSandbox("parent");
+        sandbox.running = true;
+        var middleware =
+                new SandboxLifecycleMiddleware(
+                        new RecordingSandboxManager(new SandboxAcquireResult[0]),
+                        new SandboxBackedFilesystem());
+        var ctx = RuntimeContext.empty();
+        ctx.put(Sandbox.class, sandbox);
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class,
+                new io.agentscope.harness.agent.sandbox.WorkspaceInputPlan(
+                        new WorkspaceRestorePlan(
+                                "input://fixture",
+                                "input-version",
+                                List.of(new WorkspaceFile("inputs/pinned.txt", new byte[0])))));
+        assertThrows(IllegalStateException.class, () -> middleware.acquireForCall(ctx));
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.Materialized.class,
+                new io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.Materialized(
+                        sandbox.getState().getSessionId(), "input-version"));
+        middleware.acquireForCall(ctx);
+        assertTrue(sandbox.running);
+        middleware.releaseForCall(ctx);
+        assertTrue(sandbox.running);
     }
 
     private static class NoopSandboxClient implements SandboxClient<SandboxClientOptions> {

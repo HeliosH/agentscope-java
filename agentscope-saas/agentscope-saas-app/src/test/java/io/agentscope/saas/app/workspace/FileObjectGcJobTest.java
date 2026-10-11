@@ -192,7 +192,8 @@ class FileObjectGcJobTest {
                         new ClassPathResource(
                                 "db/migration/h2/V41__file_publication_reservations.sql"),
                         new ClassPathResource(
-                                "db/migration/h2/V42__file_publication_recovery_intents.sql"))
+                                "db/migration/h2/V42__file_publication_recovery_intents.sql"),
+                        new ClassPathResource("db/migration/h2/V45__workspace_archive_leases.sql"))
                 .execute(dataSource);
     }
 

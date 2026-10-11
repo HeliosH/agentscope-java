@@ -763,7 +763,14 @@ public class HarnessAgent implements Agent, AutoCloseable {
                             }
                             return effective;
                         },
-                        eff -> inner.get(),
+                        eff ->
+                                inner.get()
+                                        .doOnNext(
+                                                result -> {
+                                                    if (sandboxLifecycleMw != null)
+                                                        sandboxLifecycleMw.observeResult(
+                                                                eff, result);
+                                                }),
                         this::releaseAfterCommit);
         if (compactionHook != null) {
             return base.onErrorResume(
@@ -803,7 +810,20 @@ public class HarnessAgent implements Agent, AutoCloseable {
                     }
                     return effective;
                 },
-                eff -> inner.get(),
+                eff ->
+                        inner.get()
+                                .doOnNext(
+                                        event -> {
+                                            if (event
+                                                            instanceof
+                                                            io.agentscope.core.event
+                                                                            .AgentResultEvent
+                                                                    result
+                                                    && event.getSource() == null
+                                                    && sandboxLifecycleMw != null)
+                                                sandboxLifecycleMw.observeResult(
+                                                        eff, result.getResult());
+                                        }),
                 this::releaseAfterCommit);
     }
 
@@ -1950,6 +1970,8 @@ public class HarnessAgent implements Agent, AutoCloseable {
                 capturedSandboxFs = new SandboxBackedFilesystem();
                 capturedSandboxFs.configureTransferPolicy(
                         sandboxFilesystemSpec.getWorkspaceTransferPolicy());
+                capturedSandboxFs.configureTransferResources(
+                        sandboxFilesystemSpec.getTransferResources());
                 capturedSandboxFs.configureProjectionSink(
                         sandboxFilesystemSpec.getWorkspaceProjectionSink());
                 // F3-S2: wire the remote projection so out-of-call file IO (MEMORY.md, skills, …)

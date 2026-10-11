@@ -39,7 +39,7 @@ class WorkspaceProjectionCatalogSinkTest {
         WorkspaceCheckpointContext checkpoint = new WorkspaceCheckpointContext(true);
         RuntimeContext context = context(checkpoint);
 
-        new WorkspaceProjectionCatalogSink(catalog)
+        new WorkspaceProjectionCatalogSink(catalog, mock(WorkspaceManifestService.class))
                 .onProjectedFile(context, "/result.txt", "result".getBytes());
         checkpoint.projectionSucceeded(1);
 
@@ -55,7 +55,7 @@ class WorkspaceProjectionCatalogSinkTest {
         WorkspaceCheckpointContext checkpoint = new WorkspaceCheckpointContext(true);
         RuntimeContext context = context(checkpoint);
 
-        new WorkspaceProjectionCatalogSink(catalog)
+        new WorkspaceProjectionCatalogSink(catalog, mock(WorkspaceManifestService.class))
                 .onProjectedFile(context, "/result.txt", "result".getBytes());
         checkpoint.projectionSucceeded(1);
 

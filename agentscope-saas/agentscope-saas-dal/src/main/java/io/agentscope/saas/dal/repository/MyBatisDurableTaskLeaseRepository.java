@@ -40,8 +40,41 @@ public class MyBatisDurableTaskLeaseRepository implements DurableTaskLeaseReposi
     }
 
     @Override
+    public boolean archiveHandover(UUID attemptId, String workerId) {
+        return mapper.archiveHandover(attemptId, workerId) == 1;
+    }
+
+    @Override
+    public boolean completedSuccessfully(UUID attemptId, String workerId) {
+        return mapper.completedSuccessfully(attemptId, workerId);
+    }
+
+    @Override
     public List<TaskCandidate> findReadyCandidates(OffsetDateTime readyAt, int limit) {
-        return mapper.findReadyCandidates(readyAt, limit).stream()
+        return mapper
+                .findReadyCandidates(readyAt, limit, null, null, Long.MAX_VALUE, Long.MAX_VALUE)
+                .stream()
+                .map(MyBatisDurableTaskLeaseRepository::toDomain)
+                .toList();
+    }
+
+    @Override
+    public List<TaskCandidate> findCompatibleReadyCandidates(
+            OffsetDateTime readyAt,
+            int limit,
+            String deploymentScope,
+            String capabilityHash,
+            long maxArchiveBytes,
+            long maxFileBytes) {
+        return mapper
+                .findReadyCandidates(
+                        readyAt,
+                        limit,
+                        deploymentScope,
+                        capabilityHash,
+                        maxArchiveBytes,
+                        maxFileBytes)
+                .stream()
                 .map(MyBatisDurableTaskLeaseRepository::toDomain)
                 .toList();
     }
@@ -149,7 +182,15 @@ public class MyBatisDurableTaskLeaseRepository implements DurableTaskLeaseReposi
 
     @Override
     public List<ExpiredAttempt> findExpiredAttempts(OffsetDateTime expiredBefore, int limit) {
-        return mapper.findExpiredAttempts(expiredBefore, limit).stream()
+        return mapper.findExpiredAttempts(expiredBefore, limit, null).stream()
+                .map(data -> new ExpiredAttempt(data.attemptId(), data.workerId()))
+                .toList();
+    }
+
+    @Override
+    public List<ExpiredAttempt> findScopedExpiredAttempts(
+            OffsetDateTime expiredBefore, int limit, String deploymentScope) {
+        return mapper.findExpiredAttempts(expiredBefore, limit, deploymentScope).stream()
                 .map(data -> new ExpiredAttempt(data.attemptId(), data.workerId()))
                 .toList();
     }

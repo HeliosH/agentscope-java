@@ -12,6 +12,7 @@ package io.agentscope.saas.orchestration;
 import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 /** Provider-neutral execution port consumed by the durable task worker. */
 @FunctionalInterface
@@ -107,9 +108,25 @@ public interface DurableTaskExecutor {
         }
     }
 
-    record ExecutionResult(String outputJson) {
+    /** The callback is call-local; only outputJson is persisted. It never re-enters execution. */
+    record ExecutionResult(String outputJson, Consumer<RuntimeException> commitRecovery) {
         public ExecutionResult {
             outputJson = outputJson == null || outputJson.isBlank() ? "{}" : outputJson;
+        }
+
+        public ExecutionResult(String outputJson) {
+            this(outputJson, null);
+        }
+
+        public void commitFailed(RuntimeException error) {
+            if (commitRecovery != null) {
+                try {
+                    commitRecovery.accept(error);
+                } catch (RuntimeException recovery) {
+                    throw new TaskResultCommitException(recovery);
+                }
+            }
+            throw new TaskResultCommitException(error);
         }
     }
 }

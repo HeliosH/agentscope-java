@@ -551,6 +551,14 @@ button {
   background: #2f9e67;
 }
 
+.chat-header__archive {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
 .chat-model-picker {
   display: inline-flex;
   align-items: center;
@@ -562,6 +570,11 @@ button {
   border-radius: 6px;
   color: var(--text-secondary);
   background: var(--surface);
+}
+
+.chat-model-picker > svg,
+.chat-run-toggle > svg {
+  flex-shrink: 0;
 }
 
 .chat-model-picker select {
@@ -1126,7 +1139,7 @@ button {
 .message-pending span:nth-child(3) { animation-delay: 240ms; }
 
 .message-recovery {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
@@ -1135,6 +1148,7 @@ button {
 }
 
 .message-recovery__dot {
+  flex-shrink: 0;
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -2648,6 +2662,18 @@ button:disabled {
 
   .chat-model-picker select {
     max-width: 120px;
+  }
+
+  .chat-run-toggle {
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .chat-run-toggle > span {
+    display: none;
   }
 
   .chat-thread__inner {

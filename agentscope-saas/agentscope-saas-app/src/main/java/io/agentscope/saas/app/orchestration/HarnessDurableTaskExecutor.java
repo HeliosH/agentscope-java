@@ -25,6 +25,9 @@ import io.agentscope.saas.app.chat.ChatPersistenceService;
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.config.TenantRlsWebFilter;
 import io.agentscope.saas.app.model.ModelCatalog;
+import io.agentscope.saas.app.workspace.WorkspaceArchiveDeferredException;
+import io.agentscope.saas.app.workspace.WorkspaceArchiveRejectedException;
+import io.agentscope.saas.app.workspace.WorkspaceArchiveService;
 import io.agentscope.saas.app.workspace.WorkspaceCheckpointContext;
 import io.agentscope.saas.app.workspace.WorkspaceProjectionCatalogSink;
 import io.agentscope.saas.core.tenant.TenantContext;
@@ -56,8 +59,16 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
     private final RunOrchestrationService orchestration;
     private final WorkspaceArtifactService workspaceArtifactService;
     private final WorkspaceCheckpointRestoreService workspaceRestoreService;
+    private final WorkspaceArchiveService workspaceArchives;
+    private final io.agentscope.saas.app.workspace.WorkspaceInputService workspaceInputs;
     private final boolean workspaceProjectionAvailable;
     private final TaskContextAssembler taskContextAssembler = new TaskContextAssembler();
+    private RunExecutionPolicyService executionPolicies;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureExecutionPolicies(RunExecutionPolicyService policies) {
+        executionPolicies = policies;
+    }
 
     public HarnessDurableTaskExecutor(
             HarnessAgent agent,
@@ -68,6 +79,53 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
             WorkspaceArtifactService workspaceArtifactService,
             WorkspaceCheckpointRestoreService workspaceRestoreService,
             Optional<BaseStore> workspaceStore) {
+        this(
+                agent,
+                objectMapper,
+                properties,
+                chatPersistence,
+                orchestration,
+                workspaceArtifactService,
+                workspaceRestoreService,
+                workspaceStore,
+                null);
+    }
+
+    public HarnessDurableTaskExecutor(
+            HarnessAgent agent,
+            ObjectMapper objectMapper,
+            SaasProperties properties,
+            ChatPersistenceService chatPersistence,
+            RunOrchestrationService orchestration,
+            WorkspaceArtifactService workspaceArtifactService,
+            WorkspaceCheckpointRestoreService workspaceRestoreService,
+            Optional<BaseStore> workspaceStore,
+            WorkspaceArchiveService workspaceArchives) {
+        this(
+                agent,
+                objectMapper,
+                properties,
+                chatPersistence,
+                orchestration,
+                workspaceArtifactService,
+                workspaceRestoreService,
+                workspaceStore,
+                workspaceArchives,
+                null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public HarnessDurableTaskExecutor(
+            HarnessAgent agent,
+            ObjectMapper objectMapper,
+            SaasProperties properties,
+            ChatPersistenceService chatPersistence,
+            RunOrchestrationService orchestration,
+            WorkspaceArtifactService workspaceArtifactService,
+            WorkspaceCheckpointRestoreService workspaceRestoreService,
+            Optional<BaseStore> workspaceStore,
+            WorkspaceArchiveService workspaceArchives,
+            io.agentscope.saas.app.workspace.WorkspaceInputService workspaceInputs) {
         this.agent = agent;
         this.objectMapper = objectMapper;
         this.properties = properties;
@@ -75,6 +133,8 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
         this.orchestration = orchestration;
         this.workspaceArtifactService = workspaceArtifactService;
         this.workspaceRestoreService = workspaceRestoreService;
+        this.workspaceArchives = workspaceArchives;
+        this.workspaceInputs = workspaceInputs;
         this.workspaceProjectionAvailable = workspaceStore.isPresent();
     }
 
@@ -134,15 +194,54 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
                         : null;
         if (workspaceCheckpoint != null) {
             contextBuilder.put(WorkspaceCheckpointContext.class, workspaceCheckpoint);
-            workspaceRestoreService
-                    .prepare(
+            if (workspaceArchives != null)
+                contextBuilder.put(
+                        io.agentscope.harness.agent.sandbox.InvocationResultObserver.class,
+                        new io.agentscope.saas.app.workspace.WorkspaceComputedResult(
+                                request.taskId(),
+                                request.attemptId(),
+                                result -> {
+                                    try {
+                                        return new WorkspaceArchiveService.PendingResult(
+                                                resultOutput(result, null, startedNanos)
+                                                        .outputJson(),
+                                                List.copyOf(result.getContent()),
+                                                (isContinuation(request) || isDirectChat(request))
+                                                        && !orchestration.hasUnsettledChildren(
+                                                                request.runId()));
+                                    } catch (Exception error) {
+                                        throw new io.agentscope.saas.orchestration
+                                                .TaskResultCommitException(error);
+                                    }
+                                }));
+            var restored =
+                    workspaceRestoreService.prepare(
                             tenant,
                             request.orgId(),
                             request.attemptId(),
-                            request.workspaceIsolationMode())
-                    .ifPresent(
-                            restorePlan ->
-                                    contextBuilder.put(WorkspaceRestorePlan.class, restorePlan));
+                            request.leaseOwner(),
+                            request.workspaceIsolationMode());
+            restored.ifPresent(
+                    restorePlan -> contextBuilder.put(WorkspaceRestorePlan.class, restorePlan));
+            if (workspaceInputs != null) {
+                workspaceInputs
+                        .prepare(
+                                tenant,
+                                request.runId(),
+                                request.taskId(),
+                                request.attemptId(),
+                                request.leaseOwner())
+                        .ifPresent(
+                                plan -> {
+                                    contextBuilder.put(
+                                            io.agentscope.harness.agent.sandbox.WorkspaceInputPlan
+                                                    .class,
+                                            plan);
+                                    contextBuilder.put(
+                                            SandboxIsolationOverride.class,
+                                            new SandboxIsolationOverride("run/" + request.runId()));
+                                });
+            }
         }
         applyWorkspaceIsolation(contextBuilder, request);
         sharedSandboxIsolationKey(request)
@@ -154,6 +253,8 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
         runtimeAttribute(request, "modelId")
                 .ifPresent(key -> contextBuilder.put(ContextWindowAwareModel.MODEL_ID_KEY, key));
         RuntimeContext context = contextBuilder.build();
+        if (executionPolicies != null)
+            executionPolicies.bind(context, request.orgId(), request.runId());
         Map<String, Object> inputMetadata = new LinkedHashMap<>();
         inputMetadata.put(ModelCatalog.ORG_ID_KEY, request.orgId().toString());
         runtimeAttribute(request, "modelId")
@@ -172,23 +273,78 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
         try {
             result = executeAgent(request, input, context, timeout);
         } catch (RuntimeException | Error executionError) {
+            if (executionError instanceof RuntimeException && workspaceArchives != null) {
+                var adopted = workspaceArchives.adoptPrepared(workspaceCheckpoint);
+                if (adopted != null) throw new WorkspaceArchiveDeferredException(adopted);
+            }
             publishCheckpoint(request, context, workspaceCheckpoint, executionError);
             throw executionError;
         }
-        WorkspaceArtifactService.Publication publication =
-                publishCheckpoint(request, context, workspaceCheckpoint, null);
         if (result == null) {
             throw new IllegalStateException("HarnessAgent completed without a result message");
         }
-        if ((isContinuation(request) || isDirectChat(request))
-                && !orchestration.hasUnsettledChildren(request.runId())) {
-            chatPersistence.saveAssistantMessageForRun(
-                    tenant,
-                    request.sessionId(),
-                    request.agentId(),
-                    request.runId(),
-                    result.getContent());
+        boolean deliverReply;
+        try {
+            deliverReply =
+                    (isContinuation(request) || isDirectChat(request))
+                            && !orchestration.hasUnsettledChildren(request.runId());
+        } catch (RuntimeException error) {
+            throw new io.agentscope.saas.orchestration.TaskResultCommitException(error);
         }
+        ExecutionResult output;
+        try {
+            var publication = publishCheckpoint(request, context, workspaceCheckpoint, null);
+            output = resultOutput(result, publication, startedNanos);
+            if (deliverReply) {
+                chatPersistence.saveAssistantMessageForRun(
+                        tenant,
+                        request.sessionId(),
+                        request.agentId(),
+                        request.runId(),
+                        result.getContent());
+            }
+        } catch (RuntimeException error) {
+            String pendingOutput;
+            try {
+                pendingOutput = resultOutput(result, null, startedNanos).outputJson();
+            } catch (Exception serialization) {
+                if (serialization != error) serialization.addSuppressed(error);
+                throw new io.agentscope.saas.orchestration.TaskResultCommitException(serialization);
+            }
+            throw handoverCompleted(
+                    workspaceCheckpoint, pendingOutput, result.getContent(), deliverReply, error);
+        } catch (Exception serialization) {
+            throw new io.agentscope.saas.orchestration.TaskResultCommitException(serialization);
+        }
+        String outputJson = output.outputJson();
+        var answer = List.copyOf(result.getContent());
+        return new ExecutionResult(
+                outputJson,
+                error -> {
+                    throw handoverCompleted(
+                            workspaceCheckpoint, outputJson, answer, deliverReply, error);
+                });
+    }
+
+    private RuntimeException handoverCompleted(
+            WorkspaceCheckpointContext checkpoint,
+            String outputJson,
+            List<io.agentscope.core.message.ContentBlock> answer,
+            boolean deliverReply,
+            RuntimeException error) {
+        if (workspaceArchives == null) return new WorkspaceArchiveRejectedException(error);
+        try {
+            return new WorkspaceArchiveDeferredException(
+                    workspaceArchives.defer(checkpoint, outputJson, answer, deliverReply));
+        } catch (RuntimeException rejected) {
+            if (rejected != error) rejected.addSuppressed(error);
+            return new WorkspaceArchiveRejectedException(rejected);
+        }
+    }
+
+    private ExecutionResult resultOutput(
+            Msg result, WorkspaceArtifactService.Publication publication, long startedNanos)
+            throws Exception {
         String fullResult = result.getTextContent() != null ? result.getTextContent() : "";
         String summary =
                 bounded(

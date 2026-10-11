@@ -8,6 +8,7 @@ package io.agentscope.saas.domain.orchestration;
 
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /** Tenant-scoped persistence port for immutable artifacts published by execution attempts. */
@@ -16,6 +17,8 @@ public interface RunArtifactRepository {
     boolean lockCurrentPublicationScope(UUID orgId, UUID runId, UUID taskId, UUID attemptId);
 
     boolean existsById(UUID id, UUID orgId);
+
+    Optional<RunArtifact> findById(UUID id, UUID orgId);
 
     int insert(NewRunArtifact artifact);
 

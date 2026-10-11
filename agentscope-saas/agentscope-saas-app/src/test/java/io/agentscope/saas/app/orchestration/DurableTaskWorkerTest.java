@@ -13,6 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -67,13 +68,13 @@ class DurableTaskWorkerTest {
     }
 
     @Test
-    void executionFailureIsPersistedForRetryPolicy() throws Exception {
+    void nonModelExecutionFailureIsTerminalRatherThanRetried() throws Exception {
         when(executor.execute(any())).thenThrow(new IllegalStateException("model unavailable"));
 
         assertThat(worker.pollOnce()).isEqualTo(1);
 
         verify(leases)
-                .fail(
+                .failTerminal(
                         eq(lease.attemptId()),
                         eq("worker-test"),
                         eq("TASK_EXECUTION_FAILED"),
@@ -92,7 +93,184 @@ class DurableTaskWorkerTest {
                         eq("worker-test"),
                         eq("MODEL_REQUEST_FAILED"),
                         eq("gateway interrupted"),
-                        eq(1_000L));
+                        org.mockito.ArgumentMatchers.longThat(
+                                delay -> delay >= 750L && delay <= 1250L));
+    }
+
+    @Test
+    void archiveHandoverReleasesWorkerWithoutBusinessSuccessOrRetry() throws Exception {
+        when(executor.execute(any()))
+                .thenThrow(
+                        new io.agentscope.saas.app.workspace.WorkspaceArchiveDeferredException(
+                                UUID.randomUUID()));
+        assertThat(worker.pollOnce()).isEqualTo(1);
+        verify(leases, never()).succeed(any(), any(), any());
+        verify(leases, never()).fail(any(), any(), any(), any());
+        verify(leases, never())
+                .recover(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyLong());
+        when(leases.claimReady("worker-test", 2)).thenReturn(List.of());
+        assertThat(worker.pollOnce()).isZero();
+    }
+
+    @Test
+    void unsealedComputeResultCannotTriggerTaskReplayEvenWithAModelErrorCause() throws Exception {
+        when(executor.execute(any()))
+                .thenThrow(
+                        new io.agentscope.saas.app.workspace.WorkspaceArchiveRejectedException(
+                                new ModelException("nested transport cause")));
+        assertThat(worker.pollOnce()).isEqualTo(1);
+        verify(leases)
+                .failTerminal(
+                        eq(lease.attemptId()),
+                        eq("worker-test"),
+                        eq("WORKSPACE_ARCHIVE_HANDOVER_FAILED"),
+                        any());
+        verify(leases, never()).fail(any(), any(), any(), any());
+        verify(leases, never())
+                .recover(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyLong());
+    }
+
+    @Test
+    void statusSubmissionFailureHandsOverCapturedResultWithoutRunningExecutorAgain()
+            throws Exception {
+        var job = UUID.randomUUID();
+        when(executor.execute(any()))
+                .thenReturn(
+                        new DurableTaskExecutor.ExecutionResult(
+                                "{}",
+                                error -> {
+                                    throw new io.agentscope.saas.app.workspace
+                                            .WorkspaceArchiveDeferredException(job);
+                                }));
+        when(leases.succeed(any(), any(), any()))
+                .thenThrow(new ModelException("status acknowledgement lost"));
+        assertThat(worker.pollOnce()).isEqualTo(1);
+        verify(executor).execute(any());
+        verify(leases, never()).fail(any(), any(), any(), any());
+        verify(leases, never()).failTerminal(any(), any(), any(), any());
+        verify(leases, never())
+                .recover(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyLong());
+    }
+
+    @Test
+    void legacyResultWithoutACommitHandlerStopsInsteadOfReplayingCompletedCompute()
+            throws Exception {
+        when(executor.execute(any())).thenReturn(new DurableTaskExecutor.ExecutionResult("{}"));
+        when(leases.succeed(any(), any(), any()))
+                .thenThrow(new ModelException("commit transport failed"));
+        assertThat(worker.pollOnce()).isEqualTo(1);
+        verify(leases)
+                .failTerminal(
+                        eq(lease.attemptId()),
+                        eq("worker-test"),
+                        eq("TASK_RESULT_COMMIT_FAILED"),
+                        any());
+        verify(leases, never()).fail(any(), any(), any(), any());
+        verify(leases, never())
+                .recover(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyLong());
+    }
+
+    @Test
+    void lostAcknowledgementOfAnAlreadyCommittedAttemptDoesNotCreateAnArchiveJob()
+            throws Exception {
+        var called = new java.util.concurrent.atomic.AtomicBoolean();
+        when(executor.execute(any()))
+                .thenReturn(
+                        new DurableTaskExecutor.ExecutionResult("{}", error -> called.set(true)));
+        when(leases.succeed(any(), any(), any())).thenThrow(new IllegalStateException("ack lost"));
+        when(leases.completedSuccessfully(lease.attemptId(), "worker-test")).thenReturn(true);
+        assertThat(worker.pollOnce()).isEqualTo(1);
+        assertThat(called).isFalse();
+        verify(executor).execute(any());
+        verify(leases, never()).failTerminal(any(), any(), any(), any());
+    }
+
+    @Test
+    void failedCommitStateReadStillCannotTurnSubmissionIntoAModelRetry() throws Exception {
+        var error = new ModelException("commit lost");
+        when(executor.execute(any()))
+                .thenReturn(
+                        new DurableTaskExecutor.ExecutionResult(
+                                "{}",
+                                cause -> {
+                                    assertThat(cause.getSuppressed()).hasSize(1);
+                                    throw new io.agentscope.saas.app.workspace
+                                            .WorkspaceArchiveDeferredException(UUID.randomUUID());
+                                }));
+        when(leases.succeed(any(), any(), any())).thenThrow(error);
+        when(leases.completedSuccessfully(any(), any()))
+                .thenThrow(new IllegalStateException("status read unavailable"));
+        assertThat(worker.pollOnce()).isEqualTo(1);
+        verify(leases, never())
+                .recover(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyLong());
+        verify(leases, never()).failTerminal(any(), any(), any(), any());
+    }
+
+    @Test
+    void arbitraryHandlerModelFailureRemainsACommitFailure() throws Exception {
+        when(executor.execute(any()))
+                .thenReturn(
+                        new DurableTaskExecutor.ExecutionResult(
+                                "{}",
+                                error -> {
+                                    throw new ModelException("handler nested model cause");
+                                }));
+        when(leases.succeed(any(), any(), any()))
+                .thenThrow(new IllegalStateException("status write unavailable"));
+        assertThat(worker.pollOnce()).isEqualTo(1);
+        verify(leases)
+                .failTerminal(
+                        eq(lease.attemptId()),
+                        eq("worker-test"),
+                        eq("TASK_RESULT_COMMIT_FAILED"),
+                        any());
+        verify(leases, never())
+                .recover(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyLong());
+    }
+
+    @Test
+    void explicitLeaseLossDoesNotInvokeTheObsoleteResultsHandler() throws Exception {
+        var called = new java.util.concurrent.atomic.AtomicBoolean();
+        when(executor.execute(any()))
+                .thenReturn(
+                        new DurableTaskExecutor.ExecutionResult("{}", error -> called.set(true)));
+        when(leases.succeed(any(), any(), any())).thenReturn(false);
+        assertThat(worker.pollOnce()).isEqualTo(1);
+        assertThat(called).isFalse();
+        verify(leases, never()).failTerminal(any(), any(), any(), any());
+    }
+
+    @Test
+    void emptyExecutorReturnIsNotPermissionToReplayItsPossibleSideEffects() throws Exception {
+        assertThat(worker.pollOnce()).isEqualTo(1);
+        verify(leases)
+                .failTerminal(
+                        eq(lease.attemptId()),
+                        eq("worker-test"),
+                        eq("TASK_RESULT_COMMIT_FAILED"),
+                        any());
+        verify(leases, never()).fail(any(), any(), any(), any());
+    }
+
+    @Test
+    void completionCommittedWhileTheHandoverWasAttemptedDoesNotBecomeATerminalFailure()
+            throws Exception {
+        when(executor.execute(any()))
+                .thenReturn(
+                        new DurableTaskExecutor.ExecutionResult(
+                                "{}",
+                                error -> {
+                                    throw new io.agentscope.saas.app.workspace
+                                            .WorkspaceArchiveRejectedException(error);
+                                }));
+        when(leases.succeed(any(), any(), any())).thenThrow(new IllegalStateException("ack raced"));
+        when(leases.completedSuccessfully(lease.attemptId(), "worker-test"))
+                .thenReturn(false, true);
+        assertThat(worker.pollOnce()).isEqualTo(1);
+        verify(leases, never()).failTerminal(any(), any(), any(), any());
+        verify(leases, never())
+                .recover(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyLong());
+        verify(executor).execute(any());
     }
 
     private static TaskLease lease() {

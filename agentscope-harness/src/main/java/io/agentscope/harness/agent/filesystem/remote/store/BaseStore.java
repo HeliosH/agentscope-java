@@ -86,6 +86,12 @@ public interface BaseStore {
      */
     List<StoreItem> search(List<String> namespace, int limit, int offset);
 
+    /** Bounded key-only prefix listing; unsupported adapters must not fall back to loading bodies. */
+    default List<String> listKeys(List<String> namespace, String prefix, int limit, int offset) {
+        throw new UnsupportedOperationException(
+                "Store does not support bounded prefix key listing");
+    }
+
     /**
      * Delete an item by namespace and key.
      *

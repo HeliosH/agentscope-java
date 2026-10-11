@@ -22,8 +22,10 @@ public interface FilePublicationGcMapper {
                     + " 'STORED') AND lease_until <= #{now} AND recovery_due_at <= #{now} AND"
                     + " recovery_deadline_at > #{now} AND recovery_attempts < #{maxAttempts} AND"
                     + " (status = 'STORED' OR EXISTS (SELECT 1 FROM file_publication_intents i"
-                    + " WHERE i.publication_id = p.id AND NOT i.raw_write_required)) ORDER BY"
-                    + " recovery_due_at, id LIMIT #{limit}")
+                    + " WHERE i.publication_id = p.id AND NOT i.raw_write_required)) AND NOT EXISTS"
+                    + " (SELECT 1 FROM workspace_archive_items e JOIN workspace_archive_jobs j ON"
+                    + " j.id = e.job_id WHERE e.publication_id = p.id AND j.status IN ('PENDING',"
+                    + " 'RUNNING')) ORDER BY recovery_due_at, id LIMIT #{limit}")
     List<Publication> recoveryCandidates(
             @Param("now") OffsetDateTime now,
             @Param("maxAttempts") int attempts,
@@ -34,8 +36,11 @@ public interface FilePublicationGcMapper {
                     + FilePublicationMapper.COLUMNS
                     + " FROM file_publications WHERE status <> 'PUBLISHED' AND eligible_at <="
                     + " #{now} AND attempts < #{maxAttempts} AND NOT (recoverable AND status IN"
-                    + " ('STAGED', 'STORED') AND recovery_deadline_at > #{now}) ORDER BY"
-                    + " eligible_at, id LIMIT #{limit}")
+                    + " ('STAGED', 'STORED') AND recovery_deadline_at > #{now}) AND NOT EXISTS"
+                    + " (SELECT 1 FROM workspace_archive_items e JOIN workspace_archive_jobs j ON"
+                    + " j.id = e.job_id WHERE e.publication_id = file_publications.id AND j.status"
+                    + " IN ('PENDING', 'RUNNING') AND j.deadline_at > #{now}) ORDER BY eligible_at,"
+                    + " id LIMIT #{limit}")
     List<Publication> candidates(
             @Param("now") OffsetDateTime now,
             @Param("maxAttempts") int attempts,
@@ -47,6 +52,7 @@ public interface FilePublicationGcMapper {
               eligible_at = #{until}, attempts = attempts + 1, updated_at = #{now}
              WHERE id = #{id} AND status <> 'PUBLISHED' AND eligible_at <= #{now} AND attempts < #{maxAttempts}
                AND NOT (recoverable AND status IN ('STAGED', 'STORED') AND recovery_deadline_at > #{now})
+               AND NOT EXISTS (SELECT 1 FROM workspace_archive_items e JOIN workspace_archive_jobs j ON j.id = e.job_id WHERE e.publication_id = file_publications.id AND j.status IN ('PENDING', 'RUNNING') AND j.deadline_at > #{now})
             """)
     int claim(
             @Param("id") UUID id,

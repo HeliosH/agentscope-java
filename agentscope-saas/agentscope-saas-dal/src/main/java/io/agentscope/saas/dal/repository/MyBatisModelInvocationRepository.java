@@ -22,6 +22,13 @@ public class MyBatisModelInvocationRepository implements ModelInvocationReposito
     }
 
     @Override
+    public long failedReasoningCalls(Scope scope) {
+        if (scope.runId() == null || scope.taskId() == null)
+            throw new IllegalArgumentException("Run-bound recovery scope is required");
+        return mapper.failedReasoningCalls(scope);
+    }
+
+    @Override
     public boolean lockOwner(Scope scope, boolean requireActiveOrganization) {
         return !mapper.lockOrg(scope.orgId(), requireActiveOrganization).isEmpty()
                 && !mapper.lockUser(scope).isEmpty();

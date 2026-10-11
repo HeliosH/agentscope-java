@@ -7,6 +7,7 @@
 package io.agentscope.saas.dal.mybatis.tenant;
 
 import io.agentscope.saas.domain.orchestration.RunArtifactRepository.NewRunArtifact;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 import org.apache.ibatis.annotations.Insert;
@@ -33,8 +34,45 @@ public interface RunArtifactMapper {
             @Param("taskId") UUID taskId,
             @Param("attemptId") UUID attemptId);
 
+    @Select(
+            """
+            SELECT id FROM assistant_runs WHERE id = #{runId} AND org_id = #{orgId}
+              AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED') AND NOT cancel_requested
+              FOR UPDATE
+            """)
+    List<UUID> lockActiveRun(@Param("orgId") UUID orgId, @Param("runId") UUID runId);
+
+    @Select(
+            """
+            SELECT a.id FROM run_attempts a
+             WHERE a.id = #{attemptId} AND a.org_id = #{orgId} AND a.run_id = #{runId}
+               AND a.task_id = #{taskId} AND a.status = 'RUNNING'
+               AND ((a.lease_owner IS NULL AND a.lease_expires_at IS NULL)
+                    OR (a.lease_owner IS NOT NULL AND a.lease_expires_at > #{now}))
+               AND EXISTS (SELECT 1 FROM task_nodes t WHERE t.id = a.task_id
+                    AND t.org_id = a.org_id AND t.run_id = a.run_id AND t.status = 'RUNNING')
+               AND EXISTS (SELECT 1 FROM agent_runs ar WHERE ar.id = a.agent_run_id
+                    AND ar.org_id = a.org_id AND ar.task_id = a.task_id
+                    AND ar.run_id = a.run_id AND ar.status = 'RUNNING')
+             FOR UPDATE
+            """)
+    List<UUID> lockActiveAttempt(
+            @Param("orgId") UUID orgId,
+            @Param("runId") UUID runId,
+            @Param("taskId") UUID taskId,
+            @Param("attemptId") UUID attemptId,
+            @Param("now") OffsetDateTime now);
+
     @Select("SELECT COUNT(*) FROM run_artifacts WHERE id = #{id} AND org_id = #{orgId}")
     int countById(@Param("id") UUID id, @Param("orgId") UUID orgId);
+
+    @Select(
+            """
+            SELECT id, org_id, run_id, task_id, attempt_id, file_id, file_version_id,
+                   logical_path, artifact_type, evidence_json, created_at
+              FROM run_artifacts WHERE id = #{id} AND org_id = #{orgId}
+            """)
+    List<RunArtifactData> findById(@Param("id") UUID id, @Param("orgId") UUID orgId);
 
     @Insert(
             """

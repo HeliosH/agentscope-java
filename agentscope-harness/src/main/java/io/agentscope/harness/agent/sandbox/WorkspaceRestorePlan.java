@@ -54,10 +54,26 @@ public final class WorkspaceRestorePlan {
 
         private final String path;
         private final byte[] content;
+        private final long size;
+        private final String sha256;
+        private final ContentSource source;
 
         public WorkspaceFile(String path, byte[] content) {
             this.path = normalizePath(path);
             this.content = content != null ? content.clone() : new byte[0];
+            this.size = this.content.length;
+            this.sha256 = digest(this.content);
+            this.source = () -> new java.io.ByteArrayInputStream(this.content);
+        }
+
+        public WorkspaceFile(String path, long size, String sha256, ContentSource source) {
+            this.path = normalizePath(path);
+            if (size < 0 || sha256 == null || !sha256.matches("[a-f0-9]{64}"))
+                throw new IllegalArgumentException("Invalid immutable workspace file descriptor");
+            this.size = size;
+            this.sha256 = sha256;
+            this.source = java.util.Objects.requireNonNull(source);
+            this.content = null;
         }
 
         public String path() {
@@ -65,11 +81,54 @@ public final class WorkspaceRestorePlan {
         }
 
         public byte[] content() {
-            return content.clone();
+            if (content != null) return content.clone();
+            if (size > 32L * 1024 * 1024)
+                throw new IllegalStateException("Use streaming access for large workspace files");
+            try (var out = new java.io.ByteArrayOutputStream()) {
+                transferTo(out, 8192);
+                return out.toByteArray();
+            } catch (Exception error) {
+                throw new IllegalStateException("Workspace file unavailable", error);
+            }
         }
 
         public long size() {
-            return content.length;
+            return size;
+        }
+
+        public String sha256() {
+            return sha256;
+        }
+
+        public void transferTo(java.io.OutputStream out, int bufferBytes) throws Exception {
+            if (bufferBytes < 4096 || bufferBytes > 1024 * 1024)
+                throw new IllegalArgumentException("Invalid workspace transfer buffer");
+            var digest = java.security.MessageDigest.getInstance("SHA-256");
+            try (var in = source.open()) {
+                byte[] buffer = new byte[bufferBytes];
+                long copied = 0;
+                int read;
+                while ((read = in.read(buffer)) != -1) {
+                    if (read > size - copied)
+                        throw new java.io.IOException("WORKSPACE_INPUT_INTEGRITY");
+                    copied += read;
+                    digest.update(buffer, 0, read);
+                    out.write(buffer, 0, read);
+                }
+                if (copied != size
+                        || !java.util.HexFormat.of().formatHex(digest.digest()).equals(sha256))
+                    throw new java.io.IOException("WORKSPACE_INPUT_INTEGRITY");
+            }
+        }
+
+        private static String digest(byte[] bytes) {
+            try {
+                return java.util.HexFormat.of()
+                        .formatHex(
+                                java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+            } catch (java.security.NoSuchAlgorithmException impossible) {
+                throw new IllegalStateException(impossible);
+            }
         }
 
         private static String normalizePath(String path) {
@@ -96,5 +155,10 @@ public final class WorkspaceRestorePlan {
             }
             return String.join("/", segments);
         }
+    }
+
+    @FunctionalInterface
+    public interface ContentSource {
+        java.io.InputStream open() throws Exception;
     }
 }

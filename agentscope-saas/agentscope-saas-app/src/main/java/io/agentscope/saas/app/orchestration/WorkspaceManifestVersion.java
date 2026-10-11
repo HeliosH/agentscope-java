@@ -14,11 +14,11 @@ import java.util.List;
 import java.util.UUID;
 
 /** Canonical digest for an immutable workspace checkpoint manifest. */
-final class WorkspaceManifestVersion {
+public final class WorkspaceManifestVersion {
 
     private WorkspaceManifestVersion() {}
 
-    static String compute(List<Entry> entries) {
+    public static String compute(List<Entry> entries) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             entries.stream()
@@ -41,5 +41,5 @@ final class WorkspaceManifestVersion {
         }
     }
 
-    record Entry(String logicalPath, UUID fileVersionId, String sha256) {}
+    public record Entry(String logicalPath, UUID fileVersionId, String sha256) {}
 }

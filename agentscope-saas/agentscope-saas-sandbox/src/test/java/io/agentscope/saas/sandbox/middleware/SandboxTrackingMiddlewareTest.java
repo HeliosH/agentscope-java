@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -215,6 +216,12 @@ class SandboxTrackingMiddlewareTest {
         ctx.put(SandboxRuntimeAttributes.ATTR_TASK_ID, taskId.toString());
         ctx.put(SandboxRuntimeAttributes.ATTR_ATTEMPT_ID, attemptId.toString());
         ctx.put(SandboxRuntimeAttributes.ATTR_LEASE_OWNER, "worker-1");
+        var sandbox = mock(io.agentscope.harness.agent.sandbox.Sandbox.class);
+        var state = new io.agentscope.harness.agent.sandbox.SandboxState() {};
+        state.setSessionId("active-provider-resource");
+        when(sandbox.getState()).thenReturn(state);
+        when(sandbox.isRunning()).thenReturn(true);
+        ctx.put(io.agentscope.harness.agent.sandbox.Sandbox.class, sandbox);
         UUID trackingId = UUID.randomUUID();
         SandboxLeaseContext lease = new SandboxLeaseContext(UUID.randomUUID(), ORG_ID);
         when(broker.registerActive(
@@ -237,12 +244,24 @@ class SandboxTrackingMiddlewareTest {
                         eq("worker-1"),
                         any(OffsetDateTime.class)))
                 .thenReturn(lease);
+        when(leaseService.activate(
+                        eq(lease),
+                        eq("active-provider-resource"),
+                        eq("{}"),
+                        any(OffsetDateTime.class)))
+                .thenReturn(true);
         when(next.apply(any())).thenReturn(Flux.empty());
 
         middleware.onAgent(agent, ctx, new AgentInput(Collections.emptyList()), next).blockLast();
 
         assertThat(ctx.get(SandboxLeaseContext.class)).isEqualTo(lease);
         verify(leaseService).release(lease);
+        verify(leaseService)
+                .activate(
+                        eq(lease),
+                        eq("active-provider-resource"),
+                        eq("{}"),
+                        any(OffsetDateTime.class));
     }
 
     private static RuntimeContext tenantContext() {
