@@ -29,7 +29,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-/** Uses existing durable attachment bindings; object reads never carry execution SQL locks. */
+/** Freezes task inputs across attempts; object reads never carry execution SQL locks. */
 @Service
 public class WorkspaceInputService {
     private final WorkspaceInputRepository inputs;
@@ -101,9 +101,11 @@ public class WorkspaceInputService {
                             requireCurrent(scope);
                             return new Prepared(scope, bindings(scope));
                         });
-        if (prepared.files().isEmpty()) return Optional.empty();
         FileObjectStore store =
-                Objects.requireNonNull(stores.getIfAvailable(), "Input object store unavailable");
+                prepared.files().isEmpty()
+                        ? null
+                        : Objects.requireNonNull(
+                                stores.getIfAvailable(), "Input object store unavailable");
         List<WorkspaceRestorePlan.WorkspaceFile> files = new ArrayList<>();
         for (var input : prepared.files()) {
             if (!store.backend().equals(input.backend()))
@@ -147,16 +149,20 @@ public class WorkspaceInputService {
                     requireCurrent(prepared.scope());
                     if (!bindings(prepared.scope()).equals(prepared.files()))
                         throw new InputBindingsChangedException();
+                    if (inputs.frozen(prepared.scope()).isEmpty()) {
+                        inputs.freeze(
+                                prepared.scope(),
+                                new WorkspaceInputRepository.Frozen(
+                                        version(prepared.files()),
+                                        prepared.files().size(),
+                                        prepared.files().stream()
+                                                .mapToLong(Input::sizeBytes)
+                                                .reduce(0L, Math::addExact)),
+                                prepared.files());
+                    }
                     requireCurrent(prepared.scope());
                 });
-        String version =
-                WorkspaceManifestVersion.compute(
-                        prepared.files().stream()
-                                .map(
-                                        f ->
-                                                new WorkspaceManifestVersion.Entry(
-                                                        f.logicalPath(), f.versionId(), f.sha256()))
-                                .toList());
+        String version = version(prepared.files());
         return Optional.of(
                 new WorkspaceInputPlan(
                         new WorkspaceRestorePlan(
@@ -174,13 +180,50 @@ public class WorkspaceInputService {
                                 properties.getFileStore().getMaxFileBytes(),
                                 cfg.getTransferMaxBytes())
                         : executionPolicies.workspacePolicy(scope.orgId(), scope.runId());
-        var raw = inputs.bindings(scope, Math.addExact(policy.maxFiles(), 1));
+        var frozen = inputs.frozen(scope);
+        List<Input> raw;
+        if (frozen.isPresent())
+            raw = inputs.frozenBindings(scope, Math.addExact(policy.maxFiles(), 1));
+        else {
+            raw = new ArrayList<>(inputs.bindings(scope, Math.addExact(policy.maxFiles(), 1)));
+            if (raw.size() <= policy.maxFiles()) {
+                for (var dependency :
+                        inputs.dependencies(scope, policy.maxFiles() - raw.size() + 1)) {
+                    if (dependency.sourceTaskId() == null || dependency.logicalPath() == null)
+                        throw new IllegalStateException("WORKSPACE_INPUT_BINDING_INVALID");
+                    String sourcePath =
+                            new WorkspaceRestorePlan.WorkspaceFile(
+                                            dependency.logicalPath(), new byte[0])
+                                    .path();
+                    if (!sourcePath.equals(dependency.logicalPath())
+                            || !(sourcePath.startsWith("outputs/")
+                                    || sourcePath.startsWith("inputs/")))
+                        throw new IllegalStateException("WORKSPACE_INPUT_BINDING_INVALID");
+                    raw.add(
+                            new Input(
+                                    null,
+                                    dependency.fileId(),
+                                    dependency.versionId(),
+                                    "inputs/dependencies/"
+                                            + dependency.sourceTaskId()
+                                            + "/"
+                                            + sourcePath,
+                                    dependency.backend(),
+                                    dependency.objectKey(),
+                                    dependency.sizeBytes(),
+                                    dependency.sha256(),
+                                    dependency.sourceTaskId()));
+                }
+            }
+        }
         if (raw.size() > policy.maxFiles())
             throw new IllegalStateException("WORKSPACE_INPUT_LIMIT");
         var byPath = new LinkedHashMap<String, Input>();
         long total = 0;
         for (var f : raw) {
-            if (f.logicalPath() == null
+            if (f.fileId() == null
+                    || f.versionId() == null
+                    || f.logicalPath() == null
                     || !(f.logicalPath().startsWith("inputs/")
                             || f.logicalPath().startsWith("outputs/"))
                     || !new WorkspaceRestorePlan.WorkspaceFile(f.logicalPath(), new byte[0])
@@ -204,7 +247,26 @@ public class WorkspaceInputService {
             if (f.sizeBytes() > policy.maxFileBytes() || total > policy.maxTotalBytes())
                 throw new IllegalStateException("WORKSPACE_INPUT_LIMIT");
         }
-        return List.copyOf(byPath.values());
+        var files =
+                byPath.values().stream()
+                        .sorted(java.util.Comparator.comparing(Input::logicalPath))
+                        .toList();
+        if (frozen.isPresent()
+                && (frozen.get().fileCount() != files.size()
+                        || frozen.get().totalBytes() != total
+                        || !frozen.get().version().equals(version(files))))
+            throw new IllegalStateException("WORKSPACE_INPUT_MANIFEST_INVALID");
+        return files;
+    }
+
+    private static String version(List<Input> files) {
+        return WorkspaceManifestVersion.compute(
+                files.stream()
+                        .map(
+                                f ->
+                                        new WorkspaceManifestVersion.Entry(
+                                                f.logicalPath(), f.versionId(), f.sha256()))
+                        .toList());
     }
 
     private void requireCurrent(Scope scope) {

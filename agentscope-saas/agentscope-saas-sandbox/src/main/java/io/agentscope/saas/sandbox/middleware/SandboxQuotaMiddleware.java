@@ -53,6 +53,10 @@ public class SandboxQuotaMiddleware implements MiddlewareBase {
             Function<AgentInput, Flux<AgentEvent>> next) {
 
         TenantContext tc = TenantContext.from(ctx);
+        var usage = ctx.get(io.agentscope.harness.agent.sandbox.SandboxUsageGuard.Binding.class);
+        if (usage != null)
+            return next.apply(
+                    input); // Admission is already paid by the durable resource reservation.
         // Dev/bypass tenants use non-UUID ids (e.g. "dev-org"); skip quota tracking for them
         // (same convention as SaasChatController.isPersistable). For UUID tenants, wrap the
         // broker call in withTenantOrg so the RLS GUC is set on the boundedElastic worker thread.

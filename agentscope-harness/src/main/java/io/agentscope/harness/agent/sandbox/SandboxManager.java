@@ -78,6 +78,13 @@ public class SandboxManager {
 
     public SandboxAcquireResult acquire(
             SandboxContext sandboxContext, RuntimeContext runtimeContext) throws Exception {
+        return acquire(sandboxContext, runtimeContext, () -> {});
+    }
+
+    /** Runs admission after the execution-slot wait, but before any provider allocation/resume. */
+    public SandboxAcquireResult acquire(
+            SandboxContext sandboxContext, RuntimeContext runtimeContext, Runnable admission)
+            throws Exception {
         // Priority 1: user-supplied sandbox — guard does not apply
         if (sandboxContext.getExternalSandbox() != null) {
             Sandbox external = sandboxContext.getExternalSandbox();
@@ -89,6 +96,7 @@ public class SandboxManager {
 
         // Priority 2: user-supplied state — guard does not apply
         if (sandboxContext.getExternalSandboxState() != null) {
+            admission.run();
             Sandbox sandbox = resume(sandboxContext.getExternalSandboxState(), runtimeContext);
             log.debug(
                     "[sandbox] Priority 2: resuming from explicit state: {}",
@@ -109,6 +117,7 @@ public class SandboxManager {
         }
 
         try {
+            admission.run();
             if (scopeKey.isPresent()) {
                 try {
                     Optional<String> stateJson = stateStore.load(scopeKey.get());
@@ -178,6 +187,11 @@ public class SandboxManager {
                 : client.resume(state);
     }
 
+    public Optional<SandboxIsolationKey> isolationKey(
+            SandboxContext context, RuntimeContext runtime) {
+        return SandboxIsolationKey.resolve(context.getIsolationScope(), runtime, agentId);
+    }
+
     public void release(SandboxAcquireResult result) {
         release(result, null);
     }
@@ -224,7 +238,9 @@ public class SandboxManager {
 
         try {
             sandbox.shutdown();
+            result.recordBackendRelease(true);
         } catch (Exception e) {
+            result.recordBackendRelease(false);
             notifyObserver(obs -> obs.onSandboxShutdownFailed(runtimeContext, e));
             log.warn("[sandbox] Sandbox shutdown failed: {}", e.getMessage(), e);
         }

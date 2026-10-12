@@ -29,6 +29,12 @@ public interface FileObjectGcMapper {
               FROM files
              WHERE status = 'deleted'
                AND updated_at < #{deletedBefore}
+               AND NOT EXISTS (
+                   SELECT 1 FROM legacy_archive_imports j JOIN file_versions v ON v.id = j.source_version_id
+                    WHERE v.file_id = files.id
+               )
+               AND NOT EXISTS (SELECT 1 FROM task_input_entries i WHERE i.file_id = files.id)
+               AND NOT EXISTS (SELECT 1 FROM run_artifacts a WHERE a.file_id = files.id)
              ORDER BY updated_at ASC
              LIMIT #{limit}
             """)
@@ -41,7 +47,14 @@ public interface FileObjectGcMapper {
     List<FileGcReferenceData> findDeletedFiles(
             @Param("deletedBefore") OffsetDateTime deletedBefore, @Param("limit") int limit);
 
-    @Update("UPDATE files SET status = 'purging' WHERE id = #{fileId} AND status = 'deleted'")
+    @Update(
+            """
+            UPDATE files SET status = 'purging' WHERE id = #{fileId} AND status = 'deleted'
+                AND NOT EXISTS (SELECT 1 FROM legacy_archive_imports j JOIN file_versions v ON v.id = j.source_version_id
+                    WHERE v.file_id = files.id)
+                AND NOT EXISTS (SELECT 1 FROM task_input_entries i WHERE i.file_id = files.id)
+                AND NOT EXISTS (SELECT 1 FROM run_artifacts a WHERE a.file_id = files.id)
+            """)
     int claimDeletedFile(@Param("fileId") UUID fileId);
 
     @Select(
@@ -100,6 +113,9 @@ public interface FileObjectGcMapper {
                AND NOT EXISTS (
                    SELECT 1 FROM file_attachments a WHERE a.file_version_id = ranked.id
                )
+               AND NOT EXISTS (SELECT 1 FROM legacy_archive_imports j WHERE j.source_version_id = ranked.id)
+               AND NOT EXISTS (SELECT 1 FROM task_input_entries i WHERE i.version_id = ranked.id)
+               AND NOT EXISTS (SELECT 1 FROM run_artifacts a WHERE a.file_version_id = ranked.id)
              LIMIT #{limit}
             """)
     @ConstructorArgs({
@@ -123,6 +139,9 @@ public interface FileObjectGcMapper {
                    SELECT 1 FROM file_attachments a
                     WHERE a.file_version_id = candidate.id
                )
+               AND NOT EXISTS (SELECT 1 FROM legacy_archive_imports j WHERE j.source_version_id = candidate.id)
+               AND NOT EXISTS (SELECT 1 FROM task_input_entries i WHERE i.version_id = candidate.id)
+               AND NOT EXISTS (SELECT 1 FROM run_artifacts a WHERE a.file_version_id = candidate.id)
             """)
     int claimPrunableVersion(@Param("versionId") UUID versionId);
 

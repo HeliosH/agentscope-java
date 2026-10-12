@@ -48,6 +48,12 @@ public class SandboxBackendTerminatorConfig {
         }
         String type = normalize(sandbox.getType());
         return switch (type) {
+            case "docker" ->
+                    configured(
+                            type,
+                            new io.agentscope.harness.agent.sandbox.impl.docker
+                                            .DockerSandboxTerminator()
+                                    ::terminate);
             case "e2b" ->
                     configured(type, new E2bSandboxTerminator(e2bOptions(sandbox))::terminate);
             case "cube" ->

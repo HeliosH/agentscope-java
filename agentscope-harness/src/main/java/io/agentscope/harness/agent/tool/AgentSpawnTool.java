@@ -879,6 +879,9 @@ public class AgentSpawnTool {
                         .copyAttributesFrom(parent)
                         .build();
         detached.put(Sandbox.class, (Sandbox) null);
+        detached.put(
+                io.agentscope.harness.agent.sandbox.SandboxUsageGuard.Binding.class,
+                (io.agentscope.harness.agent.sandbox.SandboxUsageGuard.Binding) null);
         return detached;
     }
 

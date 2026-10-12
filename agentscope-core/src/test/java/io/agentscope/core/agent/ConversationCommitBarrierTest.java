@@ -165,11 +165,26 @@ class ConversationCommitBarrierTest {
                 ConversationCommitter.class,
                 (rc, name, messages) -> {
                     source.set(messages);
-                    order.add(hasText(messages, "done") ? "source-final" : "source-tool");
+                    order.add(
+                            hasText(messages, "done")
+                                    ? "source-final"
+                                    : messages.stream()
+                                                    .anyMatch(
+                                                            m ->
+                                                                    m.hasContentBlocks(
+                                                                            ToolResultBlock.class))
+                                            ? "source-tool"
+                                            : "source-pending");
                 });
         context.put(
                 ContextCheckpointStore.class,
                 draft -> {
+                    if (!draft.pendingOperationIds().isEmpty()) {
+                        assertFalse(order.contains("journal"));
+                        assertEquals(List.of("run:call"), draft.pendingOperationIds());
+                        order.add("checkpoint-pending");
+                        return new ContextCheckpointStore.StoredCheckpoint(1, draft.historyHash());
+                    }
                     assertTrue(
                             source.get().stream()
                                     .anyMatch(m -> m.hasContentBlocks(ToolResultBlock.class)));
@@ -185,7 +200,15 @@ class ConversationCommitBarrierTest {
         assertEquals(
                 "done", agent.call(List.of(question()), context).block(TIMEOUT).getTextContent());
         assertEquals(
-                List.of("journal", "source-tool", "checkpoint", "source-final", "state"), order);
+                List.of(
+                        "source-pending",
+                        "checkpoint-pending",
+                        "journal",
+                        "source-tool",
+                        "checkpoint",
+                        "source-final",
+                        "state"),
+                order);
     }
 
     @Test
@@ -259,7 +282,8 @@ class ConversationCommitBarrierTest {
         context.put(
                 ContextCheckpointStore.class,
                 draft -> {
-                    assertTrue(order.contains("journal"));
+                    if (draft.pendingOperationIds().isEmpty())
+                        assertTrue(order.contains("journal"));
                     assertTrue(order.contains("source"));
                     verify(model, never()).stream(any(), any(), any());
                     captured.set(draft);
@@ -293,7 +317,8 @@ class ConversationCommitBarrierTest {
         context.put(
                 ConversationCommitter.class,
                 (rc, name, messages) -> {
-                    throw failure;
+                    if (messages.stream().anyMatch(m -> m.hasContentBlocks(ToolResultBlock.class)))
+                        throw failure;
                 });
         var checkpoints = new AtomicInteger();
         context.put(
@@ -311,7 +336,7 @@ class ConversationCommitBarrierTest {
                         IllegalStateException.class,
                         () -> agent.call(List.of(question()), context).block(TIMEOUT)));
         assertEquals(List.of("journal"), order);
-        assertEquals(0, checkpoints.get());
+        assertEquals(1, checkpoints.get());
         verify(model).stream(any(), any(), any());
         verify(stateStore, never()).save(any(), any(), eq("agent_state"), any(State.class));
     }
@@ -331,6 +356,10 @@ class ConversationCommitBarrierTest {
         context.put(
                 ContextCheckpointStore.class,
                 draft -> {
+                    if (!draft.pendingOperationIds().isEmpty()) {
+                        order.add("checkpoint-pending");
+                        return new ContextCheckpointStore.StoredCheckpoint(1, draft.historyHash());
+                    }
                     order.add("checkpoint");
                     throw failure;
                 });
@@ -350,9 +379,111 @@ class ConversationCommitBarrierTest {
                 assertThrows(
                         IllegalStateException.class,
                         () -> agent.call(List.of(question()), context).block(TIMEOUT)));
-        assertEquals(List.of("journal", "source", "checkpoint"), order);
+        assertEquals(
+                List.of("source", "checkpoint-pending", "journal", "source", "checkpoint"), order);
         assertEquals(1, calls.get());
         assertTrue(source.get().stream().anyMatch(m -> m.hasContentBlocks(ToolResultBlock.class)));
+    }
+
+    @Test
+    void failedPreExecutionCheckpointPreventsJournalAndSideEffects() {
+        var order = new CopyOnWriteArrayList<String>();
+        RuntimeContext ctx = context(journal(order));
+        var failure = new IllegalStateException("pending checkpoint unavailable");
+        ctx.put(
+                ContextCheckpointStore.class,
+                draft -> {
+                    assertEquals(List.of("run:call"), draft.pendingOperationIds());
+                    assertFalse(reactor.core.scheduler.Schedulers.isInNonBlockingThread());
+                    throw failure;
+                });
+        var calls = new AtomicInteger();
+        var agent =
+                agent(
+                        model(Flux.just(tool()), Flux.just(text("unused"))),
+                        toolkit(
+                                Mono.fromSupplier(
+                                        () -> {
+                                            calls.incrementAndGet();
+                                            return ToolResultBlock.text("executed");
+                                        })),
+                        new InMemoryAgentStateStore());
+        assertSame(
+                failure,
+                assertThrows(
+                        IllegalStateException.class,
+                        () ->
+                                agent.call(List.of(question()), ctx)
+                                        .subscribeOn(reactor.core.scheduler.Schedulers.parallel())
+                                        .block(TIMEOUT)));
+        assertEquals(0, calls.get());
+        assertTrue(order.isEmpty());
+    }
+
+    @Test
+    void durablePendingRecoveryRechecksRevokedToolPermission() {
+        var order = new CopyOnWriteArrayList<String>();
+        RuntimeContext ctx = context(journal(order));
+        var calls = new AtomicInteger();
+        var original =
+                ToolUseBlock.builder()
+                        .id("call")
+                        .name("effect")
+                        .input(Map.of())
+                        .state(ToolCallState.ALLOWED)
+                        .build();
+        List<Msg> tail =
+                List.of(
+                        question(),
+                        Msg.builder().role(MsgRole.ASSISTANT).content(original).build());
+        ctx.put(
+                ContextCheckpointStore.class,
+                new ContextCheckpointStore() {
+                    @Override
+                    public StoredCheckpoint save(Draft draft) {
+                        return new StoredCheckpoint(2, draft.historyHash());
+                    }
+
+                    @Override
+                    public java.util.Optional<RecoveryCheckpoint> latest() {
+                        return java.util.Optional.of(
+                                new RecoveryCheckpoint(
+                                        1,
+                                        StepSnapshot.fingerprint(tail),
+                                        "",
+                                        tail,
+                                        List.of("run:call"),
+                                        null));
+                    }
+                });
+        var restricted = new Toolkit();
+        restricted.registerAgentTool(
+                new ToolBase(
+                        ToolBase.builder()
+                                .name("effect")
+                                .description("fixture")
+                                .inputSchema(Map.of("type", "object", "properties", Map.of()))) {
+                    @Override
+                    public Mono<PermissionDecision> checkPermissions(
+                            Map<String, Object> input, PermissionContextState permission) {
+                        return Mono.just(PermissionDecision.deny("revoked"));
+                    }
+
+                    @Override
+                    public Mono<ToolResultBlock> callAsync(ToolCallParam param) {
+                        calls.incrementAndGet();
+                        return Mono.just(ToolResultBlock.text("must not run"));
+                    }
+                });
+        var agent =
+                agent(
+                        model(Flux.just(text("denied")), Flux.just(text("unused"))),
+                        restricted,
+                        new InMemoryAgentStateStore());
+        assertEquals(
+                "denied", agent.call(List.of(question()), ctx).block(TIMEOUT).getTextContent());
+        assertEquals(0, calls.get());
+        assertTrue(order.isEmpty());
     }
 
     @Test

@@ -173,6 +173,54 @@ class FileObjectGcJobTest {
         verify(store).delete(orgId, "files/v1");
     }
 
+    @Test
+    void legacyEvidencePinPreventsDeletedFilePurgeAndVersionPrune() throws Exception {
+        DataSource ds = dataSource("legacy-gc-pin");
+        TestDatabaseMapper db = MyBatisRepositoryTestSupport.mapper(ds, TestDatabaseMapper.class);
+        db.createFileGcSchema();
+        publicationSchema(ds);
+        UUID org = UUID.randomUUID(),
+                user = UUID.randomUUID(),
+                deletedFile = UUID.randomUUID(),
+                activeFile = UUID.randomUUID(),
+                oldVersion = UUID.randomUUID(),
+                current = UUID.randomUUID(),
+                deletedVersion = UUID.randomUUID(),
+                pinOne = UUID.randomUUID(),
+                pinTwo = UUID.randomUUID();
+        db.insertGcFile(
+                deletedFile,
+                org,
+                user,
+                deletedVersion,
+                "deleted",
+                OffsetDateTime.now().minusDays(2));
+        db.insertGcVersion(deletedVersion, deletedFile, org, user, 1, "files/deleted-evidence");
+        db.insertGcFile(activeFile, org, user, current, "active", OffsetDateTime.now());
+        db.insertGcVersion(oldVersion, activeFile, org, user, 1, "files/old-evidence");
+        db.insertGcVersion(current, activeFile, org, user, 2, "files/current");
+        db.insertLegacyGcPin(pinOne, deletedVersion);
+        db.insertLegacyGcPin(pinTwo, oldVersion);
+        FileObjectStore store = mock(FileObjectStore.class);
+        when(store.backend()).thenReturn("pg");
+        @SuppressWarnings("unchecked")
+        ObjectProvider<FileObjectStore> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(store);
+        var cfg = new SaasProperties();
+        cfg.getFileStore().setDeletedRetentionDays(1);
+        cfg.getFileStore().setMaxVersionsPerFile(1);
+        var gc = job(ds, provider, cfg);
+        assertThat(gc.collectOnce().total()).isZero();
+        verify(store, never()).delete(org, "files/deleted-evidence");
+        verify(store, never()).delete(org, "files/old-evidence");
+        db.deleteLegacyGcPin(pinOne);
+        db.deleteLegacyGcPin(pinTwo);
+        var released = gc.collectOnce();
+        assertThat(released.deletedFiles()).isEqualTo(1);
+        assertThat(released.prunedVersions()).isEqualTo(1);
+        assertThat(released.objectsDeleted()).isEqualTo(2);
+    }
+
     private static FileObjectGcJob job(
             DataSource dataSource,
             ObjectProvider<FileObjectStore> provider,

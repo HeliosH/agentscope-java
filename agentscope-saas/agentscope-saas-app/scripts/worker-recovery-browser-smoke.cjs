@@ -4,11 +4,31 @@ const { chromium } = require('playwright');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const readline = require('node:readline');
 
 const base = process.env.BASE_URL;
 const agent = process.env.RECOVERY_AGENT_ID;
 const marker = process.env.RECOVERY_MARKER;
 const output = process.env.SCREENSHOT_DIR || '/private/tmp/chugou-real-recovery-ui';
+
+async function waitForWorker() {
+  const input = readline.createInterface({ input: process.stdin, terminal: false });
+  let timer;
+  try {
+    await new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('Owned worker did not become ready')), 210000);
+      input.once('line', line => {
+        if (line === 'worker-ready') resolve();
+        else reject(new Error('Unexpected worker readiness message'));
+      });
+      input.once('close', () => reject(new Error('Parent closed before worker readiness')));
+    });
+  } finally {
+    clearTimeout(timer);
+    input.close();
+    process.stdin.pause();
+  }
+}
 
 (async () => {
   assert(['localhost', '127.0.0.1'].includes(new URL(base).hostname));
@@ -60,6 +80,8 @@ const output = process.env.SCREENSHOT_DIR || '/private/tmp/chugou-real-recovery-
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await page.screenshot({ path: path.join(output, 'waiting-mobile.png'), fullPage: true });
     console.log(JSON.stringify({ ready: true, runId: pointer.latestRunId, sessionId }));
+    // Keep bounded JVM startup separate from the unchanged delivery deadline.
+    await waitForWorker();
     await page.locator('.message-row--assistant .message-content').filter({ hasText: 'Recovered ' + marker }).waitFor();
     assert.equal(await composer.inputValue(), 'Preserved next-task draft');
     assert(await page.getByRole('button', { name: 'Send message', exact: true }).isEnabled());

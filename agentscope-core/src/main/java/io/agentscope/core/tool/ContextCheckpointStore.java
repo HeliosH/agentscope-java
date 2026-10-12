@@ -9,7 +9,7 @@ import io.agentscope.core.message.Msg;
 import java.util.List;
 import java.util.Optional;
 
-/** Durable port for a recoverable conversation boundary after committed tool results. */
+/** Durable port for pending tool intent and conversation boundaries after committed results. */
 public interface ContextCheckpointStore {
 
     StoredCheckpoint save(Draft draft);

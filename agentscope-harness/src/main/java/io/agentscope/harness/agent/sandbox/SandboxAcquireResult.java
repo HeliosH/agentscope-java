@@ -56,6 +56,15 @@ public final class SandboxAcquireResult {
     private final boolean selfManaged;
     private final SandboxLease lease;
     private final AcquisitionSource acquisitionSource;
+    private volatile Boolean backendReleaseSucceeded;
+
+    void recordBackendRelease(boolean succeeded) {
+        backendReleaseSucceeded = succeeded;
+    }
+
+    public boolean backendReleaseConfirmed() {
+        return Boolean.TRUE.equals(backendReleaseSucceeded);
+    }
 
     private SandboxAcquireResult(
             Sandbox sandbox,

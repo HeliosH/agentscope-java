@@ -1747,3 +1747,180 @@ V53 增加 `assistant_runs.execution_policy_version`，对已有接受记录进�
 ### 29.4 仍需完成
 
 新策略收紧后的 OpenSandbox 文件恢复真实复验、其他 Provider/增量兼容路径全流式、容量/heap 和完整故障矩阵仍未完成。R05 有界历史、R06 持久父子资源引用/依赖冻结、R07 重试对账、R09 产物验证、R10 生产交付，以及 R11–R17 仍按文档 39 推进；R08 不实施。没有将本批策略冻结解释为整个方案完成，没有自动提交/推送。
+
+## 30. 第二十七批：执行前意图屏障与 Journal 历史补建
+
+### 30.1 OpenSandbox 验证恢复
+
+2026-10-12 读取既有服务日志及镜像内安装源码，只启动此前停止的本地 OpenSandbox、PG、Redis、MinIO 四个依赖，不删除容器、镜像或数据卷。OpenSandbox 服务重新启动后，以本地固定镜像 `chugou-test/ubuntu:offline-policy-v1` 创建测试沙箱成功，随后删除本轮探针资源。没有证据确认之前 `No such container` 的根因，不能将“重启后不再复现”记为 Provider 源码修复；测试不依赖在线拉取镜像，也不切换 Cube/E2B。
+
+第一次联合门禁已到达真实网页等待/刷新/Worker 重启/最终自动交付，但期间本轮源码修改使第五次 Worker 启动被 Spotless 格式检查拒绝。根退出码 1，日志 `/private/tmp/chugou-policy-sandbox-real-20261012.log`，不计为完整通过。待最终源码格式化后整套重跑；结果在本节后续追加。
+
+### 30.2 可恢复意图与结果身份
+
+- 仅当运行上下文同时装配持久工具 Journal 和 Checkpoint Port 时，在权限评估、有效工具输入和批准状态更新后，执行工具之前提交源消息与检查点。检查点包含仍待执行的 operation ID；提交失败阻断 Journal 准入及工具副作用，不先执行再发现意图未保存。
+- 执行前的阻塞提交由 boundedElastic 承载，完成之后才订阅工具执行流；不阻塞模型流事件线程。负向测试从 Reactor 非阻塞调度器发起调用，检查持久化回调没有在该线程上执行。
+- 成功结果沿用“Journal 终态提交 -> 源账本提交 -> 后续检查点”的原顺序。普通成功工具消息在持久 Run 下使用基于 Run、Agent 名称、工具调用及完整结构化结果的稳定 ID。相同 Journal 结果重放只有一个来源条目；不同调用、Run 或不同终态不按文本折叠。未启用 Journal 的独立 Core 调用保留原随机 ID 兼容行为。
+- 新实例恢复已经提交的 Run 级检查点时，不用合成错误覆盖原 pending intent，也不将 Worker 重投的触发消息当作一次新的模型规划。经正常权限检查和工具准入读取原 Journal，已知成功复用结果，未知副作用仍走既有对账阻断；工具、输入、Run/Task/AgentRun 身份和当前执行租约的验证没有绕过。
+- 当前权限撤销即使面对原 ALLOWED 工具也拒绝执行。没有引入“任何错误都自动重试”的通用恢复策略，没有重新执行已经提交成功的外部操作；也不宣称所有外部副作用 exactly-once。
+- 源账本 search/list 与 window 一样拒绝零、负数及超大 limit，保留原数据库更小的检索上限和字节预算，不增加全历史读取 API。
+
+### 30.3 验证证据
+
+针对性 reactor 最终根退出码 0，日志 `/private/tmp/chugou-journal-rebuild-tests-final-20261012.log`。Core 提交屏障 15/15，消息构建 4/4，真实 MyBatis/H2 的 Journal 补建 2/2，运行历史 18/18，均无失败/跳过。
+
+补建集成测试明确重建 Harness、内存状态和 Journal 实例，分别注入 Journal 已成功之后的持续源存储故障、源已提交之后的检查点故障。恢复完成时工具只执行一次、终态 Outbox 只有一条、完整结果准确、工具来源记录只有一条，执行权限确实重新检查。执行前检查点失败和恢复后权限撤销均有负向用例。
+
+十万条历史夹具通过既有 MyBatis/H2 写入和真实 Repository 委托执行。先查询末尾 20 条进入工作状态，再实际调用 Harness；模型消息不超过 24 条，归档读取只出现一次 limit=20 的 window，没有 list/search 全历史路径，新输入和最终回复增加两个 seq。接口委托只记录调用，不替换数据库结果；不把该证明扩大成真实 PG 性能或完整 SaaS 自动旧状态迁移。
+
+早期失败保留：`...-tests-20261012.log` 的一次性源故障随后被正式提交屏障重试成功，夹具不满足“源持续不可用”的设定，改为重建前持续失败，未放宽缺失来源断言；`...-tests-retry-20261012.log` 记录 Spring 代理 spy 不能可靠计量的问题，改为接口委托保留真实查询，完整重跑后才计通过。
+
+强化 `worker-consumer-smoke.py`：旧策略的附件恢复除了用户目录下载，还将在 Worker 模型请求前直接流式读取其正在运行的 OpenSandbox 文件，核对完整长度及 SHA-256；实际沙箱读取未完成不得通过。OpenSandbox 恢复集成用例允许沿用部署的镜像环境变量，以本地固定镜像复验，不忽略环境用例。完整功能、打包和最终联合门禁结果在下方追加。
+
+完整功能 reactor 根退出码 0，日志 `/private/tmp/chugou-journal-functional-regression-20261012.log`，显式启用 `SAAS_RUNTIME_BODY_MINIO_TEST=true` 和 `SAAS_CHECKPOINT_OPENSANDBOX_TEST=true`；文件发布/恢复 119/119，正文归档 23/23，DDD/MyBatis 边界 11/11，均无跳过。随后执行前提交的 I/O 调度修正另经受影响 Core/Harness/SaaS、历史、检查点、权限及真实依赖用例重新验证，根退出码 0，日志 `/private/tmp/chugou-journal-io-accepted-regression-20261012.log`。二者分别记录，不将早一轮结果冒充末轮源码的完整回归。
+
+打包/Javadoc 根退出码 0，日志 `/private/tmp/chugou-journal-package-20261012.log`。随后联合门禁在浏览器阶段返回 1，日志 `/private/tmp/chugou-journal-policy-sandbox-accepted-20261012.log`：浏览器 120 秒等待混入父进程的 Maven/Worker 启动，Worker 10:59:56 才启动、11:00:22 进入推理，浏览器 11:00:24 超时，后台 11:00:26 产生答复，不能计为网页已交付。探针增加有界 stdin 就绪握手：JVM 启动仍受原 180 秒上限约束，浏览器等待父进程确认有效消费者后才启动原 120 秒交付等待，保留单次提交、刷新、草稿、实际页面最终答复的全部断言。不调整产品 deadline，不屏蔽失败，不只增加一个模糊的总超时；新门禁需完整重跑。
+
+最终整套门禁 **10/10**、根退出码 0，日志 `/private/tmp/chugou-journal-policy-sandbox-final-20261012.log`。使用真实本地 PG/Redis/MinIO/OpenSandbox、独立 Web/Worker 和真实 Chrome，模型为本地 HTTP/SSE 夹具，不是 API fixture 页面，也不调用企业模型、Cube/E2B。原七项消费者/共享重试预算/永久错误/取消/权限负向全部重新执行；网页真实登录、提交、离线等待、移动刷新、Worker 重启、自动最终交付、草稿保留及只有一次任务提交均通过。
+
+Worker 当前恢复关闭、次数收紧为 1、单文件准入收紧为 1 MiB 时，旧 Run 仍按接受时三次预算恢复；旧 5 MiB 附件在正在运行的 Worker 沙箱内以 1 MiB 缓冲逐块读取，完整长度与 SHA-256 匹配原不可变版本，而不只核对 MinIO/用户下载。新 Web 重启采用新策略，旧大文件仍可下载；新 Run 持久化恢复关闭/次数为 1，实际模型只调用一次；新上传超限 1 字节返回实际 413。app 角色不能修改/删除原策略，另一组织不可读取。
+
+四张 1440x1000/390x844 的等待/完成截图位于 `/private/tmp/chugou-journal-sandbox-ui-final-20261012/`，已人工检查布局、文字换行、草稿和自动交付。最终 PG 仍为 V53，本轮作用域活跃 Run/消费者均为 0，待归档/Provider retention/正文降级队列均为 0；自建 Web/Worker/浏览器已退出，18082/18083 无监听。四个本轮原本停止的依赖容器恢复为停止，不关闭 Docker Desktop，不删除镜像、卷、历史记录或无关文档。Python/Node 语法、差异空白检查通过；当前未提交/推送。
+
+### 30.4 剩余边界
+
+本批未完成旧 JSONL 历史受控转换、完整真实进程强杀/PG 与 Provider 同时故障、父子资源持久使用引用、依赖/Skill 工作集版本冻结、人工重试与对账、生产交付及 R11–R17。已归档工具结果不等于工具产生的外部文件或副作用已封存；源封存前强杀和真实产物完整性仍需要 R02/R06/R09 联合闭合。R08 不实施，保持现有 DDD/MyBatis 分层和暂缓范围，不自动提交/推送。
+
+## 31. R05 旧 SessionTree 历史受控转换（2026-10-12）
+
+### 31.1 实施范围
+
+新增 Domain `LegacyArchiveImportRepository`、租户 MyBatis Adapter、V54 PG/H2 迁移、App 转换用例及 opt-in 管理 API。组织来自管理员 JWT；目标会话和源不可变版本核验同组织/员工/Agent。默认关闭；不改变普通问答路径，不新增数据源/JDBC/消息队列，也不实现 R08 结构化企业记忆。
+
+原始 JSONL 留作只读证据并通过版本外键/GC 条件保留，转换流固定为 `legacy/legacy:<jobId>`。保留源 entry/parent/toolCall ID、行字节位置、逐行 SHA、合成身份标记和归档 seq/hash；没有原 ID 的记录明确标记 legacy，不以相同文字合并。SessionTree 旧内容是渲染文本，工具 ID 只作来源证据，不能伪装为原始结构化调用或恢复执行状态。未知 JSONL 格式拒绝，不猜测解析。
+
+源内容在 SQL 之外通过共享传输许可/私有 spool 流式校验完整 SHA 和大小；批次同时受行数、单行字节和批次字节限制，字节 seek 恢复，无全文件 heap 缓存。`maxBatches` 允许一次校验后连续提交多个短批次，批次间检查 30 秒处理预算；大文件下载时间不计为严格的整个 HTTP 30 秒承诺。
+
+归档源提交后，短事务核对已提交 identity/hash、写来源映射及 CAS 游标；EOF 核对实际映射数量、转换数量和最后字节位置后 COMPLETE。相同稳定源 ID 多次出现时，转换行数不等于唯一消息数。进度提交失败可从已提交源幂等补建，不另建正文写入路径。
+
+迁移固定创建时会话 generation。reset 同事务删除转换进度/映射与 runtime 历史并撤销在途旧 generation；删除会话级联解除证据引用。管理写操作沿用 best-effort AuditService，PG 两表 FORCE RLS，app 不获源绑定字段 UPDATE 权限。
+
+详细方案、限制和 API 操作说明：[40-legacy-history-conversion-runbook.md](40-legacy-history-conversion-runbook.md)。
+
+### 31.2 确定性回归与打包
+
+最终命令日志 `/private/tmp/chugou-legacy-import-final-gate-20261012.log`，Maven reactor **根退出码 0**，9 组共 **71** 个测试，失败/错误/跳过均 0：LegacyArchiveImportIntegration 12、LegacyJsonlReader 4、LegacyArchiveImportController 3、FileObjectGcJob 4、DDD/MyBatis 架构 11、ChatPersistence 2、SessionGeneration 15、PgSessionArchiveStore 18、JournalTranscriptRecovery 2。
+
+覆盖并发同批、源已提交但进度事务失败、新服务重建、重复 ID/文字、无 ID、来源图映射、错误格式/UTF-8/重复字段/行大小、CRLF/BOM/末行字节、对象 SHA 错误、空文件、单次打开多批处理、管理员/owner 负向、默认关闭、会话 reset 在途撤销与重新显式转换、证据防 GC 与解除后正常 GC。十万历史仍为 MyBatis/H2 门禁，不标记为真实 PG 性能验收。
+
+最终打包/Javadoc `/private/tmp/chugou-legacy-import-package-20261012.log`，**根退出码 0**。此前三个编译接线错误（Port 参数顺序、流式 ContentSource checked exception、测试线程池使用超出 Java 17 基线的 API）已修复，失败日志保留；不能将首次失败记为通过。
+
+### 31.3 真实 HTTP/PG/MinIO 强杀门禁
+
+`legacy-archive-import-smoke.py` 最终日志 `/private/tmp/chugou-legacy-import-real-final-20261012.log`，**5/5、根退出码 0**。使用真实本地 PG/Redis/MinIO 与独占应用进程，模型是本地 stub、无外部模型/沙箱调用。本轮没有新增网页交互，不能把 HTTP 门禁表述为新的浏览器验收。
+
+实测管理员创建及重复创建、同员工 MinIO 不可变版本、另一员工 404；在源消息已提交、进度 UPDATE 人工等待时 SIGKILL 自有 JVM，等待 PG 自然检测客户端断开并回滚事务，重新启动真实应用后补建同一范围，源只有 3 条、映射 4 行、无重复；旧游标 409，来源分页精确。在线流消息数未改变、无工具操作重放、原文件字节完全相同、审计存在。以 app 角色和另一组织上下文检查两表不可见，验证 FORCE RLS；删除会话清除转换任务/映射并解除源保留。关闭转换开关重启后 API 404，健康检查仍 200。
+
+失败证据保留：`real-first` 启动脚本在关闭沙箱时仍无条件等待 OpenSandbox，已修复条件启动/等待；`real-retry` 夹具继承 DURABLE 但关闭消费者，被产品能力校验正确阻断，夹具改为 REQUEST_ONLY；`real-configured` 已完成创建和强杀，但清理 DDL 抢在 PG 人工 sleep 结束前导致超时，脚本增加仅该自有 ApplicationName 的自然断开等待，不取消 PG 查询、不放宽产品 deadline。最终完整重跑通过，不能只拼接各次成功片段。
+
+收尾核验：本地 PG 已为 V54，迁移任务 0、故障触发器 0、本轮自有连接/活跃 Run/临时管理员角色均 0，18082 无监听。此前失败门禁留下的准确测试 Agent/会话/迁移通过正常 owner API 清理，日志 `/private/tmp/chugou-legacy-import-cleanup-20261012.log` 根退出码 0。PG/Redis/MinIO 恢复为本轮开始时的停止状态，OpenSandbox 始终未启动；不关闭 Docker Desktop，不删除镜像/数据卷。Python、Shell 语法和差异空白检查通过。
+
+### 31.4 剩余边界
+
+本轮完成 SessionTree 文本型 JSONL 的受控转换基础，不等于所有历史导出格式、在线历史导入向导或可执行检查点转换均完成。一次推进请求仍需完整校验源文件，特别大的长期迁移可继续用经过完整摘要校验的分块清单/对象 Range 优化，但不能牺牲证据完整性。
+
+R05 仍缺真实 PG 十万历史/容量证据、真实工具 Journal/产物联合强杀矩阵；下一优先项仍为 R06 持久父子资源使用引用和工作集依赖/Skill 版本冻结，之后推进 R07/R09 与交付门禁。当前未提交/推送。
+
+## 32. R06 持久沙箱使用引用与回收权（2026-10-12）
+
+### 32.1 实施范围与实际接线
+
+新增框架端口 `SandboxUsageGuard`、Domain 的资源/使用引用与 GC Repository、租户/管理员 MyBatis Adapter、App 准入与回收用例，以及 PG/H2 V55。`AgentConfig` 将用例接入 Harness 生命周期，子 Agent 的 fork 继承该接口，不把 SaaS/PG/Provider 类型放入 Harness。独立 SDK 默认 Noop，兼容原来不带受治理 Run 的调用；部署时选择 Provider，用户不能自行选择沙箱。
+
+受治理调用获得执行槽之后、Provider create/resume 之前，在员工锁下预留物理配额及资源引用。这样既不能超配额后才清理，也不会因为同一执行槽的正常排队过早报错。一个物理资源有独立 Root/Child 引用，子调用借用父句柄而不是 create；借用不登记第二条物理 tracking row，不重复扣物理配额。
+
+资源固定组织/员工/Agent/Run/原会话 generation、Provider 和部署指纹；引用固定 Task/Attempt/lease owner。借用检查父引用与父执行权限，另验子执行权限；文件/命令入口在实际使用前核验引用、当前 Run/generation/Attempt/租约及物理 ID。独立持久心跳不能复活过期/关闭引用，取消/reset 后不能继续使用失效上下文。心跳周期不低于一秒，I/O 不放在 Reactor parallel 线程上。
+
+父结果进入封存之前原子转入 FINALIZING，阻止新借用；仍有活跃子引用时拒绝封存/完成，不宣称输出已完整。父释放若还有使用者转 DRAINING，不做破坏性快照或 shutdown；子释放只关闭自己的引用并清理本地绑定。引用关闭数据库不可用时，不绕过权威记录销毁已暴露的资源。
+
+没有使用者的 Owner 或独立 GC 才能领取 RELEASING token。GC 在资源锁之后重新读取引用，避免等待锁期间心跳已续期却按照旧快照误回收；过期引用可收束为 EXPIRED。后台按原部署指纹领取、有界批次/释放次数及超时令牌，Provider 调用在 SQL 事务之外，只有确认成功才 RELEASED。失败保持 RELEASE_FAILED 和配额占用，不能以日志/void 方法返回冒充释放成功。
+
+旧 `sandboxes`/`sandbox_leases` 回收器在扫描与领取两处都跳过新资源权威尚未释放的物理 ID。管理员 force-evict 对这类资源仅修改旧 tracking 行，不直接关闭共享后端；需要先取消 Run、等待引用关闭/过期后由使用引用 GC 回收。新表证据不依赖 Run/session 外键存在，删除会话后仍可定位后端。
+
+已获得的物理 ID 会在使用权限复验前登记：即使创建返回时任务已被取消，或空预留已回收，释放失败仍留下可重试的后端证据。识别了 Provider 的物理 ID getter 但其返回空时，不以逻辑 sessionId 伪装为已分配后端。Provider POST 未返回 ID 就断连的未知分配窗口仍需 R02 的 Provider 对账处理，不承诺已解决。
+
+Docker 增加精确完整容器 ID 的回收器，不启动/恢复工作区；最终 rm 失败必须抛出，已不存在按幂等成功处理。OpenSandbox/E2B/Cube 沿用各自 Terminator，未把任何 Provider 设为框架唯一依赖。生产 Docker 部署需为不同 daemon 设置不同的 orchestration deployment scope；切换 Provider 前应排空旧部署的占用/回收记录。
+
+### 32.2 权限前向修正
+
+真实 PG 负向检查发现 V10 的默认整表 UPDATE/DELETE 授权仍作用于后续表，仅新增列级 GRANT 不会撤销旧权限。新增 V56，显式撤销 V55 资源/引用表及 V54 旧历史转换表的整表 UPDATE/DELETE，再授予状态/进度列权限和 reset 所需的转换 aggregate DELETE。来源 entry 通过 FK 级联清理，不能直接修改/删除；不改已应用 V54/V55 的校验和。
+
+实测 app 不是 superuser/BYPASSRLS；另一组织上下文读不到资源及引用，app 不能改资源 owner。V56 后整表 UPDATE、owner/source_version_id UPDATE、来源 entry DELETE 均为 false，必要 status/byte_offset 列 UPDATE 为 true。这个修正补上 31.1 对来源不可变字段保护的实际数据库授权，不能把此前仅列级授权写法视作已正确收紧默认权限。
+
+### 32.3 验证与明确未通过的门禁
+
+针对性 reactor `/private/tmp/chugou-sandbox-usage-regression-20261012.log` 根退出码 0，11 组共 111 项，执行 109 项均通过、两项真实环境测试当时未启用。包括生命周期 26、文件代理 34、执行槽准入顺序 2、Docker 释放契约 3、tracking 6、quota 3、物理 ID 1、持久引用 11（跳过 2）、旧回收器 7、管理入口 7、DDD/MyBatis 边界 11。测试 SQL 留在 support 包，没有放宽架构门禁。
+
+真实独立临时 PG17.5 库前向升级到 V56，用 app 主数据源与 admin 回收数据源验证；最终数据库专用门禁 `/private/tmp/chugou-sandbox-usage-postgres-only-20261012.log` 根退出码 0：持久引用 10 项通过，OpenSandbox 一项明确未运行。涵盖新 Guard 实例、物理配额为一仍可借用、父结束后的 DRAINING、最后引用关闭后领取、释放失败与次数上限、部署范围、reset/伪造 scope/lease owner/backend ID、过期不能复活、领取 token、等待续期事务后重查和借用/关闭并发。
+
+真实 OpenSandbox 门禁两次尝试均未通过，保留 `...-postgres-opensandbox-20261012.log` 与 `...-postgres-opensandbox-retry-20261012.log`。首次还准确发现上述默认权限问题；V56 后权限已通过，但 Provider 的创建接口仍返回 HTTP500/DOCKER::SANDBOX_START_FAILED：Docker create 返回完整 ID，紧接着 inspect 返回 404。以唯一诊断容器在 OpenSandbox 使用的 Docker SDK 上独立复现，0/1/2/3 秒等待及 API1.43 均不能查询该 ID，随后针对该 ID 的 remove 成功；探针都在 finally 清理。健康检查 200 不等于能创建沙箱。不修改服务源码、放宽断言或把跳过改算成功，也不改为用户已排除的 Cube/E2B 验证。
+
+因此本轮不能声明“父子共享沙箱真实全链路已验收”，也没有新的浏览器完成证据；已有浏览器门禁属于此前源码版本。扩展功能回归、最终清理结果在下方追加。
+
+扩展功能 reactor `/private/tmp/chugou-sandbox-usage-functional-20261012.log` 根退出码 0，42 组共 489 项，486 项执行通过、失败/错误 0，3 项环境门禁未启用（本地持久引用的两个真实环境入口及文件发布的 OpenSandbox 入口）。涵盖 Core 提交屏障、Harness 子 Agent/沙箱与工具、真实 MyBatis/H2 的十万历史/Journal 补建、旧历史转换、会话 generation、文件发布、Worker 和架构边界；不能称为全部真实依赖门禁通过。
+
+最终 `package`（未关闭 Javadoc）根退出码 0，日志 `/private/tmp/chugou-sandbox-usage-package-20261012.log`。临时 PG 库在自有 JVM 退出、连接数为 0 后删除；现有业务库仍为之前的 V54，没有用临时库替代或删除业务数据。四个本轮启动的依赖容器恢复停止，18082/18083 无监听，唯一诊断容器已清理；不关闭 Docker Desktop，不修改 OpenSandbox 源码/镜像，不删除数据卷。Shell 语法、差异空白检查通过。未提交/推送。
+
+### 32.4 剩余边界与下一步
+
+先恢复本地 Docker/OpenSandbox 创建能力，再启用 `RUN_POSTGRES_USAGE_TEST=true`、`RUN_OPENSANDBOX_USAGE_TEST=true`，重新完成父输入读取、同一物理句柄、父结束后子读写及最后释放的真实门禁，并重跑 Web/Worker 联合链路。当前实现并不支持另一 JVM 直接借用父进程对象；队列中尚未执行的后台任务也不被伪装成当前活跃资源引用。
+
+R06 仍需依赖产物/Skill/既有记忆投影版本冻结、授权按需取回、任务级输出目录与写入冲突控制、后台子任务从同一 Run 清单/检查点重建及故障联合门禁。结构化企业记忆 R08 保持不实施。R05 真实 PG 十万历史/容量与 Journal/产物强杀矩阵、R07/R09、交付及 R11–R17 仍按 39 号矩阵继续，不能把本批持久引用基础标记为整个 R06 或全方案完成。当前未提交/推送。
+
+## 33. R06 附件与依赖文件清单冻结、真实共享门禁（2026-10-12）
+
+### 33.1 持久输入清单与生命周期
+
+扩展 Domain `WorkspaceInputRepository`，由租户 DAL MyBatis 保存 `task_input_manifests` 和逐文件 `task_input_entries`，PG/H2 使用 V57 前向迁移。主键是 Task，绑定组织/员工/Agent/Run/原会话 generation，不绑定易失的 Attempt、进程或 Provider 句柄。同一个 Task 重试或新建执行服务时，读取相同的文件版本、路径、摘要、对象位置和清单版本；不同 Task 不冒充同一份清单。
+
+沿用接受任务时已固定的附件版本；第一次成功准备输入时，在当前执行/session 锁下校验元数据和预算，SQL 之外流式核验大小/SHA，复验 owner/generation/绑定后，短事务原子提交头和全部条目。两个并发准备者只能提交一份一致清单。提交前绑定变化、文件缺失、对象损坏或执行权限撤销均拒绝；提交后新增/修改/移除附件不会偷偷改写该 Task 的既定输入。这不是在创建 Run 时就固定全部系统资源，也不把未成功准备的工作集宣称为已完成初始化。
+
+没有附件/依赖的受治理任务也返回显式空 `WorkspaceInputPlan` 并持久化空清单。框架因此只扫描有界系统资源，不再因为 Optional.empty 回退 `glob("**", "/")` 读取用户全部持久文件。独立 Harness、关闭沙箱等原有兼容入口仍保持原语义。
+
+恢复、元数据选取、对象流打开和关闭都重新检查当前 Attempt/lease owner、Run、会话 generation 和文件 owner/active 状态。用户删除文件后，后续准备/对象读取被拒绝，但原版本证据可保留到所属 Run/Task 清理；这不等于已在运行的沙箱副本被即时擦除，运行中路径权限重验仍需后续收尾。PG 新表 FORCE RLS，显式覆盖 V10 默认权限，app 只获 SELECT/INSERT；不能直接 UPDATE/DELETE 冻结事实。删除 Run/Task 时由外键级联清理清单，不增加第三个数据源、业务 JDBC、领域层 MyBatis 注解或新对象存储事实源。
+
+### 33.2 依赖产物与对象保留
+
+只选择同组织/员工/Run、已成功的依赖 Task 对应产物版本，不取当前文件版本。物化路径为 `inputs/dependencies/<dependency-task-id>/<original-logical-path>`，缺失/无权/非法路径或版本冲突会阻断，不静默退回读取当前版本。Worker 的任务上下文增加该目录约定；仍是可修改的沙箱工作副本，原持久文件版本不回写，不宣称已做 OS 级只读权限隔离。
+
+文件 GC 扫描与实际领取都排除输入清单和 `run_artifacts` 引用，并增加版本/文件索引。后者保护“前置任务已完成、后继任务尚未领取”的窗口，不能等到后继生成清单才开始保留。输入条目的版本外键也阻止并发 GC 绕过引用检查。证据保留期限跟随现有 Run/会话清理，不额外复制用户文件内容、不把 Skills/记忆混入用户产物列表。
+
+### 33.3 回归与真实 PG/OpenSandbox 门禁
+
+Docker SDK 唯一探针的 create/inspect/remove 本次全部成功，先前 create 后 inspect404 的环境故障没有复现。首次重新启用真实门禁后，测试错误地将 `/inputs/...` 当作容器绝对路径，并绕过正式工具的路径归一化，导致文件读取断言失败；测试改用实际 `FilesystemTool` 加 `/workspace` 归一化入口，并检查父写命令确实成功。没有修改产品路径语义来迁就错误夹具。
+
+最终真实独立 PG17.5 库升级到 V57，日志 `/private/tmp/chugou-r06-pg-opensandbox-inputs-20261012.log`，**根退出码 0，25 项执行均通过，无跳过**：输入清单 14 项、持久沙箱使用 11 项。覆盖原版本/重命名、空清单、服务重建、并发冻结、会话删除级联/解除版本 pin、依赖版本与任务目录、app RLS/不可变授权、预算、腐败对象、绑定变化、执行撤销；OpenSandbox 实测同一物理句柄、子 Agent 通过正式工具读取父输入、父结束后子继续读写、最后引用关闭后物理资源回收，Provider create 只有一次。
+
+确定性针对性门禁修复领域记录多构造器导致 MyBatis 自动映射歧义后完整重跑，根退出码 0；没有向 Domain 加 MyBatis 注解。扩展回归及 `install` 构建日志 `/private/tmp/chugou-r06-workset-functional-package-20261012.log`，**根退出码 0，45 组共 504 项，500 项执行通过、4 项环境门禁未启用，失败/错误 0**。四项跳过与上面的实际 PG/OpenSandbox 执行证据分别记录，不算作该回归执行通过。
+
+覆盖沙箱/子 Agent/Core 提交屏障/Worker、文件发布及回收、generation 撤销、十万 MyBatis/H2 历史及 Journal 补建、旧历史转换、架构边界和会话删除。该构建关闭了 Javadoc，不能当作新的 Javadoc 验收。首次格式门禁、构造器映射失败和真实夹具路径失败日志保留，不将首次失败写成通过。
+
+### 33.4 真实双应用和浏览器联合门禁
+
+`worker-consumer-smoke.py` 增加显式空清单、Worker 前后 Task/version/count/bytes 一致、正常删除 Agent 后清单解除的断言。最终日志 `/private/tmp/chugou-r06-workset-worker-browser-20261012.log`，**根退出码 0、10/10**，没有禁用沙箱、跳过浏览器或改用外部模型。
+
+使用真实 PG/Redis/MinIO/OpenSandbox 与独占 Web18082/Worker18083、本地确定性 HTTP/SSE 模型故障夹具。覆盖无消费者不承诺恢复、离线消费者等待、租户/员工隔离、独立 Worker 领取原 Task、HTTP/Worker 共享重试总次数、永久401终止、取消后不可领取。实际 Chrome 登录、任务提交、等待、Worker 重启、自动最终回复、桌面/移动刷新及草稿保留均通过，没有重复提交/重放。
+
+旧 Run 在接受时允许 32 MiB 文件；Worker 改为新 1 MiB 限额后仍恢复原 5 MiB 附件，直接从真实 Worker 沙箱下载并核验完整长度/SHA-256，清单 Task/version/count/bytes 恢复前后完全一致。新 Web 的新 Run 使用新文件/重试策略，超出新限额的上传返回413，历史原版本下载仍正确。新清单确实参与实际 runtime，没有仅用仓储单测替代联合链路。
+
+本轮截图 `/private/tmp/chugou-real-recovery-ui/completed-desktop.png`、`completed-mobile.png` 时间为2026-10-12 17:30，已查看，无文字/控件相互覆盖；不将该目录中此前留下的 `failure.png` 当作本轮证据。浏览器测试是恢复交付流程，不代表完整业务功能/生产模型/容量/灾备验收。
+
+独立临时 PG 库在连接数为0后删除；本地验证业务库通过正常 Flyway 升级到 V57。联合夹具结束后精确查询本轮唯一账号：自有连接、Run 和输入清单均0，15个资源全部 RELEASED、15条引用全部 CLOSED，18082/18083 无监听。正常 API 删除自有测试 Agent，不直接删除其他用户数据。
+
+最终未关闭 Javadoc 的 `package` 根退出码0，日志 `/private/tmp/chugou-r06-workset-javadoc-package-20261012.log`；与33.3中关闭 Javadoc 的回归构建分别记录。Python/Shell 语法与差异空白检查通过。四个本轮启动的 PG/Redis/MinIO/OpenSandbox 依赖容器恢复为停止状态，不关闭 Docker Desktop、不删除镜像/数据卷，未留下临时沙箱容器。保留原有工作区修改及用户文档，未自动提交/推送。
+
+### 33.5 剩余边界
+
+R06 仍未整体完成。当前冻结的是 Task 的附件和依赖文件基础清单；Skill 和现有记忆投影仍需受控、可重建的不可变版本，不新增 R08 结构化企业记忆。还需授权按需取回/追加清单及预算、运行中路径权限重验、子 Task 输出子目录与共享路径写冲突、后台子任务完整继承同一 Run 的系统清单/检查点，以及非持久卷以外部署的 Run 子目录/清单兼容。显式输入工作集仍拒绝共享持久工作卷，不能宣称 Volume 适配已完成；普通非 Volume 的 Provider 选择保持部署配置化。
+
+另一 JVM 不会直接借用父进程对象；本批给它的是可重建文件清单基础，不是完成了所有跨 JVM 子任务资源共享。资源分配 POST 在返回 ID 前断连的未知窗口、真实 PG 十万历史/容量、工具 Journal/产物强杀矩阵、R07/R09 及 R10–R17 继续按文档39执行。当前未提交/推送。

@@ -51,7 +51,8 @@ class ChatPersistenceServiceTest {
                     runRepository,
                     new ObjectMapper(),
                     mock(io.agentscope.saas.app.workspace.FileCatalogService.class),
-                    mock(io.agentscope.saas.domain.memory.RuntimeMessageRepository.class));
+                    mock(io.agentscope.saas.domain.memory.RuntimeMessageRepository.class),
+                    mock(io.agentscope.saas.domain.memory.LegacyArchiveImportRepository.class));
 
     @Test
     void assignsSessionScopedMonotonicSeq() {

@@ -49,26 +49,20 @@ public final class SandboxExternalIds {
             return Optional.empty();
         }
         for (String getter : PROVIDER_ID_GETTERS) {
-            Optional<String> value = invokeStringGetter(state, getter);
-            if (value.isPresent()) {
-                return value;
+            try {
+                Method method = state.getClass().getMethod(getter);
+                method.setAccessible(true);
+                Object value = method.invoke(state);
+                // A recognized provider with a null backend ID has not allocated a resource.
+                // Its logical session ID must not be recorded as a physical backend ID.
+                return value instanceof String s ? normalize(s) : Optional.empty();
+            } catch (NoSuchMethodException absent) {
+                // A provider-independent state may use its session ID below.
+            } catch (ReflectiveOperationException | RuntimeException inaccessible) {
+                return Optional.empty();
             }
         }
         return normalize(state.getSessionId());
-    }
-
-    private static Optional<String> invokeStringGetter(SandboxState state, String getter) {
-        try {
-            Method method = state.getClass().getMethod(getter);
-            method.setAccessible(true);
-            Object value = method.invoke(state);
-            if (value instanceof String s) {
-                return normalize(s);
-            }
-            return Optional.empty();
-        } catch (ReflectiveOperationException | RuntimeException e) {
-            return Optional.empty();
-        }
     }
 
     private static Optional<String> normalize(String value) {

@@ -127,7 +127,8 @@ public class AgentConfig {
             ExecutionPlanService executionPlanService,
             ObjectProvider<PgTaskRepository> pgTaskRepositoryProvider,
             LlamaFirewallClient llamaFirewallClient,
-            LlamaFirewallToolSecurityPolicy llamaFirewallPolicy) {
+            LlamaFirewallToolSecurityPolicy llamaFirewallPolicy,
+            io.agentscope.saas.app.sandbox.PgSandboxUsageGuard sandboxUsageGuard) {
 
         SaasProperties.Agent agentCfg = properties.getAgent();
         SaasProperties.RateLimit rl = properties.getRateLimit();
@@ -238,6 +239,7 @@ public class AgentConfig {
         // does not attempt to exec in an unconfigured environment.
         SandboxFilesystemSpec sandboxSpec = sandboxSpecProvider.getIfAvailable();
         if (properties.getSandbox().isEnabled() && sandboxSpec != null) {
+            builder.sandboxUsageGuard(sandboxUsageGuard);
             sandboxSpec.workspaceTransferPolicy(
                     new io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy(
                             properties.getSandbox().getTransferMaxFiles(),

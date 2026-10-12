@@ -55,12 +55,31 @@ class SandboxReconciliationJobTest {
         database.createSandboxes();
         database.createReconciliationSandboxLeases();
         database.createReconciliationRetentionGuard();
+        database.createReconciliationUsageGuard();
         properties = new SaasProperties();
         properties.getSandbox().setEnabled(true);
         properties.getSandbox().setReconciliationBatchSize(20);
         properties.getSandbox().setReconciliationActiveGraceSeconds(0);
         properties.getSandbox().setBackendReleaseMaxAttempts(3);
         metrics = mock(SandboxMetrics.class);
+    }
+
+    @Test
+    void legacyScanAndClaimCannotReleaseARegisteredSharedResource() {
+        UUID active = insertSandbox("active", "opensandbox", "shared-active", null, 0, -60);
+        UUID closed = insertSandbox("released", "opensandbox", "shared-closed", null, 0, -60);
+        database.protectReconciliationSandbox(UUID.randomUUID(), active, "DRAINING");
+        database.protectReconciliationSandbox(UUID.randomUUID(), closed, "RELEASE_FAILED");
+        var job =
+                jobWithTerminator(
+                        (type, id) -> {
+                            throw new AssertionError("Managed resources belong to usage GC");
+                        });
+        var summary = job.reconcileBatch();
+        assertThat(summary.expiredActive()).isZero();
+        assertThat(summary.backendReleased()).isZero();
+        assertThat(repository.markExpiredActiveEvicted(active, OffsetDateTime.now())).isZero();
+        assertThat(repository.claimBackendRelease(closed, 3)).isZero();
     }
 
     @Test

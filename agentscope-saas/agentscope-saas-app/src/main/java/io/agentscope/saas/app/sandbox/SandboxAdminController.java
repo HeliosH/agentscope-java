@@ -56,6 +56,7 @@ public class SandboxAdminController {
     private final SandboxBroker broker;
     private final SandboxBackendTerminator terminator;
     private final AuditService audit;
+    private final io.agentscope.saas.domain.sandbox.SandboxUsageRepository usage;
 
     public SandboxAdminController(
             SandboxRepository repository,
@@ -64,16 +65,26 @@ public class SandboxAdminController {
         this(repository, broker, terminator, null);
     }
 
-    @Autowired
     public SandboxAdminController(
             SandboxRepository repository,
             SandboxBroker broker,
             SandboxBackendTerminator terminator,
             AuditService audit) {
+        this(repository, broker, terminator, audit, null);
+    }
+
+    @Autowired
+    public SandboxAdminController(
+            SandboxRepository repository,
+            SandboxBroker broker,
+            SandboxBackendTerminator terminator,
+            AuditService audit,
+            io.agentscope.saas.domain.sandbox.SandboxUsageRepository usage) {
         this.repository = repository;
         this.broker = broker;
         this.terminator = terminator != null ? terminator : SandboxBackendTerminator.unsupported();
         this.audit = audit;
+        this.usage = usage;
     }
 
     public record SandboxView(
@@ -249,7 +260,27 @@ public class SandboxAdminController {
             return SandboxBackendTerminator.TerminationResult.skipped("disabled by request");
         }
         SandboxEntity entity = result.sandbox();
+        if (managed(entity)) {
+            return SandboxBackendTerminator.TerminationResult.skipped(
+                    "Managed resource: cancel its Run and let usage GC release after all references"
+                            + " close");
+        }
         return terminator.terminate(entity.getSandboxType(), entity.getExternalId());
+    }
+
+    private boolean managed(SandboxEntity entity) {
+        if (usage == null) return false;
+        String previous = io.agentscope.saas.core.tenant.TenantContextHolder.getOrgId();
+        io.agentscope.saas.core.tenant.TenantContextHolder.setOrgId(entity.getOrgId().toString());
+        try {
+            return usage.managedBackend(
+                    entity.getOrgId(),
+                    entity.getUserId(),
+                    entity.getSandboxType(),
+                    entity.getExternalId());
+        } finally {
+            io.agentscope.saas.core.tenant.TenantContextHolder.setOrgId(previous);
+        }
     }
 
     private static SandboxActionView toActionView(

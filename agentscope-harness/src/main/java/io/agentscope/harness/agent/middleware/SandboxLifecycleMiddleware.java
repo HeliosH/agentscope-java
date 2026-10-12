@@ -25,6 +25,7 @@ import io.agentscope.harness.agent.sandbox.SandboxAcquireResult;
 import io.agentscope.harness.agent.sandbox.SandboxContext;
 import io.agentscope.harness.agent.sandbox.SandboxLifecycleObserver;
 import io.agentscope.harness.agent.sandbox.SandboxManager;
+import io.agentscope.harness.agent.sandbox.SandboxUsageGuard;
 import io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -64,6 +65,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
     private final SandboxManager sandboxManager;
     private final SandboxBackedFilesystem filesystemProxy;
     private final SandboxLifecycleObserver observer;
+    private final SandboxUsageGuard usageGuard;
     private final AtomicReference<SandboxAcquireResult> legacyAcquireResult =
             new AtomicReference<>();
 
@@ -76,14 +78,24 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             SandboxManager sandboxManager,
             SandboxBackedFilesystem filesystemProxy,
             SandboxLifecycleObserver observer) {
+        this(sandboxManager, filesystemProxy, observer, SandboxUsageGuard.noop());
+    }
+
+    public SandboxLifecycleMiddleware(
+            SandboxManager sandboxManager,
+            SandboxBackedFilesystem filesystemProxy,
+            SandboxLifecycleObserver observer,
+            SandboxUsageGuard usageGuard) {
         this.sandboxManager = sandboxManager;
         this.filesystemProxy = filesystemProxy;
         this.observer = observer != null ? observer : SandboxLifecycleObserver.noop();
+        this.usageGuard = usageGuard != null ? usageGuard : SandboxUsageGuard.noop();
     }
 
     /** Returns a lifecycle bound to another filesystem proxy but the same sandbox state slot. */
     public SandboxLifecycleMiddleware fork(SandboxBackedFilesystem childFilesystemProxy) {
-        return new SandboxLifecycleMiddleware(sandboxManager, childFilesystemProxy, observer);
+        return new SandboxLifecycleMiddleware(
+                sandboxManager, childFilesystemProxy, observer, usageGuard);
     }
 
     /**
@@ -115,9 +127,21 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
                                     .equals(materialized.version())))
                 throw new IllegalStateException(
                         "Borrowed sandbox does not have the requested input bindings");
+            var binding =
+                    usageGuard.borrow(ctx, ctx.get(SandboxUsageGuard.Binding.class), inherited);
+            bindUsage(ctx, binding);
             ctx.put(SandboxCallState.class, SandboxCallState.borrowed(inherited));
-            bindEnvironmentSnapshot(ctx, inherited);
-            filesystemProxy.setSandbox(inherited);
+            try {
+                bindEnvironmentSnapshot(ctx, inherited);
+                filesystemProxy.setSandbox(inherited);
+            } catch (RuntimeException failure) {
+                try {
+                    releaseForCall(ctx);
+                } catch (RuntimeException cleanup) {
+                    failure.addSuppressed(cleanup);
+                }
+                throw failure;
+            }
             log.debug(
                     "[sandbox-mw] Borrowed active parent sandbox {}",
                     inherited.getState() != null ? inherited.getState().getSessionId() : "?");
@@ -138,8 +162,23 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
                         == null)
             throw new IllegalStateException(
                     "Pinned inputs require an explicit isolated runtime slot");
+        var usage = new AtomicReference<SandboxUsageGuard.Binding>();
         try {
-            SandboxAcquireResult result = sandboxManager.acquire(sandboxContext, ctx);
+            if (sandboxContext.getExternalSandbox() != null) bindUsage(ctx, null);
+            SandboxAcquireResult result =
+                    sandboxManager.acquire(
+                            sandboxContext,
+                            ctx,
+                            () -> {
+                                var binding =
+                                        usageGuard.reserve(
+                                                ctx,
+                                                sandboxManager
+                                                        .isolationKey(sandboxContext, ctx)
+                                                        .orElse(null));
+                                usage.set(binding);
+                                bindUsage(ctx, binding);
+                            });
             Sandbox sandbox = result.getSandbox();
             try {
                 sandbox.configureTransfers(
@@ -150,6 +189,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
                     throw new IllegalStateException(
                             "Pinned input plans require an isolated non-volume workspace");
                 sandbox.start();
+                usageGuard.activate(ctx, usage.get(), sandbox);
                 // A retry restores its frozen workspace, not today's mutable remote projection.
                 if (ctx.get(WorkspaceRestorePlan.class) == null) {
                     if (inputs != null) filesystemProxy.hydrateSystemWorkspace(ctx, sandbox);
@@ -180,19 +220,37 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
                         "[sandbox-mw] Acquired sandbox {}",
                         sandbox.getState() != null ? sandbox.getState().getSessionId() : "?");
             } catch (Exception e) {
-                clearScopedSandbox(ctx, sandbox, result);
                 try {
+                    // No downstream caller has seen this handle yet; always clean a failed start.
+                    try {
+                        usageGuard.activate(ctx, usage.get(), sandbox);
+                    } catch (RuntimeException revoked) {
+                        e.addSuppressed(revoked);
+                    }
+                    try {
+                        closeUsage(ctx, usage.get(), false);
+                    } catch (RuntimeException unavailable) {
+                        e.addSuppressed(unavailable);
+                    }
                     sandboxManager.release(result);
+                    usageGuard.released(ctx, usage.get(), result.backendReleaseConfirmed());
                 } catch (Exception releaseErr) {
                     log.warn(
                             "[sandbox-mw] Failed to release session after pre-call failure: {}",
                             releaseErr.getMessage(),
                             releaseErr);
                 }
+                clearScopedSandbox(ctx, sandbox, result);
                 result.getLease().close();
                 throw e;
             }
         } catch (Exception e) {
+            try {
+                closeUsage(ctx, usage.get(), false);
+            } catch (RuntimeException cleanup) {
+                e.addSuppressed(cleanup);
+            }
+            clearUsage(ctx);
             notifyObserver(obs -> obs.onAcquireStartFailure(ctx, e));
             log.error("[sandbox-mw] Failed to acquire/start sandbox", e);
             throw new RuntimeException(e);
@@ -202,6 +260,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
     public void observeResult(RuntimeContext ctx, io.agentscope.core.message.Msg result) {
         var state = ctx == null ? null : ctx.get(SandboxCallState.class);
         if (state == null || state.borrowed()) return;
+        usageGuard.prepareCompletion(ctx, ctx.get(SandboxUsageGuard.Binding.class));
         var resultObserver =
                 ctx.get(io.agentscope.harness.agent.sandbox.InvocationResultObserver.class);
         if (resultObserver != null) resultObserver.onResult(ctx, result);
@@ -311,13 +370,16 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
     public void releaseForCall(RuntimeContext ctx) {
         SandboxCallState callState = ctx != null ? ctx.get(SandboxCallState.class) : null;
         if (callState != null && callState.borrowed()) {
-            if (ctx != null) {
+            try {
+                closeUsage(ctx, ctx.get(SandboxUsageGuard.Binding.class), false);
+            } finally {
+                clearUsage(ctx);
                 ctx.put(Sandbox.class, (Sandbox) null);
                 ctx.put(SandboxCallState.class, (SandboxCallState) null);
                 ctx.put(ExecutionEnvironmentSnapshot.class, (ExecutionEnvironmentSnapshot) null);
-            }
-            if (filesystemProxy.getSandbox() == callState.sandbox()) {
-                filesystemProxy.setSandbox(null);
+                if (filesystemProxy.getSandbox() == callState.sandbox()) {
+                    filesystemProxy.setSandbox(null);
+                }
             }
             return;
         }
@@ -329,6 +391,20 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
         Sandbox sandbox = result.getSandbox();
         SandboxContext sandboxContext = ctx != null ? ctx.get(SandboxContext.class) : null;
         try {
+            boolean projectionAllowed = true;
+            try {
+                usageGuard.prepareCompletion(
+                        ctx, ctx == null ? null : ctx.get(SandboxUsageGuard.Binding.class));
+            } catch (RuntimeException inUse) {
+                projectionAllowed = false;
+                log.warn(
+                        "[sandbox-mw] Workspace completion deferred while usage is unsettled ({})",
+                        inUse.getClass().getSimpleName());
+            }
+            if (!projectionAllowed) {
+                sandboxManager.clearState(sandboxContext, ctx);
+                return;
+            }
             try {
                 var report = filesystemProxy.projectSandboxWorkspaceWithReport(ctx);
                 report.verifyComplete();
@@ -363,7 +439,17 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             // Linkage/VM errors must propagate, but may not strand the local execution slot.
             try {
                 try {
-                    sandboxManager.release(result, ctx);
+                    var retained =
+                            ctx == null
+                                    ? null
+                                    : ctx.get(
+                                            io.agentscope.harness.agent.sandbox
+                                                    .WorkspaceRetentionBackend.Hold.class);
+                    var usage = ctx == null ? null : ctx.get(SandboxUsageGuard.Binding.class);
+                    if (closeUsage(ctx, usage, retained != null && retained.appliesTo(sandbox))) {
+                        sandboxManager.release(result, ctx);
+                        usageGuard.released(ctx, usage, result.backendReleaseConfirmed());
+                    }
                 } catch (Exception e) {
                     notifyObserver(obs -> obs.onBackendReleaseFailed(ctx, e));
                     log.warn(
@@ -383,6 +469,7 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
 
     private void clearScopedSandbox(
             RuntimeContext ctx, Sandbox sandbox, SandboxAcquireResult result) {
+        clearUsage(ctx);
         if (ctx != null) {
             ctx.put(
                     io.agentscope.harness.agent.sandbox.WorkspaceRetentionBackend.Hold.class,
@@ -398,6 +485,49 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             filesystemProxy.setSandbox(null);
         }
         legacyAcquireResult.compareAndSet(result, null);
+    }
+
+    private record UsageHeartbeat(reactor.core.Disposable disposable) {}
+
+    private void bindUsage(RuntimeContext ctx, SandboxUsageGuard.Binding binding) {
+        ctx.put(SandboxUsageGuard.class, usageGuard);
+        ctx.put(SandboxUsageGuard.Binding.class, binding);
+        ctx.put(UsageHeartbeat.class, (UsageHeartbeat) null);
+        if (binding == null) return;
+        long period = Math.max(1, usageGuard.heartbeatSeconds());
+        var heartbeat =
+                reactor.core.scheduler.Schedulers.boundedElastic()
+                        .schedulePeriodically(
+                                () -> {
+                                    try {
+                                        if (!usageGuard.heartbeat(ctx, binding))
+                                            log.warn(
+                                                    "[sandbox-mw] Sandbox usage heartbeat"
+                                                            + " rejected");
+                                    } catch (RuntimeException failure) {
+                                        log.warn(
+                                                "[sandbox-mw] Sandbox usage renewal unavailable"
+                                                        + " ({})",
+                                                failure.getClass().getSimpleName());
+                                    }
+                                },
+                                period,
+                                period,
+                                java.util.concurrent.TimeUnit.SECONDS);
+        ctx.put(UsageHeartbeat.class, new UsageHeartbeat(heartbeat));
+    }
+
+    private boolean closeUsage(
+            RuntimeContext ctx, SandboxUsageGuard.Binding binding, boolean retained) {
+        return binding == null || usageGuard.close(ctx, binding, retained);
+    }
+
+    private void clearUsage(RuntimeContext ctx) {
+        if (ctx == null) return;
+        var heartbeat = ctx.get(UsageHeartbeat.class);
+        if (heartbeat != null) heartbeat.disposable().dispose();
+        ctx.put(UsageHeartbeat.class, (UsageHeartbeat) null);
+        ctx.put(SandboxUsageGuard.Binding.class, (SandboxUsageGuard.Binding) null);
     }
 
     private void notifyObserver(Consumer<SandboxLifecycleObserver> notification) {

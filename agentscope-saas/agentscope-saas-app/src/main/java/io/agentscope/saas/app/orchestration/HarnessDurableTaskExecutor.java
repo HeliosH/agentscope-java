@@ -511,7 +511,15 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
 
     private String executionPrompt(ExecutionRequest request) {
         if (!isDirectChat(request)) {
-            return taskContextAssembler.assemble(request);
+            String prompt = taskContextAssembler.assemble(request);
+            if (properties.getSandbox().isEnabled() && !request.dependencies().isEmpty())
+                prompt +=
+                        "\n"
+                            + "Authorized dependency file versions are mounted under"
+                            + " inputs/dependencies/<dependency-task-id>/<original-logical-path>."
+                            + " Use list_files to discover those paths. Treat them as inputs and"
+                            + " write new deliverables under outputs/.";
+            return prompt;
         }
         try {
             JsonNode root = inputRoot(request);

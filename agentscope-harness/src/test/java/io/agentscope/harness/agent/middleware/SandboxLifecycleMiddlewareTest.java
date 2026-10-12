@@ -59,6 +59,112 @@ import org.junit.jupiter.params.provider.ValueSource;
 class SandboxLifecycleMiddlewareTest {
 
     @Test
+    void admissionFailurePrecedesProviderAcquisition() {
+        var manager = new RecordingSandboxManager(new RecordingSandbox("never-created"));
+        var guard =
+                org.mockito.Mockito.mock(
+                        io.agentscope.harness.agent.sandbox.SandboxUsageGuard.class);
+        org.mockito.Mockito.when(
+                        guard.reserve(
+                                org.mockito.ArgumentMatchers.any(),
+                                org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new IllegalStateException("quota"));
+        var ctx = RuntimeContext.builder().userId("user").build();
+        ctx.put(SandboxContext.class, SandboxContext.builder().build());
+        var lifecycle =
+                new SandboxLifecycleMiddleware(manager, new SandboxBackedFilesystem(), null, guard);
+        assertThrows(RuntimeException.class, () -> lifecycle.acquireForCall(ctx));
+        assertEquals(1, manager.acquisitions.size());
+        assertNull(ctx.get(io.agentscope.harness.agent.sandbox.SandboxUsageGuard.Binding.class));
+    }
+
+    @Test
+    void activeBorrowerPreventsProjectionAndRootDestruction() {
+        var sandbox = new RecordingSandbox("shared");
+        var manager = new RecordingSandboxManager(sandbox);
+        var guard =
+                org.mockito.Mockito.mock(
+                        io.agentscope.harness.agent.sandbox.SandboxUsageGuard.class);
+        var binding =
+                new io.agentscope.harness.agent.sandbox.SandboxUsageGuard.Binding(
+                        "resource", "owner", false);
+        org.mockito.Mockito.when(guard.heartbeatSeconds()).thenReturn(30L);
+        org.mockito.Mockito.when(
+                        guard.reserve(
+                                org.mockito.ArgumentMatchers.any(),
+                                org.mockito.ArgumentMatchers.any()))
+                .thenReturn(binding);
+        var ctx = RuntimeContext.builder().userId("user").build();
+        ctx.put(SandboxContext.class, SandboxContext.builder().build());
+        var lifecycle =
+                new SandboxLifecycleMiddleware(manager, new SandboxBackedFilesystem(), null, guard);
+        lifecycle.acquireForCall(ctx);
+        assertSame(
+                binding,
+                ctx.get(io.agentscope.harness.agent.sandbox.SandboxUsageGuard.Binding.class));
+        org.mockito.Mockito.doThrow(new IllegalStateException("SANDBOX_RESOURCE_USERS_PENDING"))
+                .when(guard)
+                .prepareCompletion(ctx, binding);
+        assertThrows(IllegalStateException.class, () -> lifecycle.observeResult(ctx, null));
+        lifecycle.releaseForCall(ctx);
+        assertTrue(manager.released.isEmpty());
+        assertTrue(sandbox.running);
+        assertNull(ctx.get(Sandbox.class));
+        org.mockito.Mockito.verify(guard).close(ctx, binding, false);
+    }
+
+    @Test
+    void failedBorrowedReferenceCloseStillClearsLocalBindingsWithoutDestroyingParent() {
+        var sandbox = new RecordingSandbox("parent");
+        sandbox.running = true;
+        var guard =
+                org.mockito.Mockito.mock(
+                        io.agentscope.harness.agent.sandbox.SandboxUsageGuard.class);
+        org.mockito.Mockito.when(guard.heartbeatSeconds()).thenReturn(30L);
+        var parent =
+                new io.agentscope.harness.agent.sandbox.SandboxUsageGuard.Binding(
+                        "resource", "parent", false);
+        var child =
+                new io.agentscope.harness.agent.sandbox.SandboxUsageGuard.Binding(
+                        "resource", "child", true);
+        var ctx = RuntimeContext.empty();
+        ctx.put(Sandbox.class, sandbox);
+        ctx.put(io.agentscope.harness.agent.sandbox.SandboxUsageGuard.Binding.class, parent);
+        org.mockito.Mockito.when(guard.borrow(ctx, parent, sandbox)).thenReturn(child);
+        var manager = new RecordingSandboxManager(sandbox);
+        var filesystem = new SandboxBackedFilesystem();
+        var lifecycle = new SandboxLifecycleMiddleware(manager, filesystem, null, guard);
+        lifecycle.acquireForCall(ctx);
+        assertSame(
+                child,
+                ctx.get(io.agentscope.harness.agent.sandbox.SandboxUsageGuard.Binding.class));
+        org.mockito.Mockito.when(guard.close(ctx, child, false))
+                .thenThrow(new IllegalStateException("database unavailable"));
+        assertThrows(IllegalStateException.class, () -> lifecycle.releaseForCall(ctx));
+        assertNull(ctx.get(Sandbox.class));
+        assertNull(filesystem.getSandbox());
+        assertTrue(sandbox.running);
+        assertTrue(manager.released.isEmpty());
+    }
+
+    @Test
+    void shutdownFailureIsNotConfirmedAsARelease() {
+        var sandbox = new RecordingSandbox("failed-release");
+        sandbox.failShutdown = true;
+        var manager =
+                new SandboxManager(
+                        new NoopSandboxClient(),
+                        new SessionSandboxStateStore(new InMemoryAgentStateStore(), "test"),
+                        "test");
+        var result = SandboxAcquireResult.selfManaged(sandbox);
+        manager.release(result);
+        assertTrue(!result.backendReleaseConfirmed());
+        sandbox.failShutdown = false;
+        manager.release(result);
+        assertTrue(result.backendReleaseConfirmed());
+    }
+
+    @Test
     void borrowedChildCannotObserveOrResetItsParentsComputedResult() {
         var sandbox = new RecordingSandbox("parent");
         sandbox.running = true;
@@ -484,6 +590,13 @@ class SandboxLifecycleMiddlewareTest {
         }
 
         @Override
+        public SandboxAcquireResult acquire(
+                SandboxContext sandboxContext, RuntimeContext runtimeContext, Runnable admission) {
+            admission.run();
+            return acquire(sandboxContext, runtimeContext);
+        }
+
+        @Override
         public void persistState(
                 SandboxAcquireResult result,
                 SandboxContext sandboxContext,
@@ -553,6 +666,39 @@ class SandboxLifecycleMiddlewareTest {
                                 List.of(new WorkspaceFile("inputs/pinned.txt", new byte[0])))));
         assertThrows(IllegalStateException.class, () -> middleware.acquireForCall(ctx));
         assertNull(ctx.get(Sandbox.class));
+    }
+
+    @Test
+    void emptyInputManifestUsesBoundedSystemHydrationRatherThanWholeUserWorkspace() {
+        var sandbox = new RecordingSandbox("empty-workset");
+        var filesystem = org.mockito.Mockito.spy(new SandboxBackedFilesystem());
+        var middleware =
+                new SandboxLifecycleMiddleware(new RecordingSandboxManager(sandbox), filesystem);
+        var ctx = RuntimeContext.empty();
+        ctx.put(SandboxContext.class, SandboxContext.builder().build());
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.SandboxIsolationOverride.class,
+                new io.agentscope.harness.agent.sandbox.SandboxIsolationOverride("run/empty"));
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class,
+                new io.agentscope.harness.agent.sandbox.WorkspaceInputPlan(
+                        new WorkspaceRestorePlan("input://empty", "empty-version", List.of())));
+        try {
+            middleware.acquireForCall(ctx);
+            org.mockito.Mockito.verify(filesystem).hydrateSystemWorkspace(ctx, sandbox);
+            org.mockito.Mockito.verify(filesystem, org.mockito.Mockito.never())
+                    .hydrateRemoteWorkspace(ctx, sandbox);
+            assertEquals(
+                    "empty-version",
+                    ctx.get(
+                                    io.agentscope.harness.agent.sandbox.WorkspaceInputPlan
+                                            .Materialized.class)
+                            .version());
+        } catch (Exception error) {
+            throw new AssertionError(error);
+        } finally {
+            middleware.releaseForCall(ctx);
+        }
     }
 
     private static final class FailingProjectionFilesystem extends SandboxBackedFilesystem {

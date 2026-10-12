@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 import hashlib
 import uuid
 
@@ -49,6 +50,25 @@ class ModelFixture(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         broken = mode == "always" or count == 1
+        if not broken and config.get("input_check"):
+            check = config["input_check"]
+            sandbox = str(uuid.UUID(h.pg(
+                f"SELECT provider_sandbox_id FROM sandbox_leases WHERE run_id = '{check['run']}' "
+                "AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1")))
+            path = "/workspace/" + check["path"].lstrip("/")
+            url = f"http://127.0.0.1:18081/sandboxes/{sandbox}/proxy/44772/files/download?" + urllib.parse.urlencode({"path": path})
+            digest, size = hashlib.sha256(), 0
+            with urllib.request.urlopen(url, timeout=60) as response:
+                assert response.status == 200
+                while True:
+                    block = response.read(1024 * 1024)
+                    if not block:
+                        break
+                    size += len(block)
+                    assert size <= check["size"], "Worker sandbox input exceeded pinned length"
+                    digest.update(block)
+            assert size == check["size"] and digest.hexdigest() == check["sha256"], "Worker sandbox input differs from pinned bytes"
+            config["input_verified"] = True
         chunk = {"id": "fixture-" + marker, "object": "chat.completion.chunk", "model": "local-recovery-fixture",
                  "choices": [{"index": 0, "delta": {"role": "assistant", "content": "partial" if broken else "Recovered " + marker},
                               "finish_reason": None if broken else "stop"}]}
@@ -112,6 +132,9 @@ def main():
 
         _, absent, events = start("always")
         assert h.api(f"/api/agents/{agent}/runs/{absent}", token)["status"] == "FAILED"
+        if use_sandbox:
+            assert int(h.pg(f"SELECT count(*) FROM task_input_manifests WHERE run_id = '{absent}' "
+                            "AND file_count = 0 AND total_bytes = 0")) == 1, "Missing explicit empty workset"
         assert not any(e.get("name") == "run_recovery_scheduled" for e in events)
         count = int(h.pg(f"SELECT count(*) FROM model_invocations WHERE run_id = '{absent}' AND purpose = 'REASONING'"))
         assert count == 3, ("Expected model recovery, not an infrastructure failure", count,
@@ -182,7 +205,7 @@ def main():
             env = {**os.environ, "BASE_URL": h.BASE, "RECOVERY_AGENT_ID": agent, "RECOVERY_MARKER": marker,
                    "RECOVERY_EMAIL": f"consumer-{suffix}@e2e.test", "RECOVERY_PASSWORD": "test-" + suffix}
             ui = subprocess.Popen(["node", str(scripts / "worker-recovery-browser-smoke.cjs")], env=env,
-                                  stdout=subprocess.PIPE, text=True)
+                                  stdout=subprocess.PIPE, stdin=subprocess.PIPE, text=True)
             deadline = time.monotonic() + 150
             ready = None
             while time.monotonic() < deadline and ui.poll() is None:
@@ -195,6 +218,11 @@ def main():
                         print(line, flush=True)
             assert ready and ready.get("ready"), "Browser did not reach the real recovery queue"
             worker.boot()
+            h.wait_until(lambda: int(h.pg(f"SELECT count(*) FROM worker_heartbeats WHERE deployment_scope = '{deployment}' AND expires_at > CURRENT_TIMESTAMP")) == 1)
+            assert ui.poll() is None, "Browser exited before owned worker readiness"
+            ui.stdin.write("worker-ready\n")
+            ui.stdin.flush()
+            ui.stdin.close()
             assert ui.wait(timeout=150) == 0
             print(ui.stdout.read().strip(), flush=True)
             browser_run = str(uuid.UUID(ready["runId"]))
@@ -210,11 +238,24 @@ def main():
                 uploaded = inputs.upload(agent, token, "accepted-policy-" + suffix + ".txt", data)
                 worker.stop()
                 marker, frozen_run, _ = start("once", [inputs.attachment(uploaded)])
+                frozen_workset = h.pg(
+                    f"SELECT task_id::text || ':' || version || ':' || file_count || ':' || total_bytes "
+                    f"FROM task_input_manifests WHERE run_id = '{frozen_run}' ORDER BY task_id")
+                assert len(frozen_workset.splitlines()) == 1
+                assert frozen_workset.endswith(f":1:{len(data)}"), "Attachment workset is not exact"
                 assert int(h.pg(f"SELECT max_file_bytes FROM run_execution_policies WHERE org_id = '{org}' AND run_id = '{frozen_run}'")) == 33554432
                 assert int(h.pg(f"SELECT recovery_max_attempts FROM run_execution_policies WHERE org_id = '{org}' AND run_id = '{frozen_run}'")) == 3
+                ModelFixture.calls[marker]["input_check"] = {
+                    "run": frozen_run, "path": uploaded["path"], "size": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest()}
                 worker.boot()
                 h.wait_until(lambda: h.api(f"/api/agents/{agent}/runs/{frozen_run}", token)["status"] == "SUCCEEDED", timeout=180)
                 assert ModelFixture.calls[marker]["count"] == 2
+                assert ModelFixture.calls[marker].get("input_verified"), "No actual Worker sandbox byte verification"
+                assert h.pg(
+                    f"SELECT task_id::text || ':' || version || ':' || file_count || ':' || total_bytes "
+                    f"FROM task_input_manifests WHERE run_id = '{frozen_run}' ORDER BY task_id") == frozen_workset, \
+                    "Worker recovery changed the frozen input workset"
                 assert hashlib.sha256(inputs.download(agent, token, uploaded["path"])).hexdigest() == hashlib.sha256(data).hexdigest()
                 print("  OK  old task restores a 5 MiB pinned input on a worker with a new 1 MiB admission limit", flush=True)
             web.stop()
@@ -247,9 +288,12 @@ def main():
             ui.wait(timeout=15)
         if ui is not None:
             ui.stdout.close()
+            ui.stdin.close()
         worker.stop()
         if agent is not None and web.process is not None and web.process.poll() is None:
             assert h.request(f"/api/agents/{agent}", token, method="DELETE")[0] in (200, 204, 404)
+            if use_sandbox:
+                assert int(h.pg(f"SELECT count(*) FROM task_input_manifests WHERE agent_id = '{agent}'")) == 0
         web.stop()
         server.shutdown()
         server.server_close()

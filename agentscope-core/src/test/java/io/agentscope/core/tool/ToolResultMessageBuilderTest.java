@@ -16,6 +16,7 @@
 package io.agentscope.core.tool;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -31,6 +32,40 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 class ToolResultMessageBuilderTest {
+
+    @Test
+    void journalOutcomeIdentityIsStableButDoesNotMergeDistinctCallsOrRuns() {
+        var call = ToolUseBlock.builder().id("call-a").name("effect").input(Map.of()).build();
+        var result = ToolResultBlock.text("committed");
+        Msg first = ToolResultMessageBuilder.buildToolResultMsg(result, call, "agent", "run-a");
+        Msg replay = ToolResultMessageBuilder.buildToolResultMsg(result, call, "agent", "run-a");
+        assertEquals(first.getId(), replay.getId());
+        assertTrue(first.getId().startsWith("tool-result-"));
+        assertNotEquals(
+                first.getId(),
+                ToolResultMessageBuilder.buildToolResultMsg(result, call, "agent", "run-b")
+                        .getId());
+        assertNotEquals(
+                first.getId(),
+                ToolResultMessageBuilder.buildToolResultMsg(
+                                result,
+                                ToolUseBlock.builder()
+                                        .id("call-b")
+                                        .name("effect")
+                                        .input(Map.of())
+                                        .build(),
+                                "agent",
+                                "run-a")
+                        .getId());
+        assertNotEquals(
+                first.getId(),
+                ToolResultMessageBuilder.buildToolResultMsg(
+                                ToolResultBlock.error("failed"), call, "agent", "run-a")
+                        .getId());
+        assertNotEquals(
+                ToolResultMessageBuilder.buildToolResultMsg(result, call, "agent").getId(),
+                ToolResultMessageBuilder.buildToolResultMsg(result, call, "agent").getId());
+    }
 
     @Test
     @DisplayName("Should build tool result message with single text block")

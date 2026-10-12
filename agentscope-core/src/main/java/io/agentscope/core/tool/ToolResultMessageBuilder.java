@@ -39,14 +39,27 @@ public class ToolResultMessageBuilder {
      */
     public static Msg buildToolResultMsg(
             ToolResultBlock result, ToolUseBlock originalCall, String agentName) {
+        return buildToolResultMsg(result, originalCall, agentName, null);
+    }
+
+    /** A committed journal outcome has the same source ID across process restarts. */
+    public static Msg buildToolResultMsg(
+            ToolResultBlock result,
+            ToolUseBlock originalCall,
+            String agentName,
+            String operationScope) {
         // Set id and name from original call
         ToolResultBlock resultWithIdAndName =
                 result.withIdAndName(originalCall.getId(), originalCall.getName());
 
-        return Msg.builder()
-                .name(agentName)
-                .role(MsgRole.TOOL)
-                .content(resultWithIdAndName)
-                .build();
+        var builder = Msg.builder().name(agentName).role(MsgRole.TOOL).content(resultWithIdAndName);
+        if (operationScope != null && !operationScope.isBlank()) {
+            builder.id(
+                    "tool-result-"
+                            + StepSnapshot.fingerprint(
+                                    java.util.Arrays.asList(
+                                            operationScope, agentName, resultWithIdAndName)));
+        }
+        return builder.build();
     }
 }

@@ -498,6 +498,20 @@ public interface TestDatabaseMapper {
                 + " NULL, provider_id VARCHAR(32), resource_id VARCHAR(255), status VARCHAR(32))")
     void createReconciliationRetentionGuard();
 
+    @Update(
+            "CREATE TABLE sandbox_runtime_resources (id UUID PRIMARY KEY,org_id UUID,user_id"
+                    + " UUID,provider_id VARCHAR(64),external_id VARCHAR(512),status VARCHAR(32))")
+    void createReconciliationUsageGuard();
+
+    @Insert(
+            "INSERT INTO sandbox_runtime_resources SELECT"
+                + " #{resourceId},org_id,user_id,sandbox_type,external_id,#{status} FROM sandboxes"
+                + " WHERE id = #{sandboxId}")
+    void protectReconciliationSandbox(
+            @Param("resourceId") UUID resourceId,
+            @Param("sandboxId") UUID sandboxId,
+            @Param("status") String status);
+
     @Update("UPDATE sandboxes SET agent_id = #{agent}, session_id = #{session} WHERE id = #{id}")
     int bindMaintenanceSandbox(
             @Param("id") UUID id, @Param("agent") UUID agent, @Param("session") String session);
@@ -601,8 +615,28 @@ public interface TestDatabaseMapper {
         createGcFiles();
         createGcFileVersions();
         createGcFileAttachments();
+        createLegacyGcPins();
+        createInputGcPins();
+        createArtifactGcPins();
         createGcQueue();
     }
+
+    @Update(
+            "CREATE TABLE legacy_archive_imports (id UUID PRIMARY KEY, source_version_id UUID NOT"
+                    + " NULL)")
+    void createLegacyGcPins();
+
+    @Update("CREATE TABLE task_input_entries (task_id UUID, file_id UUID, version_id UUID)")
+    void createInputGcPins();
+
+    @Update("CREATE TABLE run_artifacts (file_id UUID, file_version_id UUID)")
+    void createArtifactGcPins();
+
+    @Insert("INSERT INTO legacy_archive_imports(id, source_version_id) VALUES(#{id}, #{version})")
+    int insertLegacyGcPin(@Param("id") UUID id, @Param("version") UUID version);
+
+    @Delete("DELETE FROM legacy_archive_imports WHERE id = #{id}")
+    int deleteLegacyGcPin(@Param("id") UUID id);
 
     @Insert(
             """
@@ -711,6 +745,27 @@ public interface TestDatabaseMapper {
              WHERE id = #{id}
             """)
     int markTaskSucceeded(@Param("id") UUID id, @Param("outputJson") String outputJson);
+
+    @Insert(
+            """
+            INSERT INTO task_edges(id,org_id,run_id,from_task_id,to_task_id)
+            VALUES(#{id},#{org},#{run},#{from},#{to})
+            """)
+    void inputDependency(
+            @Param("id") UUID id,
+            @Param("org") UUID org,
+            @Param("run") UUID run,
+            @Param("from") UUID from,
+            @Param("to") UUID to);
+
+    @Delete("DELETE FROM file_attachments WHERE id = #{id}")
+    void removeInputAttachment(UUID id);
+
+    @Update("UPDATE task_input_manifests SET version = 'forged' WHERE task_id = #{id}")
+    void rewriteInputManifest(UUID id);
+
+    @Delete("DELETE FROM task_input_entries WHERE task_id = #{id}")
+    void removeInputEntries(UUID id);
 
     @Select("SELECT event_type FROM run_events WHERE run_id = #{runId} ORDER BY seq")
     List<String> runEventTypes(UUID runId);

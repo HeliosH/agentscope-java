@@ -75,6 +75,25 @@ class SandboxTrackingMiddlewareTest {
     }
 
     @Test
+    void borrowedChildDoesNotRegisterOrReleaseASecondPhysicalTrackingRow() {
+        var ctx = tenantContext();
+        var input = new AgentInput(Collections.emptyList());
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.SandboxUsageGuard.Binding.class,
+                new io.agentscope.harness.agent.sandbox.SandboxUsageGuard.Binding(
+                        "resource", "child", true));
+        ctx.put(
+                SandboxTrackingContext.class,
+                new SandboxTrackingContext(UUID.randomUUID(), ORG_ID.toString()));
+        when(next.apply(input)).thenReturn(Flux.empty());
+        middleware.onAgent(agent, ctx, input, next).blockLast();
+        assertThat(ctx.get(SandboxTrackingContext.class)).isNull();
+        verify(broker, never())
+                .registerActive(any(), any(), any(), any(), any(), any(), any(), anyInt());
+        verify(broker, never()).release(any());
+    }
+
+    @Test
     void propagatesQuotaExceededFromTransactionalRegistration() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
         middleware = new SandboxTrackingMiddleware(broker, "e2b", 60, new SandboxMetrics(registry));

@@ -1085,6 +1085,8 @@ public class HarnessAgent implements Agent, AutoCloseable {
         RemoteFilesystemSpec remoteFilesystemSpec;
         LocalFilesystemSpec localFilesystemSpec;
         SandboxLifecycleObserver sandboxLifecycleObserver = SandboxLifecycleObserver.noop();
+        io.agentscope.harness.agent.sandbox.SandboxUsageGuard sandboxUsageGuard =
+                io.agentscope.harness.agent.sandbox.SandboxUsageGuard.noop();
 
         // AgentStateStore — mirrored only to pass through to inner; the user-set AgentStateStore
         // can also be replaced inside orchestration when none is provided (defaults to a
@@ -1537,6 +1539,15 @@ public class HarnessAgent implements Agent, AutoCloseable {
         public Builder sandboxLifecycleObserver(SandboxLifecycleObserver observer) {
             this.sandboxLifecycleObserver =
                     observer != null ? observer : SandboxLifecycleObserver.noop();
+            return this;
+        }
+
+        public Builder sandboxUsageGuard(
+                io.agentscope.harness.agent.sandbox.SandboxUsageGuard guard) {
+            this.sandboxUsageGuard =
+                    guard == null
+                            ? io.agentscope.harness.agent.sandbox.SandboxUsageGuard.noop()
+                            : guard;
             return this;
         }
 
@@ -2016,7 +2027,10 @@ public class HarnessAgent implements Agent, AutoCloseable {
                                 sandboxLifecycleObserver);
                 sandboxLifecycleMw =
                         new SandboxLifecycleMiddleware(
-                                sandboxManager, capturedSandboxFs, sandboxLifecycleObserver);
+                                sandboxManager,
+                                capturedSandboxFs,
+                                sandboxLifecycleObserver,
+                                sandboxUsageGuard);
             } else if (inheritedSandboxRuntime != null) {
                 capturedSandboxFs = inheritedSandboxRuntime.filesystem();
                 sandboxLifecycleMw = inheritedSandboxRuntime.lifecycle();

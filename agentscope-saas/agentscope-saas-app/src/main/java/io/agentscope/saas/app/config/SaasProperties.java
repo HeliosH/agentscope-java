@@ -78,6 +78,60 @@ public class SaasProperties {
     }
 
     public static class RuntimeArchive {
+        private final LegacyImport legacyImport = new LegacyImport();
+
+        public LegacyImport getLegacyImport() {
+            return legacyImport;
+        }
+
+        public static class LegacyImport {
+            private boolean enabled;
+            private long maxSourceBytes = 536870912;
+            private int maxLineBytes = 1048576;
+            private int maxBatchBytes = 4194304;
+            private int maxBatchLines = 100;
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(boolean value) {
+                enabled = value;
+            }
+
+            public long getMaxSourceBytes() {
+                return maxSourceBytes;
+            }
+
+            public void setMaxSourceBytes(long value) {
+                maxSourceBytes = value;
+            }
+
+            public int getMaxLineBytes() {
+                return maxLineBytes;
+            }
+
+            public void setMaxLineBytes(int value) {
+                maxLineBytes = value;
+            }
+
+            public int getMaxBatchBytes() {
+                return maxBatchBytes;
+            }
+
+            public void setMaxBatchBytes(int value) {
+                maxBatchBytes = value;
+            }
+
+            public int getMaxBatchLines() {
+                return maxBatchLines;
+            }
+
+            public void setMaxBatchLines(int value) {
+                maxBatchLines = value;
+            }
+        }
+
         private boolean enabled = true;
         private int maxBatchMessages = 5000;
         private long maxMessageBytes = 33554432;

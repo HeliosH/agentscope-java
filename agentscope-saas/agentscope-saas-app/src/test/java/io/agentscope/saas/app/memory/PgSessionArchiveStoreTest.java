@@ -10,8 +10,13 @@ package io.agentscope.saas.app.memory;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -28,6 +33,7 @@ import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.permission.PermissionContextState;
 import io.agentscope.core.permission.PermissionDecision;
+import io.agentscope.core.state.AgentState;
 import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.core.tool.ContextCheckpointStore;
 import io.agentscope.core.tool.StepSnapshot;
@@ -62,6 +68,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.AdditionalAnswers;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -133,6 +140,21 @@ public class PgSessionArchiveStoreTest {
                                         List.of(second, message("c", "third")))
                                 .lastSeq())
                 .isEqualTo(3);
+    }
+
+    @Test
+    void everyArchiveReadRejectsUnboundedOrEmptyLimits() {
+        for (int limit : new int[] {0, -1, 501, Integer.MAX_VALUE}) {
+            assertThatThrownBy(
+                            () ->
+                                    archive.readWindow(
+                                            context, "assistant", key(), null, null, limit))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> archive.search(context, "assistant", "source", limit))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> archive.list(context, "assistant", limit))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
     }
 
     @Test
@@ -696,6 +718,67 @@ public class PgSessionArchiveStoreTest {
         assertThat(archive.page(tenant, agent, session, "assistant", key(), null, null, 2).items())
                 .extracting(SessionArchiveStore.Entry::seq)
                 .containsExactly(99999L, 100000L);
+
+        RuntimeMessageRepository measured =
+                mock(RuntimeMessageRepository.class, AdditionalAnswers.delegatesTo(repository));
+        var bounded =
+                new PgSessionArchiveStore(measured, runs, new SaasProperties(), transactionManager);
+        var working =
+                bounded.readWindow(context, "assistant", key(), null, null, 20).stream()
+                        .map(SessionArchiveStore.Entry::message)
+                        .toList();
+        var stateStore = new InMemoryAgentStateStore();
+        var state = AgentState.builder().userId(user.toString()).sessionId(key()).build();
+        state.contextMutable().addAll(working);
+        stateStore.save(user.toString(), key(), "agent_state", state);
+        var modelCalls = new AtomicInteger();
+        Model model = mock(Model.class);
+        when(model.getModelName()).thenReturn("bounded-history-fixture");
+        when(model.stream(any(), any(), any()))
+                .thenAnswer(
+                        call -> {
+                            List<Msg> prompt = call.getArgument(0);
+                            assertThat(prompt).hasSizeLessThanOrEqualTo(24);
+                            assertThat(prompt).noneMatch(m -> "load-2".equals(m.getId()));
+                            modelCalls.incrementAndGet();
+                            return Flux.just(
+                                    ChatResponse.builder()
+                                            .content(
+                                                    List.of(
+                                                            TextBlock.builder()
+                                                                    .text("bounded done")
+                                                                    .build()))
+                                            .finishReason("stop")
+                                            .build());
+                        });
+        HarnessAgent harness =
+                HarnessAgent.builder()
+                        .name("assistant")
+                        .model(model)
+                        .toolkit(new Toolkit())
+                        .workspace(workspace)
+                        .stateStore(stateStore)
+                        .disableMemoryHooks()
+                        .disableWorkspaceContext()
+                        .disableAtPathExpansion()
+                        .disableSubagents()
+                        .memory(MemoryConfig.builder().sessionArchiveStore(bounded).build())
+                        .build();
+        assertThat(
+                        harness.call(List.of(message("bounded-question", "continue")), context)
+                                .block(Duration.ofSeconds(20))
+                                .getTextContent())
+                .isEqualTo("bounded done");
+        assertThat(modelCalls).hasValue(1);
+        verify(measured, times(1)).window(any(), any(), isNull(), isNull(), eq(20), anyLong());
+        verify(measured, never()).list(any(), any(), any(), any(), anyInt());
+        verify(measured, never()).search(any(), any(), any(), any(), any(), anyInt());
+        assertThat(
+                        repository
+                                .findStream(org, user, agent, "assistant", key())
+                                .orElseThrow()
+                                .lastSeq())
+                .isEqualTo(100002);
     }
 
     public static String digest(String payload) {

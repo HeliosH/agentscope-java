@@ -11,8 +11,6 @@ public record WorkspaceInputPlan(WorkspaceRestorePlan workspace) {
 
     public WorkspaceInputPlan {
         java.util.Objects.requireNonNull(workspace);
-        if (workspace.files().isEmpty())
-            throw new IllegalArgumentException("Input plan must bind files");
         for (var file : workspace.files())
             if (!(file.path().startsWith("inputs/") || file.path().startsWith("outputs/")))
                 throw new IllegalArgumentException("Input must be a user file");

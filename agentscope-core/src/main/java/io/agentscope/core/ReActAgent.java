@@ -1504,6 +1504,8 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
             return snapshot;
         }
 
+        private boolean durableCheckpointRestored;
+
         private Mono<Msg> doCallInner(List<Msg> msgs) {
             restoreLatestContextCheckpoint();
 
@@ -1521,7 +1523,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
 
             // Pending-tool-call recovery: auto-patch orphaned pending tool calls with synthetic
             // error results so the agent can continue instead of crashing.
-            if (enablePendingToolRecovery) {
+            if (enablePendingToolRecovery && !hasDurablePendingRecovery()) {
                 maybePatchPendingToolCalls(msgs);
             }
 
@@ -1585,6 +1587,12 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                 // User provided tool results -> validate and add
                 validateAndAddToolResults(msgs, pendingIds);
                 return hasPendingToolUse() ? resumeAgent() : coreAgent();
+            }
+
+            // A run-scoped durable checkpoint owns the trigger already. Worker redelivery may
+            // use a new input ID; resume its original calls instead of inventing error results.
+            if (hasDurablePendingRecovery()) {
+                return resumeAgent();
             }
 
             // Recovery was disabled and user did not provide tool results — unrecoverable.
@@ -1924,6 +1932,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
             store.latest()
                     .ifPresent(
                             checkpoint -> {
+                                durableCheckpointRestored = true;
                                 List<Msg> current = state.getContext();
                                 if (checkpoint
                                         .historyHash()
@@ -1945,6 +1954,11 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                         restored.size(),
                                         getName());
                             });
+        }
+
+        private boolean hasDurablePendingRecovery() {
+            return durableCheckpointRestored
+                    && rc.get(io.agentscope.core.tool.ToolExecutionJournal.class) != null;
         }
 
         private List<Msg> mergeCheckpointTail(List<Msg> current, List<Msg> retainedTail) {
@@ -2516,30 +2530,61 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                 }
                                 applyToolUseBlockReplacements(replacements);
 
-                                if (pending.isEmpty()) {
-                                    return runToolBatch(
-                                            effectiveToolCalls, autoDenied, replyId, resultHolder);
+                                Mono<Void> intentCommit = Mono.empty();
+                                if (rc.get(io.agentscope.core.tool.ToolExecutionJournal.class)
+                                                != null
+                                        && rc.get(
+                                                        io.agentscope.core.tool
+                                                                .ContextCheckpointStore.class)
+                                                != null) {
+                                    intentCommit =
+                                            Mono.fromRunnable(this::saveContextCheckpoint)
+                                                    .subscribeOn(Schedulers.boundedElastic())
+                                                    .then();
                                 }
 
-                                // Permission HITL: surface the pending tool calls, persist any
-                                // auto-denied results so the second call can identify which ones
-                                // still need confirmation, then signal stop via RequestStopEvent.
-                                // The agent's acting() will see the RequestStopEvent, set the
-                                // GenerateReason to PERMISSION_ASKING, and return.
-                                if (!autoDenied.isEmpty()) {
-                                    // Write DENIED results in-place so they aren't re-evaluated on
-                                    // resume.
-                                    writeAutoDeniedResults(effectiveToolCalls, autoDenied);
-                                }
-                                // resultHolder may be inspected by the caller after stream
-                                // completion;
-                                // initialise it to empty since no successful execution happened.
-                                resultHolder.set(List.of());
-                                return Flux.<AgentEvent>just(
-                                        new RequireUserConfirmEvent(replyId, pending),
-                                        new RequestStopEvent(
-                                                "permission asking",
-                                                GenerateReason.PERMISSION_ASKING));
+                                return intentCommit.thenMany(
+                                        Flux.defer(
+                                                () -> {
+                                                    if (pending.isEmpty()) {
+                                                        return runToolBatch(
+                                                                effectiveToolCalls,
+                                                                autoDenied,
+                                                                replyId,
+                                                                resultHolder);
+                                                    }
+
+                                                    // Permission HITL: surface the pending tool
+                                                    // calls, persist any
+                                                    // auto-denied results so the second call can
+                                                    // identify which ones
+                                                    // still need confirmation, then signal stop via
+                                                    // RequestStopEvent.
+                                                    // The agent's acting() will see the
+                                                    // RequestStopEvent, set the
+                                                    // GenerateReason to PERMISSION_ASKING, and
+                                                    // return.
+                                                    if (!autoDenied.isEmpty()) {
+                                                        // Write DENIED results in-place so they
+                                                        // aren't re-evaluated on
+                                                        // resume.
+                                                        writeAutoDeniedResults(
+                                                                effectiveToolCalls, autoDenied);
+                                                    }
+                                                    // resultHolder may be inspected by the caller
+                                                    // after stream
+                                                    // completion;
+                                                    // initialise it to empty since no successful
+                                                    // execution happened.
+                                                    resultHolder.set(List.of());
+                                                    return Flux.<AgentEvent>just(
+                                                            new RequireUserConfirmEvent(
+                                                                    replyId, pending),
+                                                            new RequestStopEvent(
+                                                                    "permission asking",
+                                                                    GenerateReason
+                                                                            .PERMISSION_ASKING));
+                                                }));
                             })
                     .doOnNext(this::publishEvent);
         }
@@ -3159,7 +3204,16 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
             ToolUseBlock toolUse = entry.getKey();
             ToolResultBlock result = entry.getValue();
 
-            Msg toolMsg = ToolResultMessageBuilder.buildToolResultMsg(result, toolUse, getName());
+            StepSnapshot step = rc.get(StepSnapshot.class);
+            StepSnapshot.Identity identity = step == null ? null : step.identity();
+            String operationScope =
+                    rc.get(io.agentscope.core.tool.ToolExecutionJournal.class) != null
+                                    && identity != null
+                            ? identity.runId()
+                            : null;
+            Msg toolMsg =
+                    ToolResultMessageBuilder.buildToolResultMsg(
+                            result, toolUse, getName(), operationScope);
 
             return hookDispatcher
                     .firePostActing(toolUse, result, toolkit, toolMsg)

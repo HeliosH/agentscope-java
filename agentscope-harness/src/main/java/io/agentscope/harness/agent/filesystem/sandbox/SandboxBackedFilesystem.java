@@ -1330,6 +1330,15 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
         if (runtimeContext != null) {
             Sandbox scoped = runtimeContext.get(Sandbox.class);
             if (scoped != null) {
+                var guard =
+                        runtimeContext.get(
+                                io.agentscope.harness.agent.sandbox.SandboxUsageGuard.class);
+                var usage =
+                        runtimeContext.get(
+                                io.agentscope.harness.agent.sandbox.SandboxUsageGuard.Binding
+                                        .class);
+                if (guard != null && usage != null)
+                    guard.requireCurrent(runtimeContext, usage, scoped);
                 return scoped;
             }
             if (remoteFallback != null) {

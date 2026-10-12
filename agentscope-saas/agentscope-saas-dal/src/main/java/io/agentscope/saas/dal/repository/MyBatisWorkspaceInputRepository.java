@@ -8,6 +8,7 @@ import io.agentscope.saas.dal.mybatis.tenant.WorkspaceInputMapper;
 import io.agentscope.saas.domain.workspace.WorkspaceInputRepository;
 import io.agentscope.saas.domain.workspace.WorkspaceManifestRepository.Scope;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.stereotype.Repository;
 
 @Repository
@@ -20,5 +21,22 @@ public class MyBatisWorkspaceInputRepository implements WorkspaceInputRepository
 
     public List<Input> bindings(Scope scope, int limit) {
         return mapper.bindings(scope, limit);
+    }
+
+    public List<Input> dependencies(Scope scope, int limit) {
+        return mapper.dependencies(scope, limit);
+    }
+
+    public Optional<Frozen> frozen(Scope scope) {
+        return Optional.ofNullable(mapper.frozen(scope));
+    }
+
+    public List<Input> frozenBindings(Scope scope, int limit) {
+        return mapper.frozenBindings(scope, limit);
+    }
+
+    public void freeze(Scope scope, Frozen manifest, List<Input> files) {
+        mapper.insertManifest(scope, manifest);
+        for (var file : files) mapper.insertEntry(scope, file);
     }
 }

@@ -109,6 +109,28 @@ class SandboxAdminControllerTest {
     }
 
     @Test
+    void manualTrackingEvictionCannotBypassManagedResourceReferences() {
+        UUID orgId = UUID.randomUUID(), userId = UUID.randomUUID();
+        var entity = sandbox(orgId, userId, "evicted", "opensandbox", -1);
+        var usage = mock(io.agentscope.saas.domain.sandbox.SandboxUsageRepository.class);
+        when(usage.managedBackend(orgId, userId, "opensandbox", "external-1")).thenReturn(true);
+        when(broker.forceEvict(orgId, entity.getId(), "stuck"))
+                .thenReturn(
+                        Optional.of(new SandboxBroker.ForceEvictResult(entity, "active", true)));
+        var protectedController =
+                new SandboxAdminController(repository, broker, terminator, null, usage);
+        var response =
+                protectedController
+                        .forceEvict(
+                                adminJwt(orgId),
+                                entity.getId().toString(),
+                                new SandboxAdminController.ForceEvictRequest("stuck"))
+                        .block();
+        assertThat(response.getBody().backendTerminationStatus()).isEqualTo("skipped");
+        verify(terminator, never()).terminate(any(), any());
+    }
+
+    @Test
     void adminCanForceEvictOwnOrgSandbox() {
         UUID orgId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();

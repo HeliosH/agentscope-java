@@ -410,6 +410,7 @@ public class PgSessionArchiveStore implements SessionArchiveStore {
 
     @Override
     public List<Hit> search(RuntimeContext context, String label, String query, int limit) {
+        validateWindow(null, null, limit);
         var owner = owner(context);
         if (query == null || query.isBlank() || query.length() > 500)
             throw new IllegalArgumentException("Invalid archive query");
@@ -445,6 +446,7 @@ public class PgSessionArchiveStore implements SessionArchiveStore {
 
     @Override
     public List<Session> list(RuntimeContext context, String label, int limit) {
+        validateWindow(null, null, limit);
         var owner = owner(context);
         return withOwner(
                 owner,

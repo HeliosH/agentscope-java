@@ -1556,7 +1556,8 @@ class FilePublicationIntegrationTest {
         options.setApiBaseUrl(
                 System.getenv()
                         .getOrDefault("OPENSANDBOX_API_BASE_URL", "http://127.0.0.1:18081/v1"));
-        options.setImage("ubuntu:latest");
+        options.setImage(
+                System.getenv().getOrDefault("SAAS_SANDBOX_OPENSANDBOX_IMAGE", "ubuntu:latest"));
         options.setWorkspaceRoot("/workspace");
         options.setWaitTimeoutSeconds(180);
         var spec = new io.agentscope.harness.agent.sandbox.WorkspaceSpec();
@@ -3212,6 +3213,174 @@ class FilePublicationIntegrationTest {
         var scope = activeScope();
         bindInput(scope, selected);
         objects.afterGet = () -> assertThat(objects.lastReadKey).isEqualTo(selected.objectKey());
+        assertThat(loadInputs(scope).workspace().files()).hasSize(1);
+    }
+
+    @Test
+    void emptyWorksetRemainsExplicitAndDoesNotPickUpLaterAttachments() {
+        var scope = activeScope();
+        var original = loadInputs(scope);
+        assertThat(original.workspace().files()).isEmpty();
+        bindInput(scope, write("inputs/later.txt", "new"));
+        objects.lastReadKey = null;
+        var recovered = loadInputs(scope);
+        assertThat(recovered.workspace().files()).isEmpty();
+        assertThat(recovered.workspace().workspaceVersion())
+                .isEqualTo(original.workspace().workspaceVersion());
+        assertThat(objects.lastReadKey).isNull();
+    }
+
+    @Test
+    void freshInputServiceUsesFrozenVersionsAfterAttachmentsAreRemovedOrAdded() {
+        var scope = activeScope();
+        var old = write("inputs/pinned.txt", "old");
+        var binding = bindInput(scope, old);
+        var original = loadInputs(scope);
+        db().removeInputAttachment(binding.id());
+        bindInput(scope, write("inputs/new.txt", "new"));
+        var recovered = loadInputs(scope);
+        assertThat(recovered.workspace().workspaceVersion())
+                .isEqualTo(original.workspace().workspaceVersion());
+        assertThat(recovered.workspace().files()).hasSize(1);
+        assertThat(recovered.workspace().files().get(0).path()).isEqualTo(old.logicalPath());
+        assertThat(recovered.workspace().files().get(0).content()).isEqualTo(bytes("old"));
+    }
+
+    @Test
+    void concurrentPreparersCommitOneIdenticalManifest() throws Exception {
+        var scope = activeScope();
+        bindInput(scope, write("inputs/pinned.txt", "old"));
+        var readers = new CountDownLatch(2);
+        objects.afterGet =
+                () -> {
+                    readers.countDown();
+                    try {
+                        assertThat(readers.await(5, TimeUnit.SECONDS)).isTrue();
+                    } catch (InterruptedException error) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(error);
+                    }
+                };
+        var versions = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+        var first = async(() -> versions.add(loadInputs(scope).workspace().workspaceVersion()));
+        var second = async(() -> versions.add(loadInputs(scope).workspace().workspaceVersion()));
+        first.get(10, TimeUnit.SECONDS);
+        second.get(10, TimeUnit.SECONDS);
+        assertThat(versions).hasSize(1);
+        assertThat(inputRepository.frozenBindings(scope.manifest().scope(), 10)).hasSize(1);
+    }
+
+    @Test
+    void deletingSessionCascadesWorksetEvidenceAndReleasesVersionPin() {
+        var scope = activeScope();
+        var old = write("inputs/pinned.txt", "old");
+        var attachment = bindInput(scope, old);
+        loadInputs(scope);
+        db().removeInputAttachment(attachment.id());
+        write("inputs/pinned.txt", "new");
+        chats.deleteSession(session);
+        assertThat(inputRepository.frozen(scope.manifest().scope())).isEmpty();
+        assertThat(inputRepository.frozenBindings(scope.manifest().scope(), 10)).isEmpty();
+        var gcMapper =
+                MyBatisRepositoryTestSupport.mapper(
+                        dataSource, io.agentscope.saas.dal.mybatis.admin.FileObjectGcMapper.class);
+        assertThat(gcMapper.claimPrunableVersion(old.versionId())).isEqualTo(1);
+    }
+
+    @Test
+    void frozenInputVersionIsPinnedAgainstPruningAndDeletionButDeletedFileCannotBeRead() {
+        var scope = activeScope();
+        var original = write("inputs/pinned.txt", "old");
+        var binding = bindInput(scope, original);
+        loadInputs(scope);
+        db().removeInputAttachment(binding.id());
+        write("inputs/pinned.txt", "new");
+        var gcMapper =
+                MyBatisRepositoryTestSupport.mapper(
+                        dataSource, io.agentscope.saas.dal.mybatis.admin.FileObjectGcMapper.class);
+        assertThat(gcMapper.findPrunableVersions(1, 100))
+                .noneMatch(v -> v.id().equals(original.versionId()));
+        assertThat(gcMapper.claimPrunableVersion(original.versionId())).isZero();
+        catalog.markDeleted(tenant, original.logicalPath());
+        assertThatThrownBy(() -> loadInputs(scope)).hasMessage("WORKSPACE_INPUT_BINDING_INVALID");
+        assertThat(gcMapper.claimDeletedFile(original.fileId())).isZero();
+    }
+
+    @Test
+    void dependencyArtifactsAreMountedByExactVersionAndFrozenAcrossServiceRebuilds() {
+        var scope = activeScope();
+        var file = write("outputs/report.txt", "old");
+        UUID dependency = UUID.randomUUID();
+        db().insertReadyTask(
+                        dependency, org, scope.runId(), "dependency", "{}", OffsetDateTime.now());
+        db().markTaskSucceeded(dependency, "{}");
+        db().inputDependency(
+                        UUID.randomUUID(),
+                        org,
+                        scope.runId(),
+                        dependency,
+                        scope.execution().taskId());
+        artifacts.insert(
+                new NewRunArtifact(
+                        UUID.randomUUID(),
+                        org,
+                        scope.runId(),
+                        dependency,
+                        null,
+                        file.fileId(),
+                        file.versionId(),
+                        file.logicalPath(),
+                        "file",
+                        "{}",
+                        OffsetDateTime.now()));
+        write("outputs/report.txt", "new");
+        var gcMapper =
+                MyBatisRepositoryTestSupport.mapper(
+                        dataSource, io.agentscope.saas.dal.mybatis.admin.FileObjectGcMapper.class);
+        assertThat(gcMapper.claimPrunableVersion(file.versionId())).isZero();
+        assertThat(gcMapper.findPrunableVersions(1, 100))
+                .noneMatch(v -> v.id().equals(file.versionId()));
+        var plan = loadInputs(scope);
+        assertThat(plan.workspace().files()).hasSize(1);
+        assertThat(plan.workspace().files().get(0).path())
+                .isEqualTo("inputs/dependencies/" + dependency + "/outputs/report.txt");
+        assertThat(plan.workspace().files().get(0).content()).isEqualTo(bytes("old"));
+        artifacts.insert(
+                new NewRunArtifact(
+                        UUID.randomUUID(),
+                        org,
+                        scope.runId(),
+                        dependency,
+                        null,
+                        file.fileId(),
+                        file.versionId(),
+                        "outputs/later.txt",
+                        "file",
+                        "{}",
+                        OffsetDateTime.now()));
+        assertThat(loadInputs(scope).workspace().workspaceVersion())
+                .isEqualTo(plan.workspace().workspaceVersion());
+        assertThat(loadInputs(scope).workspace().files()).hasSize(1);
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "RUN_POSTGRES_USAGE_TEST", matches = "true")
+    void postgresInputManifestRlsAndPrivilegesProtectFrozenEvidence() {
+        var scope = activeScope();
+        bindInput(scope, write("inputs/pinned.txt", "old"));
+        loadInputs(scope);
+        var inputScope = scope.manifest().scope();
+        TenantContextHolder.setOrgId(UUID.randomUUID().toString());
+        try {
+            assertThat(inputRepository.frozen(inputScope)).isEmpty();
+            assertThat(inputRepository.frozenBindings(inputScope, 10)).isEmpty();
+        } finally {
+            TenantContextHolder.setOrgId(org.toString());
+        }
+        assertThatThrownBy(() -> db().rewriteInputManifest(scope.execution().taskId()))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThatThrownBy(() -> db().removeInputEntries(scope.execution().taskId()))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
         assertThat(loadInputs(scope).workspace().files()).hasSize(1);
     }
 

@@ -21,6 +21,7 @@ import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.saas.app.workspace.FileCatalogService;
 import io.agentscope.saas.core.tenant.TenantContext;
+import io.agentscope.saas.domain.memory.LegacyArchiveImportRepository;
 import io.agentscope.saas.domain.memory.RuntimeMessageRepository;
 import io.agentscope.saas.domain.model.AgentEntity;
 import io.agentscope.saas.domain.model.ChatMessageEntity;
@@ -55,6 +56,7 @@ public class ChatPersistenceService {
     private final ObjectMapper objectMapper;
     private final FileCatalogService fileCatalogService;
     private final RuntimeMessageRepository runtimeMessages;
+    private final LegacyArchiveImportRepository legacyImports;
 
     public ChatPersistenceService(
             AgentRepository agentRepository,
@@ -63,7 +65,8 @@ public class ChatPersistenceService {
             RunOrchestrationRepository runRepository,
             ObjectMapper objectMapper,
             FileCatalogService fileCatalogService,
-            RuntimeMessageRepository runtimeMessages) {
+            RuntimeMessageRepository runtimeMessages,
+            LegacyArchiveImportRepository legacyImports) {
         this.agentRepository = agentRepository;
         this.sessionRepository = sessionRepository;
         this.messageRepository = messageRepository;
@@ -71,6 +74,7 @@ public class ChatPersistenceService {
         this.objectMapper = objectMapper;
         this.fileCatalogService = fileCatalogService;
         this.runtimeMessages = runtimeMessages;
+        this.legacyImports = legacyImports;
     }
 
     /**
@@ -287,6 +291,7 @@ public class ChatPersistenceService {
                             runRepository.detachMessageReferencesForSession(
                                     sessionId, s.getOrgId());
                             messageRepository.deleteBySessionId(sessionId);
+                            legacyImports.deleteSession(s.getOrgId(), s.getUserId(), sessionId);
                             runtimeMessages.deleteSession(s.getOrgId(), s.getUserId(), sessionId);
                             s.setMessageCount(0);
                             s.setLastMessage(null);

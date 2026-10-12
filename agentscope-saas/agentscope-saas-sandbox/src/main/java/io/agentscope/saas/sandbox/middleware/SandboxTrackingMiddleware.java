@@ -117,23 +117,28 @@ public class SandboxTrackingMiddleware implements MiddlewareBase {
         AtomicReference<Disposable> heartbeat = new AtomicReference<>();
         long ttlSeconds = Math.max(1L, idleTtlSeconds);
         long startedAtNanos = System.nanoTime();
+        var usage = ctx.get(io.agentscope.harness.agent.sandbox.SandboxUsageGuard.Binding.class);
+        boolean borrowed = usage != null && usage.borrowed();
+        if (borrowed) ctx.put(SandboxTrackingContext.class, (SandboxTrackingContext) null);
 
         try {
-            UUID id =
-                    withTenantOrg(
-                            tc.orgId(),
-                            () ->
-                                    broker.registerActive(
-                                            orgId,
-                                            userId,
-                                            agentId,
-                                            sessionId,
-                                            sandboxType,
-                                            externalId,
-                                            OffsetDateTime.now().plusSeconds(ttlSeconds),
-                                            tc.maxSandboxes()));
-            trackingId.set(id);
-            ctx.put(SandboxTrackingContext.class, new SandboxTrackingContext(id, tc.orgId()));
+            if (!borrowed) {
+                UUID id =
+                        withTenantOrg(
+                                tc.orgId(),
+                                () ->
+                                        broker.registerActive(
+                                                orgId,
+                                                userId,
+                                                agentId,
+                                                sessionId,
+                                                sandboxType,
+                                                externalId,
+                                                OffsetDateTime.now().plusSeconds(ttlSeconds),
+                                                tc.maxSandboxes()));
+                trackingId.set(id);
+                ctx.put(SandboxTrackingContext.class, new SandboxTrackingContext(id, tc.orgId()));
+            }
         } catch (QuotaExceededException e) {
             metrics.quotaRejected(sandboxType);
             throw e;

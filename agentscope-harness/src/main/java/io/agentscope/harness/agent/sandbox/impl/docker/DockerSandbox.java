@@ -125,10 +125,10 @@ public class DockerSandbox extends AbstractBaseSandbox {
             runDockerCliBlocking(30, "docker", "rm", "--force", containerId);
             log.debug("[sandbox-docker] Container removed: {}", containerId);
         } catch (Exception e) {
-            log.warn(
-                    "[sandbox-docker] Failed to remove container {}: {}",
-                    containerId,
-                    e.getMessage());
+            if (e.getMessage() == null
+                    || !e.getMessage().contains("No such container: " + containerId)) {
+                throw e;
+            }
         }
     }
 
@@ -606,7 +606,7 @@ public class DockerSandbox extends AbstractBaseSandbox {
      * @param command        command and arguments
      * @throws SandboxException.SandboxRuntimeException if the command fails or times out
      */
-    private void runDockerCliBlocking(int timeoutSeconds, String... command) throws Exception {
+    protected void runDockerCliBlocking(int timeoutSeconds, String... command) throws Exception {
         ProcessBuilder pb = new ProcessBuilder(command);
         Process process = pb.start();
 

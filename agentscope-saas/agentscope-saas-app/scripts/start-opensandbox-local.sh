@@ -307,13 +307,17 @@ if [ "$START_DOCKER_DEPS" = "true" ]; then
   start_container_if_present "$PG_CONTAINER"
   start_container_if_present "$REDIS_CONTAINER"
   start_container_if_present "$MINIO_CONTAINER"
-  start_container_if_present "$OPENSANDBOX_CONTAINER"
+  if [ "${SAAS_SANDBOX_ENABLED:-true}" = "true" ]; then
+    start_container_if_present "$OPENSANDBOX_CONTAINER"
+  fi
 fi
 
 wait_tcp "$SAAS_DB_HOST" "$SAAS_DB_PORT" "PostgreSQL"
 wait_tcp "$SAAS_REDIS_HOST" "$SAAS_REDIS_PORT" "Redis"
 wait_tcp "$SAAS_MINIO_HOST" "$SAAS_MINIO_PORT" "MinIO"
-wait_tcp "$OPENSANDBOX_HOST" "$OPENSANDBOX_PORT" "OpenSandbox"
+if [ "${SAAS_SANDBOX_ENABLED:-true}" = "true" ]; then
+  wait_tcp "$OPENSANDBOX_HOST" "$OPENSANDBOX_PORT" "OpenSandbox"
+fi
 
 export_app_env
 

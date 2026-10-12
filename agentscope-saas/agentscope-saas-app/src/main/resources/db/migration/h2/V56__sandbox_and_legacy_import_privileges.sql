@@ -1,0 +1,1 @@
+-- H2 uses the local schema owner and has no app-role grants. PostgreSQL privileges are tested there.

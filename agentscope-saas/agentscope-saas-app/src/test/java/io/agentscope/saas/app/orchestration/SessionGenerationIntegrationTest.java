@@ -625,7 +625,14 @@ class SessionGenerationIntegrationTest {
                 .deleteSession(any(), any(), any());
         var service =
                 new ChatPersistenceService(
-                        agents, sessions, messages, repository, mapper, files, failed);
+                        agents,
+                        sessions,
+                        messages,
+                        repository,
+                        mapper,
+                        files,
+                        failed,
+                        mock(io.agentscope.saas.domain.memory.LegacyArchiveImportRepository.class));
         assertThatThrownBy(() -> tx.executeWithoutResult(status -> service.resetSession(session)))
                 .hasMessage("reset fixture failure");
         assertThat(

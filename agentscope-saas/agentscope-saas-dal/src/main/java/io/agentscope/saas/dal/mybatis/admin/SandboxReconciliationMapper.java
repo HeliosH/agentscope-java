@@ -73,6 +73,7 @@ public interface SandboxReconciliationMapper {
             SELECT id, org_id, user_id, sandbox_type, external_id
               FROM sandboxes
              WHERE status = 'active' AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM sandbox_runtime_resources r WHERE r.org_id = sandboxes.org_id AND r.user_id = sandboxes.user_id AND r.provider_id = sandboxes.sandbox_type AND r.external_id = sandboxes.external_id AND r.status <> 'RELEASED')
                AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandboxes.org_id AND pr.user_id = sandboxes.user_id AND pr.provider_id = sandboxes.sandbox_type AND pr.resource_id = sandboxes.external_id AND pr.status <> 'CLEANED')
                AND expires_at IS NOT NULL
                AND expires_at < #{staleBefore}
@@ -94,6 +95,7 @@ public interface SandboxReconciliationMapper {
             SELECT id, org_id, user_id, sandbox_type, external_id
               FROM sandboxes
              WHERE status IN ('evicted', 'released') AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM sandbox_runtime_resources r WHERE r.org_id = sandboxes.org_id AND r.user_id = sandboxes.user_id AND r.provider_id = sandboxes.sandbox_type AND r.external_id = sandboxes.external_id AND r.status <> 'RELEASED')
                AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandboxes.org_id AND pr.user_id = sandboxes.user_id AND pr.provider_id = sandboxes.sandbox_type AND pr.resource_id = sandboxes.external_id AND pr.status <> 'CLEANED')
                AND external_id IS NOT NULL
                AND TRIM(external_id) <> ''
@@ -120,6 +122,7 @@ public interface SandboxReconciliationMapper {
             SELECT id, org_id, user_id, provider_id, provider_sandbox_id
               FROM sandbox_leases
              WHERE status IN ('PROVISIONING', 'ACTIVE', 'CHECKPOINTING') AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM sandbox_runtime_resources r WHERE r.org_id = sandbox_leases.org_id AND r.user_id = sandbox_leases.user_id AND r.provider_id = sandbox_leases.provider_id AND r.external_id = sandbox_leases.provider_sandbox_id AND r.status <> 'RELEASED')
                AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandbox_leases.org_id AND pr.user_id = sandbox_leases.user_id AND pr.provider_id = sandbox_leases.provider_id AND pr.resource_id = sandbox_leases.provider_sandbox_id AND pr.status <> 'CLEANED')
                AND lease_expires_at IS NOT NULL
                AND lease_expires_at < #{staleBefore}
@@ -141,6 +144,7 @@ public interface SandboxReconciliationMapper {
             SELECT id, org_id, user_id, provider_id, provider_sandbox_id
               FROM sandbox_leases
              WHERE status IN ('EXPIRED', 'RELEASE_FAILED') AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM sandbox_runtime_resources r WHERE r.org_id = sandbox_leases.org_id AND r.user_id = sandbox_leases.user_id AND r.provider_id = sandbox_leases.provider_id AND r.external_id = sandbox_leases.provider_sandbox_id AND r.status <> 'RELEASED')
                AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandbox_leases.org_id AND pr.user_id = sandbox_leases.user_id AND pr.provider_id = sandbox_leases.provider_id AND pr.resource_id = sandbox_leases.provider_sandbox_id AND pr.status <> 'CLEANED')
                AND provider_sandbox_id IS NOT NULL
                AND TRIM(provider_sandbox_id) <> ''
@@ -167,6 +171,7 @@ public interface SandboxReconciliationMapper {
                    backend_release_status = 'pending',
                    backend_release_error = NULL
              WHERE id = #{sandboxId} AND status = 'active' AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM sandbox_runtime_resources r WHERE r.org_id = sandboxes.org_id AND r.user_id = sandboxes.user_id AND r.provider_id = sandboxes.sandbox_type AND r.external_id = sandboxes.external_id AND r.status <> 'RELEASED')
                AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandboxes.org_id AND pr.user_id = sandboxes.user_id AND pr.provider_id = sandboxes.sandbox_type AND pr.resource_id = sandboxes.external_id AND pr.status <> 'CLEANED')
             """)
     int markExpiredActiveEvicted(
@@ -179,6 +184,7 @@ public interface SandboxReconciliationMapper {
                    backend_release_error = NULL
              WHERE id = #{sandboxId}
                AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM sandbox_runtime_resources r WHERE r.org_id = sandboxes.org_id AND r.user_id = sandboxes.user_id AND r.provider_id = sandboxes.sandbox_type AND r.external_id = sandboxes.external_id AND r.status <> 'RELEASED')
                AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandboxes.org_id AND pr.user_id = sandboxes.user_id AND pr.provider_id = sandboxes.sandbox_type AND pr.resource_id = sandboxes.external_id AND pr.status <> 'CLEANED')
                AND status IN ('evicted', 'released')
                AND COALESCE(backend_release_attempts, 0) < #{maxAttempts}
@@ -215,6 +221,7 @@ public interface SandboxReconciliationMapper {
                    release_error = NULL
              WHERE id = #{leaseId}
                AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM sandbox_runtime_resources r WHERE r.org_id = sandbox_leases.org_id AND r.user_id = sandbox_leases.user_id AND r.provider_id = sandbox_leases.provider_id AND r.external_id = sandbox_leases.provider_sandbox_id AND r.status <> 'RELEASED')
                AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandbox_leases.org_id AND pr.user_id = sandbox_leases.user_id AND pr.provider_id = sandbox_leases.provider_id AND pr.resource_id = sandbox_leases.provider_sandbox_id AND pr.status <> 'CLEANED')
                AND status IN ('PROVISIONING', 'ACTIVE', 'CHECKPOINTING')
                AND lease_expires_at IS NOT NULL
@@ -230,6 +237,7 @@ public interface SandboxReconciliationMapper {
                    release_error = NULL
              WHERE id = #{leaseId}
                AND NOT retention_held
+               AND NOT EXISTS (SELECT 1 FROM sandbox_runtime_resources r WHERE r.org_id = sandbox_leases.org_id AND r.user_id = sandbox_leases.user_id AND r.provider_id = sandbox_leases.provider_id AND r.external_id = sandbox_leases.provider_sandbox_id AND r.status <> 'RELEASED')
                AND NOT EXISTS (SELECT 1 FROM workspace_provider_retentions pr WHERE pr.org_id = sandbox_leases.org_id AND pr.user_id = sandbox_leases.user_id AND pr.provider_id = sandbox_leases.provider_id AND pr.resource_id = sandbox_leases.provider_sandbox_id AND pr.status <> 'CLEANED')
                AND status IN ('EXPIRED', 'RELEASE_FAILED')
                AND COALESCE(release_attempts, 0) < #{maxAttempts}
