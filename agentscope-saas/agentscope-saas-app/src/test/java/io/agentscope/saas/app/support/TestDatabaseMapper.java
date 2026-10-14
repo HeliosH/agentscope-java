@@ -135,6 +135,7 @@ public interface TestDatabaseMapper {
                 id UUID PRIMARY KEY, org_id UUID NOT NULL, run_id UUID NOT NULL,
                 parent_id UUID, owner_agent_run_id UUID, sub_session_id VARCHAR(255),
                 title VARCHAR(500), input_json VARCHAR(4000), status VARCHAR(32) NOT NULL,
+                task_type VARCHAR(64) NOT NULL DEFAULT 'task',
                 expected_output_json JSON NOT NULL DEFAULT '[]',
                 acceptance_json JSON NOT NULL DEFAULT '[]',
                 workspace_mode VARCHAR(64) NOT NULL DEFAULT 'NONE',
@@ -165,6 +166,7 @@ public interface TestDatabaseMapper {
             """
             CREATE TABLE agent_runs (
                 id UUID PRIMARY KEY, run_id UUID NOT NULL, task_id UUID NOT NULL,
+                org_id UUID, parent_agent_run_id UUID,
                 agent_type VARCHAR(128) NOT NULL, status VARCHAR(32) NOT NULL,
                 updated_at TIMESTAMP WITH TIME ZONE,
                 completed_at TIMESTAMP WITH TIME ZONE)
@@ -291,8 +293,40 @@ public interface TestDatabaseMapper {
     @Update("UPDATE task_nodes SET retry_mode = #{retryMode} WHERE id = #{id}")
     int updateTaskRetryMode(@Param("id") UUID id, @Param("retryMode") String retryMode);
 
+    @Update("UPDATE task_nodes SET workspace_mode = #{mode} WHERE id = #{id}")
+    int updateTaskWorkspaceMode(@Param("id") UUID id, @Param("mode") String mode);
+
     @Update("UPDATE task_nodes SET status = 'RUNNING' WHERE id = #{id}")
     int markLeaseTaskRunning(UUID id);
+
+    @Update("UPDATE agent_runs SET status = 'RUNNING' WHERE id = #{id}")
+    int markAgentRunRunning(UUID id);
+
+    @Select("SELECT COUNT(*) FROM tool_operations WHERE run_id = #{run} AND tool_call_id = #{call}")
+    long countCallerOperations(@Param("run") UUID run, @Param("call") String call);
+
+    @Insert(
+            """
+            INSERT INTO tool_operations(id,org_id,run_id,task_id,agent_run_id,attempt_id,operation_key,invocation_id,
+                step_id,tool_call_id,tool_name,input_hash,input_json,retry_safety,status,result_json)
+            VALUES(#{id},#{org},#{run},#{task},#{caller},#{attempt},#{key},#{invocation},'legacy',#{call},'durable_tool',
+                #{inputHash},CAST('{"value":"alpha"}' AS JSON),'NEVER','SUCCEEDED',CAST(#{result} AS JSON))
+            """)
+    int insertLegacyToolOperation(
+            @Param("id") UUID id,
+            @Param("org") UUID org,
+            @Param("run") UUID run,
+            @Param("task") UUID task,
+            @Param("caller") UUID caller,
+            @Param("attempt") UUID attempt,
+            @Param("key") String key,
+            @Param("invocation") UUID invocation,
+            @Param("call") String call,
+            @Param("inputHash") String inputHash,
+            @Param("result") String result);
+
+    @Update("UPDATE tool_operations SET tool_contract_hash = 'forged' WHERE id = #{id}")
+    int forgeToolContract(UUID id);
 
     @Update(
             """
@@ -617,6 +651,8 @@ public interface TestDatabaseMapper {
         createGcFileAttachments();
         createLegacyGcPins();
         createInputGcPins();
+        createInputAdditionGcPins();
+        createSystemGcPins();
         createArtifactGcPins();
         createGcQueue();
     }
@@ -628,6 +664,12 @@ public interface TestDatabaseMapper {
 
     @Update("CREATE TABLE task_input_entries (task_id UUID, file_id UUID, version_id UUID)")
     void createInputGcPins();
+
+    @Update("CREATE TABLE task_input_additions (task_id UUID, file_id UUID, version_id UUID)")
+    void createInputAdditionGcPins();
+
+    @Update("CREATE TABLE run_system_entries (org_id UUID, object_key VARCHAR(2048))")
+    void createSystemGcPins();
 
     @Update("CREATE TABLE run_artifacts (file_id UUID, file_version_id UUID)")
     void createArtifactGcPins();
@@ -767,6 +809,21 @@ public interface TestDatabaseMapper {
     @Delete("DELETE FROM task_input_entries WHERE task_id = #{id}")
     void removeInputEntries(UUID id);
 
+    @Update("UPDATE run_system_manifests SET version = 'forged' WHERE run_id = #{id}")
+    void rewriteSystemManifest(UUID id);
+
+    @Delete("DELETE FROM run_system_entries WHERE run_id = #{id}")
+    void removeSystemEntries(UUID id);
+
+    @Delete("DELETE FROM task_input_additions WHERE task_id = #{id}")
+    void removeInputAdditions(UUID id);
+
+    @Update("UPDATE task_workspace_origins SET workspace_version = 'forged' WHERE task_id = #{id}")
+    void rewriteWorkspaceOrigin(UUID id);
+
+    @Delete("DELETE FROM task_workspace_origins WHERE task_id = #{id}")
+    void removeWorkspaceOrigin(UUID id);
+
     @Select("SELECT event_type FROM run_events WHERE run_id = #{runId} ORDER BY seq")
     List<String> runEventTypes(UUID runId);
 
@@ -781,6 +838,27 @@ public interface TestDatabaseMapper {
 
     @Update("UPDATE assistant_runs SET deadline_at = #{deadline} WHERE id = #{id}")
     int updateRunDeadline(@Param("id") UUID id, @Param("deadline") OffsetDateTime deadline);
+
+    @Update(
+            "UPDATE tool_operation_replay_permits SET valid_until = #{deadline} WHERE operation_id"
+                    + " = #{id}")
+    int expireToolReplay(@Param("id") UUID id, @Param("deadline") OffsetDateTime deadline);
+
+    @Select(
+            "SELECT COUNT(*) FROM tool_operation_replay_permits WHERE operation_id = #{id} AND"
+                    + " consumed_at IS NOT NULL")
+    long consumedToolReplay(UUID id);
+
+    @Update("UPDATE tool_operation_resolutions SET reason = 'rewritten' WHERE operation_id = #{id}")
+    int rewriteToolResolution(UUID id);
+
+    @Delete("DELETE FROM tool_operation_resolutions WHERE operation_id = #{id}")
+    int deleteToolResolution(UUID id);
+
+    @Update(
+            "UPDATE tool_operation_replay_permits SET consumed_at = CURRENT_TIMESTAMP,"
+                    + " invocation_id = #{invocation} WHERE operation_id = #{id}")
+    int forgeToolReplayConsumption(@Param("id") UUID id, @Param("invocation") UUID invocation);
 
     @Select("SELECT status, depth, parent_agent_run_id FROM agent_runs WHERE id = #{id}")
     AgentRunState agentRunState(UUID id);
@@ -814,7 +892,8 @@ public interface TestDatabaseMapper {
             """
             SELECT id, attempt_id AS attemptId, status, retry_safety AS retrySafety,
                    CAST(result_json AS VARCHAR) AS resultJson,
-                   error_type AS errorType, error_message AS errorMessage
+                   error_type AS errorType, error_message AS errorMessage,operation_key AS operationKey,
+                   logical_origin_id AS logicalOriginId,tool_contract_hash AS toolContractHash
               FROM tool_operations
              WHERE run_id = #{runId} AND tool_call_id = #{toolCallId}
             """)
@@ -1045,7 +1124,10 @@ public interface TestDatabaseMapper {
             String retrySafety,
             String resultJson,
             String errorType,
-            String errorMessage) {}
+            String errorMessage,
+            String operationKey,
+            String logicalOriginId,
+            String toolContractHash) {}
 
     record ContextCheckpointState(
             long historyRevision,

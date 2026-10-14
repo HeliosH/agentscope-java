@@ -130,6 +130,33 @@ class WorkspaceCheckpointRestoreServiceTest {
     }
 
     @Test
+    void aChildWithoutItsParentsDurableCheckpointCannotStartWithAnEmptyWorkspace() {
+        when(manifests.parentTask(currentScope)).thenReturn(Optional.of(UUID.randomUUID()));
+        assertThatThrownBy(this::restore).hasMessage("PARENT_WORKSPACE_CHECKPOINT_UNAVAILABLE");
+        verify(files, never()).readVersion(any(), any());
+    }
+
+    @Test
+    void restoresPhysicalSourcePathWhileValidatingThePublishedTaskNamespace() {
+        pin(
+                "READY",
+                true,
+                List.of(
+                        new Entry(
+                                "outputs/original-name.txt",
+                                path,
+                                content.length,
+                                sha,
+                                false,
+                                entry.publicationId())),
+                version);
+        var plan = restore().orElseThrow();
+        assertThat(plan.files().get(0).path()).isEqualTo("outputs/original-name.txt");
+        assertThat(plan.workspaceVersion()).isEqualTo(version);
+        assertThat(plan.files().get(0).content()).isEqualTo(content);
+    }
+
+    @Test
     void legacyCheckpointWithoutAnyPublicationManifestRemainsReadable() {
         var cp = checkpoint("workspace-catalog://attempts/" + previous, version);
         stubCheckpoint(cp);

@@ -95,6 +95,12 @@ public class TaskTool {
 
         bgTask.updateLastCheckedAt();
 
+        String pending =
+                bgTask.isCompleted()
+                        ? null
+                        : taskRepository.pendingReason(runtimeContext, sessionId, taskId);
+        if (pending != null) return "task_id: " + taskId + "\nstatus: pending\nnote: " + pending;
+
         boolean shouldBlock = block == null || block;
         long timeoutMs = timeout != null ? Math.min(timeout, 600_000) : 30_000;
 

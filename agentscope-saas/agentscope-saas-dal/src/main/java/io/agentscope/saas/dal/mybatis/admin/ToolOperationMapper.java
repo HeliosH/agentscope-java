@@ -12,21 +12,54 @@ import org.apache.ibatis.annotations.Arg;
 import org.apache.ibatis.annotations.ConstructorArgs;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.ResultMap;
+import org.apache.ibatis.annotations.Results;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 /** Administrative mapper for atomic tool execution journal transitions. */
 public interface ToolOperationMapper {
+    String COLUMNS =
+            "id,org_id,run_id,task_id,agent_run_id,attempt_id,operation_key,invocation_id,step_id,tool_call_id,tool_name,input_hash,CAST(input_json"
+                + " AS VARCHAR) AS input_json,retry_safety,status,CAST(result_json AS VARCHAR) AS"
+                + " result_json,error_type,error_message,prepared_at,started_at,completed_at,updated_at,version,tool_contract_hash,CAST(tool_contract_json"
+                + " AS VARCHAR) AS tool_contract_json,tool_contract_recoverable,logical_origin_id";
+
+    @Select(
+            """
+            SELECT s.id FROM chat_sessions s WHERE s.org_id = #{orgId}
+              AND EXISTS (SELECT 1 FROM assistant_runs r WHERE r.id = #{runId} AND r.org_id = s.org_id
+                AND r.session_id = s.id AND r.user_id = s.user_id AND r.agent_id = s.agent_id
+                AND r.session_generation = s.execution_generation)
+            FOR UPDATE
+            """)
+    List<UUID> lockSession(@Param("orgId") UUID orgId, @Param("runId") UUID runId);
+
+    @Select(
+            """
+            SELECT r.id FROM assistant_runs r WHERE r.id = #{runId} AND r.org_id = #{orgId}
+              AND r.status = 'RUNNING' AND NOT r.cancel_requested
+              AND (r.deadline_at IS NULL OR r.deadline_at > #{now})
+              AND EXISTS (SELECT 1 FROM chat_sessions s WHERE s.id = r.session_id AND s.org_id = r.org_id
+                AND s.user_id = r.user_id AND s.agent_id = r.agent_id AND s.execution_generation = r.session_generation)
+              AND EXISTS (SELECT 1 FROM agents a WHERE a.id = r.agent_id AND a.org_id = r.org_id AND a.user_id = r.user_id)
+            FOR UPDATE
+            """)
+    List<UUID> lockExecutionRun(
+            @Param("orgId") UUID orgId,
+            @Param("runId") UUID runId,
+            @Param("now") OffsetDateTime now);
+
     @Insert(
             """
             INSERT INTO tool_operations
                 (id, org_id, run_id, task_id, agent_run_id, attempt_id, operation_key,
                  invocation_id, step_id, tool_call_id, tool_name, input_hash, input_json,
-                 retry_safety, status, prepared_at, updated_at)
+                 retry_safety, status, prepared_at, updated_at,tool_contract_hash,tool_contract_json,tool_contract_recoverable,logical_origin_id)
             SELECT #{id}, #{orgId}, #{runId}, #{taskId}, #{agentRunId}, #{attemptId},
                    #{operationKey}, #{invocationId}, #{stepId}, #{toolCallId}, #{toolName},
                    #{inputHash}, CAST(#{inputJson} AS JSON), #{retrySafety}, 'CLAIMED',
-                   #{preparedAt}, #{preparedAt}
+                   #{preparedAt}, #{preparedAt},#{contractHash},CAST(#{contractJson} AS JSON),#{contractRecoverable},#{origin}
               FROM assistant_runs run
              WHERE run.id = #{runId}
                AND run.org_id = #{orgId}
@@ -67,19 +100,18 @@ public interface ToolOperationMapper {
             @Param("inputHash") String inputHash,
             @Param("inputJson") String inputJson,
             @Param("retrySafety") String retrySafety,
-            @Param("preparedAt") OffsetDateTime preparedAt);
+            @Param("preparedAt") OffsetDateTime preparedAt,
+            @Param("contractHash") String contractHash,
+            @Param("contractJson") String contractJson,
+            @Param("contractRecoverable") boolean contractRecoverable,
+            @Param("origin") String origin);
 
     @Select(
-            """
-            SELECT id, org_id, run_id, task_id, agent_run_id, attempt_id, operation_key,
-                   invocation_id, step_id, tool_call_id, tool_name, input_hash,
-                   CAST(input_json AS VARCHAR) AS input_json, retry_safety, status,
-                   CAST(result_json AS VARCHAR) AS result_json, error_type, error_message,
-                   prepared_at, started_at, completed_at, updated_at, version
-              FROM tool_operations
-             WHERE org_id = #{orgId} AND run_id = #{runId} AND operation_key = #{operationKey}
-             FOR UPDATE
-            """)
+            "SELECT "
+                    + COLUMNS
+                    + " FROM tool_operations WHERE org_id = #{orgId} AND run_id = #{runId} AND"
+                    + " operation_key = #{operationKey} FOR UPDATE")
+    @Results(id = "toolOperationRow")
     @ConstructorArgs({
         @Arg(column = "id", javaType = UUID.class),
         @Arg(column = "org_id", javaType = UUID.class),
@@ -103,12 +135,30 @@ public interface ToolOperationMapper {
         @Arg(column = "started_at", javaType = OffsetDateTime.class),
         @Arg(column = "completed_at", javaType = OffsetDateTime.class),
         @Arg(column = "updated_at", javaType = OffsetDateTime.class),
-        @Arg(column = "version", javaType = long.class)
+        @Arg(column = "version", javaType = long.class),
+        @Arg(column = "tool_contract_hash", javaType = String.class),
+        @Arg(column = "tool_contract_json", javaType = String.class),
+        @Arg(column = "tool_contract_recoverable", javaType = boolean.class),
+        @Arg(column = "logical_origin_id", javaType = String.class)
     })
     List<ToolOperationData> lock(
             @Param("orgId") UUID orgId,
             @Param("runId") UUID runId,
             @Param("operationKey") String operationKey);
+
+    @Select(
+            "SELECT "
+                    + COLUMNS
+                    + " FROM tool_operations WHERE org_id = #{orgId} AND run_id = #{runId} AND"
+                    + " agent_run_id = #{caller} AND logical_origin_id = #{origin} AND tool_call_id"
+                    + " = #{call} FOR UPDATE")
+    @ResultMap("toolOperationRow")
+    List<ToolOperationData> lockCaller(
+            @Param("orgId") UUID orgId,
+            @Param("runId") UUID runId,
+            @Param("caller") UUID caller,
+            @Param("origin") String origin,
+            @Param("call") String call);
 
     @Select(
             """
@@ -121,6 +171,15 @@ public interface ToolOperationMapper {
                AND (CAST(#{agentRunId} AS VARCHAR) IS NULL
                     OR attempt.agent_run_id = #{agentRunId})
                AND attempt.status = 'RUNNING'
+               AND EXISTS (SELECT 1 FROM assistant_runs r JOIN chat_sessions s ON s.id = r.session_id
+                    AND s.org_id = r.org_id AND s.user_id = r.user_id AND s.agent_id = r.agent_id
+                    WHERE r.id = #{runId} AND r.org_id = #{orgId} AND r.status = 'RUNNING'
+                      AND NOT r.cancel_requested AND r.session_generation = s.execution_generation
+                      AND (r.deadline_at IS NULL OR r.deadline_at > #{now}))
+               AND (CAST(#{taskId} AS VARCHAR) IS NULL OR EXISTS (SELECT 1 FROM task_nodes t
+                    WHERE t.id = #{taskId} AND t.org_id = #{orgId} AND t.run_id = #{runId} AND t.status = 'RUNNING'))
+               AND (CAST(#{agentRunId} AS VARCHAR) IS NULL OR EXISTS (SELECT 1 FROM agent_runs a
+                    WHERE a.id = #{agentRunId} AND a.org_id = #{orgId} AND a.run_id = #{runId} AND a.status = 'RUNNING'))
                AND ((attempt.lease_owner = #{leaseOwner}
                      AND attempt.lease_expires_at >= #{now})
                     OR (attempt.lease_owner IS NULL
@@ -180,6 +239,19 @@ public interface ToolOperationMapper {
             @Param("orgId") UUID orgId,
             @Param("invocationId") UUID invocationId,
             @Param("leaseOwner") String leaseOwner,
+            @Param("now") OffsetDateTime now);
+
+    @Update(
+            """
+            UPDATE tool_operations SET status = 'OUTCOME_UNKNOWN', error_type = 'ReplayNotDispatched',
+              error_message = 'Replay approval expired, was revoked, or cannot transfer to a new invocation',
+              completed_at = #{now}, updated_at = #{now}, version = version + 1
+             WHERE id = #{id} AND org_id = #{orgId} AND version = #{version} AND status = 'CLAIMED' AND started_at IS NULL
+            """)
+    int blockUndispatchedReplay(
+            @Param("id") UUID id,
+            @Param("orgId") UUID orgId,
+            @Param("version") long version,
             @Param("now") OffsetDateTime now);
 
     @Update(

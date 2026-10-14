@@ -32,9 +32,47 @@ public record StepSnapshot(
         String optionsHash,
         String policyHash,
         String extensionSetHash,
-        List<String> toolNames) {
+        List<String> toolNames,
+        String toolContractSetHash) {
     public StepSnapshot {
         toolNames = List.copyOf(toolNames);
+    }
+
+    public StepSnapshot(
+            String stepId,
+            long sequence,
+            Identity identity,
+            String modelName,
+            String modelId,
+            String modelRouteVersion,
+            String environmentId,
+            String environmentVersion,
+            Integer inputTokenBudget,
+            String toolRegistrationVersion,
+            String toolSchemaHash,
+            String promptHash,
+            String optionsHash,
+            String policyHash,
+            String extensionSetHash,
+            List<String> toolNames) {
+        this(
+                stepId,
+                sequence,
+                identity,
+                modelName,
+                modelId,
+                modelRouteVersion,
+                environmentId,
+                environmentVersion,
+                inputTokenBudget,
+                toolRegistrationVersion,
+                toolSchemaHash,
+                promptHash,
+                optionsHash,
+                policyHash,
+                extensionSetHash,
+                toolNames,
+                null);
     }
 
     /** Source-compatible constructor for callers that do not yet provide an environment version. */
@@ -69,7 +107,8 @@ public record StepSnapshot(
                 optionsHash,
                 policyHash,
                 extensionSetHash,
-                toolNames);
+                toolNames,
+                null);
     }
 
     /** Optional orchestration identity supplied by the hosting application, without core SaaS coupling. */
@@ -114,7 +153,10 @@ public record StepSnapshot(
                 fingerprint(input.options()),
                 fingerprint(permissions),
                 scope == null ? null : scope.configurationHash(),
-                names);
+                names,
+                context == null || context.get(StepToolContracts.class) == null
+                        ? null
+                        : context.get(StepToolContracts.class).hash());
     }
 
     /** Canonical JSON hashing: map iteration order must not create a different runtime version. */

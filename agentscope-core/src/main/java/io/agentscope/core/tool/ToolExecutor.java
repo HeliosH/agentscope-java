@@ -285,8 +285,35 @@ class ToolExecutor {
                         .emitter(toolEmitter)
                         .build();
 
+        ToolExecutionJournal journal =
+                runtimeContext == null ? null : runtimeContext.get(ToolExecutionJournal.class);
+        StepToolContracts pinned =
+                runtimeContext == null ? null : runtimeContext.get(StepToolContracts.class);
+        ToolContractSnapshot contract =
+                journal != null || pinned != null
+                        ? ToolContractSnapshot.capture(
+                                tool,
+                                registered == null ? Map.of() : registered.getPresetParameters())
+                        : null;
+        if (pinned != null) pinned.requireCurrent(toolCall.getName(), contract);
         Mono<ToolResultBlock> invocation =
-                Mono.defer(() -> tool.callAsync(executionParam))
+                Mono.defer(
+                                () -> {
+                                    if (contract != null
+                                            && (toolRegistry.getTool(toolCall.getName()) != tool
+                                                    || !contract.hash()
+                                                            .equals(
+                                                                    toolkit.captureToolContract(
+                                                                                    toolCall
+                                                                                            .getName())
+                                                                            .hash())))
+                                        return Mono.error(
+                                                new IllegalStateException(
+                                                        "Tool contract changed before external"
+                                                                + " dispatch: "
+                                                                + toolCall.getName()));
+                                    return tool.callAsync(executionParam);
+                                })
                         .onErrorResume(
                                 ToolSuspendException.class,
                                 e -> {
@@ -302,14 +329,11 @@ class ToolExecutor {
                                         ToolResultBlock.error(
                                                 "Tool execution failed: Tool completed without"
                                                         + " returning a result")));
-        ToolExecutionJournal journal =
-                runtimeContext == null ? null : runtimeContext.get(ToolExecutionJournal.class);
-        if (journal == null) {
-            return invocation;
-        }
+        if (journal == null) return invocation;
         StepSnapshot step = runtimeContext.get(StepSnapshot.class);
         ToolExecutionJournal.Invocation journalInvocation =
-                journalInvocation(runtimeContext, step, toolCall, tool, mergedInput, invocationId);
+                journalInvocation(
+                        runtimeContext, step, toolCall, tool, mergedInput, invocationId, contract);
         return journaled(journal, journalInvocation, invocation);
     }
 
@@ -319,7 +343,8 @@ class ToolExecutor {
             ToolUseBlock call,
             AgentTool tool,
             Map<String, Object> input,
-            String invocationId) {
+            String invocationId,
+            ToolContractSnapshot contract) {
         StepSnapshot.Identity identity =
                 step != null && step.identity() != null
                         ? step.identity()
@@ -327,8 +352,13 @@ class ToolExecutor {
         String scope = identity != null ? identity.runId() : null;
         if (scope == null || scope.isBlank()) scope = runtimeContext.getSessionId();
         if (scope == null || scope.isBlank()) scope = "local";
+        var origins = runtimeContext.get(ToolInvocationOrigins.class);
+        String origin =
+                origins == null
+                        ? step == null || step.stepId() == null ? "direct" : step.stepId()
+                        : origins.origin(call.getId(), step);
         return new ToolExecutionJournal.Invocation(
-                scope + ":" + call.getId(),
+                ToolOperationKey.of(scope, identity, origin, call.getId()),
                 invocationId,
                 step == null ? null : step.stepId(),
                 identity,
@@ -337,7 +367,9 @@ class ToolExecutor {
                 call.getName(),
                 StepSnapshot.fingerprint(input),
                 input,
-                tool.getRetrySafety());
+                tool.getRetrySafety(),
+                contract,
+                origin);
     }
 
     private static Mono<ToolResultBlock> journaled(

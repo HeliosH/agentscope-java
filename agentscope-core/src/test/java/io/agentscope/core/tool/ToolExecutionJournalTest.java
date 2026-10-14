@@ -67,7 +67,11 @@ class ToolExecutionJournalTest {
 
         assertEquals("ok", text(result));
         assertEquals(identity, journal.invocation.identity());
-        assertEquals("run-1:call-1", journal.invocation.operationId());
+        assertEquals(
+                ToolOperationKey.of("run-1", identity, "direct", "call-1"),
+                journal.invocation.operationId());
+        assertNotNull(journal.invocation.toolContract());
+        assertTrue(journal.invocation.toolContract().recoverable());
     }
 
     @Test

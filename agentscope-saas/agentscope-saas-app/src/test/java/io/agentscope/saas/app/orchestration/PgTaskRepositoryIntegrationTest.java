@@ -59,8 +59,8 @@ import org.springframework.test.context.ActiveProfiles;
             "saas.subagents.execution-mode=durable",
             "saas.orchestration.scheduler-enabled=true",
             "saas.orchestration.scheduler-poll-millis=3600000",
-            "spring.datasource.url=jdbc:h2:mem:pg-task-repository-test;DB_CLOSE_DELAY=-1;MODE=PostgreSQL",
-            "saas.datasource.admin.url=jdbc:h2:mem:pg-task-repository-test;DB_CLOSE_DELAY=-1;MODE=PostgreSQL",
+            "spring.datasource.url=${SAAS_TEST_DB_URL:jdbc:h2:mem:pg-task-repository-test;DB_CLOSE_DELAY=-1;MODE=PostgreSQL}",
+            "saas.datasource.admin.url=${SAAS_TEST_DB_URL:jdbc:h2:mem:pg-task-repository-test;DB_CLOSE_DELAY=-1;MODE=PostgreSQL}",
             "saas.agent.memory-hooks-enabled=false"
         })
 @ActiveProfiles("local")
@@ -127,6 +127,11 @@ class PgTaskRepositoryIntegrationTest {
                                 "sub-research", "Research durable execution", () -> "not-used"));
         assertThat(submitted.getTaskStatus()).isEqualTo(TaskStatus.RUNNING);
 
+        assertThat(leases.claimReady("must-wait-for-parent", 1)).isEmpty();
+        assertThat(
+                        new io.agentscope.harness.agent.tool.TaskTool(tasks)
+                                .taskOutput(context, "task_research", true, 20L))
+                .contains("status: pending", "Finish this response");
         runs.markSucceeded(tenant, agentId, run.runId());
         assertThat(runStatus(run.runId())).isEqualTo("RUNNING");
 
@@ -134,7 +139,7 @@ class PgTaskRepositoryIntegrationTest {
         assertThat(lease.agentType()).isEqualTo("researcher");
         assertThat(lease.subSessionId()).isEqualTo("sub-research");
         assertThat(lease.agentRunId()).isNotNull();
-        assertThat(lease.workspaceIsolationMode()).isEqualTo(WorkspaceIsolationMode.NONE);
+        assertThat(lease.workspaceIsolationMode()).isEqualTo(WorkspaceIsolationMode.RUN_ISOLATED);
         var runtime = new ObjectMapper().readTree(lease.inputJson()).path("_runtime");
         assertThat(runtime.path("sandboxIsolationKey").asText()).isEqualTo("run/shared");
         assertThat(runtime.path("modelId").asText()).isEqualTo("enterprise-large");
@@ -425,6 +430,44 @@ class PgTaskRepositoryIntegrationTest {
     }
 
     @Test
+    void cancellingQueuedParentCancelsItsSubtreeAndPreservesSibling() {
+        UUID agentId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        seedAgentAndSession(agentId, sessionId);
+        var tenant = tenant();
+        var run = runs.createDirectRun(tenant, agentId, sessionId, null, "Nested cancellation");
+        try {
+            var root = context(tenant, agentId, sessionId, run.runId());
+            UUID parent = submitNested(root, sessionId, "cancel-parent", "cancel-parent-session");
+            UUID child =
+                    submitNested(
+                            context(tenant, agentId, sessionId, run.runId(), parent),
+                            sessionId,
+                            "cancel-child",
+                            "cancel-child-session");
+            submitNested(
+                    context(tenant, agentId, sessionId, run.runId(), child),
+                    sessionId,
+                    "cancel-grandchild",
+                    "cancel-grandchild-session");
+            submitNested(root, sessionId, "keep-sibling", "keep-sibling-session");
+            assertThat(tasks.cancelTask(root, sessionId.toString(), "cancel-parent")).isTrue();
+            for (String id : List.of("cancel-parent", "cancel-child", "cancel-grandchild"))
+                assertThat(tasks.getTask(root, sessionId.toString(), id).getTaskStatus())
+                        .isEqualTo(TaskStatus.CANCELLED);
+            assertThat(tasks.getTask(root, sessionId.toString(), "keep-sibling").getTaskStatus())
+                    .isEqualTo(TaskStatus.RUNNING);
+            assertThat(leases.claimReady("cancelled-subtree-worker", 10)).isEmpty();
+            tasks.cancelTask(root, sessionId.toString(), "keep-sibling");
+            runs.markSucceeded(tenant, agentId, run.runId());
+            completeCoordinatorContinuation(run.runId(), "cancelled-subtree-coordinator");
+            assertThat(runStatus(run.runId())).isEqualTo("SUCCEEDED");
+        } finally {
+            runs.cancel(tenant, agentId, run.runId());
+        }
+    }
+
+    @Test
     void concurrentWorkersClaimReadyTaskOnlyOnce() throws Exception {
         UUID agentId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
@@ -439,6 +482,14 @@ class PgTaskRepositoryIntegrationTest {
                 sessionId.toString(),
                 new TaskRunSpec.DurableLocalTaskRunSpec(
                         "sub-concurrent", "Claim exactly once", () -> "not-used"));
+        tasks.putTask(
+                context,
+                "task_concurrent_sibling",
+                "researcher",
+                sessionId.toString(),
+                new TaskRunSpec.DurableLocalTaskRunSpec(
+                        "sub-sibling", "Same workspace writer", () -> "not-used"));
+        runs.markSucceeded(tenant, agentId, run.runId());
 
         var pool = Executors.newFixedThreadPool(2);
         CountDownLatch ready = new CountDownLatch(2);
@@ -459,6 +510,10 @@ class PgTaskRepositoryIntegrationTest {
                             .toList();
 
             assertThat(claimed).singleElement();
+            assertThat(
+                            leases.claimReady("must-not-overlap-sibling", 10).stream()
+                                    .filter(lease -> run.runId().equals(lease.runId())))
+                    .isEmpty();
         } finally {
             pool.shutdownNow();
             runs.cancel(tenant, agentId, run.runId());

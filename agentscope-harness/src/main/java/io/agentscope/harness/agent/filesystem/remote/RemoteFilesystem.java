@@ -656,15 +656,45 @@ public class RemoteFilesystem implements AbstractFilesystem {
         return all;
     }
 
+    /** Bounds decoding before allocating a system resource's byte array. */
+    public io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan.WorkspaceFile
+            systemSnapshotFile(RuntimeContext context, String path, long maxBytes) {
+        var item = store.get(getNamespace(context), path);
+        var data = convertItemToFileData(item);
+        if (data == null || data.content() == null)
+            throw new IllegalStateException("System resource unavailable");
+        boolean binary = "base64".equals(data.encoding());
+        long maxCharacters = binary ? Math.multiplyExact((maxBytes + 2) / 3, 4) : maxBytes;
+        if (data.content().length() > maxCharacters)
+            throw new IllegalStateException("System resource exceeds byte budget");
+        byte[] bytes =
+                binary
+                        ? Base64.getDecoder().decode(data.content())
+                        : data.content().getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > maxBytes)
+            throw new IllegalStateException("System resource exceeds byte budget");
+        return new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan.WorkspaceFile(
+                path, bytes);
+    }
+
     /** System-resource inventory without searching user-file bodies. */
     public List<String> systemFilePaths(RuntimeContext context, int maxFiles) {
         if (maxFiles < 1) throw new IllegalArgumentException("Invalid system file budget");
         List<String> ns = getNamespace(context);
         var paths = new java.util.LinkedHashSet<String>();
-        for (String path : List.of("/AGENTS.md", "/MEMORY.md", "/tools.json")) {
-            if (store.get(ns, path) != null) paths.add(path);
+        var canonical = new java.util.HashMap<String, String>();
+        for (String name : List.of("AGENTS.md", "MEMORY.md", "tools.json")) {
+            for (String path : List.of(name, "/" + name))
+                if (store.get(ns, path) != null) addSystemKey(paths, canonical, path, maxFiles);
         }
-        for (String prefix : List.of("/skills/", "/subagents/", "/memory/")) {
+        for (String prefix :
+                List.of(
+                        "skills/",
+                        "/skills/",
+                        "subagents/",
+                        "/subagents/",
+                        "memory/",
+                        "/memory/")) {
             int offset = 0;
             while (true) {
                 int limit = Math.min(100, maxFiles + 1 - paths.size());
@@ -675,14 +705,12 @@ public class RemoteFilesystem implements AbstractFilesystem {
                     if (path == null
                             || path.length() > 1024
                             || !path.startsWith(prefix)
-                            || !("/"
-                                            + new io.agentscope.harness.agent.sandbox
-                                                            .WorkspaceRestorePlan.WorkspaceFile(
-                                                            path, new byte[0])
-                                                    .path())
-                                    .equals(path))
+                            || !new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan
+                                            .WorkspaceFile(path, new byte[0])
+                                    .path()
+                                    .equals(path.startsWith("/") ? path.substring(1) : path))
                         throw new IllegalStateException("Invalid system resource key");
-                    paths.add(path);
+                    addSystemKey(paths, canonical, path, maxFiles);
                 }
                 if (paths.size() > maxFiles)
                     throw new IllegalStateException("System workspace exceeds file budget");
@@ -691,6 +719,23 @@ public class RemoteFilesystem implements AbstractFilesystem {
             }
         }
         return List.copyOf(paths);
+    }
+
+    private static void addSystemKey(
+            java.util.Set<String> paths,
+            java.util.Map<String, String> canonical,
+            String path,
+            int maxFiles) {
+        String normalized =
+                new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan.WorkspaceFile(
+                                path, new byte[0])
+                        .path();
+        String previous = canonical.putIfAbsent(normalized, path);
+        if (previous != null && !previous.equals(path))
+            throw new IllegalStateException("Conflicting system resource keys");
+        paths.add(path);
+        if (paths.size() > maxFiles)
+            throw new IllegalStateException("System workspace exceeds file budget");
     }
 
     private static FileData convertItemToFileData(StoreItem item) {

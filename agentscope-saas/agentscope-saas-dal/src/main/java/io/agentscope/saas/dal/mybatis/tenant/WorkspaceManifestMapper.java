@@ -8,6 +8,7 @@ package io.agentscope.saas.dal.mybatis.tenant;
 import io.agentscope.saas.domain.workspace.FilePublicationRepository.ArtifactReceipt;
 import io.agentscope.saas.domain.workspace.FilePublicationRepository.Intent;
 import io.agentscope.saas.domain.workspace.FilePublicationRepository.Publication;
+import io.agentscope.saas.domain.workspace.WorkspaceManifestRepository;
 import io.agentscope.saas.domain.workspace.WorkspaceManifestRepository.Entry;
 import io.agentscope.saas.domain.workspace.WorkspaceManifestRepository.Manifest;
 import io.agentscope.saas.domain.workspace.WorkspaceManifestRepository.Scope;
@@ -20,6 +21,49 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface WorkspaceManifestMapper {
+    @Select(
+            """
+            SELECT parent.task_id FROM agent_runs child JOIN agent_runs parent
+                ON parent.id = child.parent_agent_run_id AND parent.org_id = child.org_id AND parent.run_id = child.run_id
+              JOIN task_nodes task ON task.id = child.task_id AND task.org_id = child.org_id AND task.run_id = child.run_id AND task.task_type = 'subagent'
+             WHERE child.id = #{s.execution.agentRunId} AND child.task_id = #{s.execution.taskId}
+               AND child.org_id = #{s.orgId} AND child.run_id = #{s.runId}
+            """)
+    UUID parentTask(@Param("s") Scope scope);
+
+    @Select(
+            "SELECT EXISTS(SELECT 1 FROM task_nodes WHERE id = #{s.execution.taskId} AND org_id ="
+                    + " #{s.orgId} AND run_id = #{s.runId} AND parent_id IS NOT NULL)")
+    boolean isChildTask(@Param("s") Scope scope);
+
+    @Select(
+            """
+            SELECT source_lease_id AS lease_id, parent_task_id, parent_attempt_id,
+                   checkpoint_uri, workspace_version
+              FROM task_workspace_origins
+             WHERE task_id = #{s.execution.taskId} AND org_id = #{s.orgId} AND run_id = #{s.runId}
+               AND user_id = #{s.userId} AND agent_id = #{s.agentId} AND session_id = #{s.sessionId}
+               AND session_generation = #{s.sessionGeneration}
+            """)
+    WorkspaceManifestRepository.Inheritance inheritance(@Param("s") Scope scope);
+
+    @Insert(
+            """
+            INSERT INTO task_workspace_origins(task_id, org_id, run_id, user_id, agent_id, session_id,
+                session_generation, source_lease_id, parent_task_id, parent_attempt_id, checkpoint_uri, workspace_version)
+            SELECT #{s.execution.taskId}, #{s.orgId}, #{s.runId}, #{s.userId}, #{s.agentId}, #{s.sessionId},
+                   #{s.sessionGeneration}, sl.id, sl.task_id, sl.attempt_id, #{c.checkpointUri}, #{c.workspaceVersion}
+              FROM sandbox_leases sl
+              JOIN agent_runs child ON child.id = #{s.execution.agentRunId} AND child.org_id = sl.org_id AND child.run_id = sl.run_id
+              JOIN agent_runs parent ON parent.id = child.parent_agent_run_id AND parent.org_id = child.org_id AND parent.run_id = child.run_id AND parent.task_id = sl.task_id
+             WHERE sl.id = #{c.leaseId} AND sl.org_id = #{s.orgId} AND sl.run_id = #{s.runId} AND sl.user_id = #{s.userId}
+               AND sl.task_id = #{c.parentTaskId} AND sl.attempt_id = #{c.parentAttemptId}
+               AND sl.workspace_snapshot_uri = #{c.checkpointUri} AND sl.workspace_version = #{c.workspaceVersion}
+            """)
+    int inherit(
+            @Param("s") Scope scope,
+            @Param("c") WorkspaceManifestRepository.Inheritance checkpoint);
+
     @Select(
             """
             SELECT id FROM chat_sessions WHERE id = #{s.sessionId} AND org_id = #{s.orgId}

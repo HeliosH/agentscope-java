@@ -78,6 +78,11 @@ public class WorkspaceSkillRepository implements AgentSkillRepository, LazyResou
     private final String source;
 
     private volatile boolean writable;
+    private volatile FrozenView frozenView;
+
+    private record FrozenView(
+            io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan plan,
+            WorkspaceSkillSnapshot snapshot) {}
 
     /**
      * Creates a read-only repository.
@@ -157,7 +162,13 @@ public class WorkspaceSkillRepository implements AgentSkillRepository, LazyResou
 
     @Override
     public List<AgentSkill> getAllSkills() {
-        RuntimeContext ctx = currentContext();
+        return getAllSkills(currentContext());
+    }
+
+    /** Uses the invocation context explicitly, including its immutable Run system manifest. */
+    public List<AgentSkill> getAllSkills(RuntimeContext ctx) {
+        var snapshot = frozenSnapshot(ctx);
+        if (snapshot != null) return snapshot.all();
         GlobResult glob;
         try {
             glob = filesystem.glob(ctx, SKILL_FILE, skillsRelativeDir);
@@ -229,7 +240,26 @@ public class WorkspaceSkillRepository implements AgentSkillRepository, LazyResou
             return SkillResources.empty();
         }
         RuntimeContext effectiveCtx = ctx != null ? ctx : RuntimeContext.empty();
+        var snapshot = frozenSnapshot(effectiveCtx);
+        if (snapshot != null) return snapshot.resources(skillName);
         return new FilesystemSkillResources(filesystem, skillDirRelative(skillName), effectiveCtx);
+    }
+
+    private WorkspaceSkillSnapshot frozenSnapshot(RuntimeContext ctx) {
+        var plan =
+                ctx == null
+                        ? null
+                        : ctx.get(
+                                io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore
+                                        .Plan.class);
+        if (plan == null) return null;
+        var cached = frozenView;
+        if (cached != null && cached.plan() == plan.workspace()) return cached.snapshot();
+        var snapshot = new WorkspaceSkillSnapshot(plan.workspace(), skillsRelativeDir, source);
+        // Cache only one immutable descriptor index, never resource bodies or authorization
+        // outcomes. A new plan (including a rebuilt consumer's sources) replaces it by identity.
+        frozenView = new FrozenView(plan.workspace(), snapshot);
+        return snapshot;
     }
 
     // =========================================================================

@@ -129,6 +129,30 @@ public class WorkspaceCheckpointRestoreService {
                                             .findLatestCheckpointBeforeAttempt(
                                                     currentAttemptId, orgId)
                                             .orElse(null);
+                            if (checkpoint == null) {
+                                var inherited = manifests.inheritance(scope);
+                                if (inherited.isEmpty()) {
+                                    var parent =
+                                            leaseRepository.findParentCheckpoint(
+                                                    currentAttemptId, orgId);
+                                    if (parent.isPresent()) {
+                                        var p = parent.orElseThrow();
+                                        var binding =
+                                                new WorkspaceManifestRepository.Inheritance(
+                                                        p.id(),
+                                                        p.taskId(),
+                                                        p.attemptId(),
+                                                        p.workspaceSnapshotUri(),
+                                                        p.workspaceVersion());
+                                        manifests.inherit(scope, binding);
+                                        inherited = Optional.of(binding);
+                                    } else if (manifests.parentTask(scope).isPresent())
+                                        throw new IllegalStateException(
+                                                "PARENT_WORKSPACE_CHECKPOINT_UNAVAILABLE");
+                                }
+                                if (inherited.isPresent())
+                                    checkpoint = inheritedLease(scope, inherited.orElseThrow());
+                            }
                             return checkpoint == null ? null : load(scope, checkpoint);
                         });
         if (metadata == null) return Optional.empty();
@@ -152,7 +176,7 @@ public class WorkspaceCheckpointRestoreService {
                     throw new IllegalStateException("WORKSPACE_CHECKPOINT_RESTORE_LIMIT");
                 var file =
                         new WorkspaceFile(
-                                entry.logicalPath(),
+                                entry.sourcePath(),
                                 stored.sizeBytes(),
                                 stored.sha256(),
                                 () -> {
@@ -210,7 +234,7 @@ public class WorkspaceCheckpointRestoreService {
             if (stored.content().length > policy.maxFileBytes()
                     || restoredBytes > policy.maxTotalBytes())
                 throw new IllegalStateException("WORKSPACE_CHECKPOINT_RESTORE_LIMIT");
-            files.add(new WorkspaceFile(entry.logicalPath(), stored.content()));
+            files.add(new WorkspaceFile(entry.sourcePath(), stored.content()));
             manifest.add(
                     new WorkspaceManifestVersion.Entry(
                             entry.logicalPath(), entry.versionId(), stored.sha256()));
@@ -229,6 +253,14 @@ public class WorkspaceCheckpointRestoreService {
                             leaseRepository
                                     .findById(metadata.checkpoint().id(), orgId)
                                     .orElseThrow(SessionExecutionRevokedException::new);
+                    if (!scope.execution().taskId().equals(current.taskId()))
+                        current =
+                                inheritedLease(
+                                        scope,
+                                        manifests
+                                                .inheritance(scope)
+                                                .orElseThrow(
+                                                        SessionExecutionRevokedException::new));
                     if (!Objects.equals(
                                     current.workspaceSnapshotUri(),
                                     metadata.checkpoint().workspaceSnapshotUri())
@@ -270,7 +302,8 @@ public class WorkspaceCheckpointRestoreService {
         if (!current.orgId().equals(checkpoint.orgId())
                 || !current.userId().equals(checkpoint.userId())
                 || !current.runId().equals(checkpoint.runId())
-                || !current.execution().taskId().equals(checkpoint.taskId())
+                || (!current.execution().taskId().equals(checkpoint.taskId())
+                        && !isInherited(current, checkpoint))
                 || current.execution().attemptId().equals(checkpoint.attemptId()))
             throw new SessionExecutionRevokedException();
         UUID manifestId =
@@ -374,7 +407,8 @@ public class WorkspaceCheckpointRestoreService {
                                                 e.logicalPath(),
                                                 r.versionId(),
                                                 r.sha256(),
-                                                r.sizeBytes());
+                                                r.sizeBytes(),
+                                                e.sourcePath());
                                     })
                             .toList();
             if (receipts.size() != entries.size()
@@ -392,10 +426,13 @@ public class WorkspaceCheckpointRestoreService {
                         "Workspace checkpoint manifest mismatch for " + checkpoint.attemptId());
         }
         Set<String> paths = new HashSet<>();
+        Set<String> sources = new HashSet<>();
         if (entries.size() > policy.maxFiles())
             throw new IllegalStateException("WORKSPACE_CHECKPOINT_RESTORE_LIMIT");
         for (var entry : entries) {
-            if (entry.versionId() == null || !paths.add(entry.logicalPath()))
+            if (entry.versionId() == null
+                    || !paths.add(entry.logicalPath())
+                    || !sources.add(entry.sourcePath()))
                 throw new IllegalStateException(
                         "Workspace checkpoint contains duplicate path or missing version "
                                 + entry.logicalPath());
@@ -405,8 +442,58 @@ public class WorkspaceCheckpointRestoreService {
 
     private record RestoreMetadata(SandboxLease checkpoint, List<RestoreEntry> entries) {}
 
+    private boolean isInherited(Scope scope, SandboxLease lease) {
+        return manifests
+                .inheritance(scope)
+                .filter(
+                        i ->
+                                i.leaseId().equals(lease.id())
+                                        && i.parentTaskId().equals(lease.taskId())
+                                        && i.parentAttemptId().equals(lease.attemptId())
+                                        && i.checkpointUri().equals(lease.workspaceSnapshotUri())
+                                        && i.workspaceVersion().equals(lease.workspaceVersion()))
+                .isPresent();
+    }
+
+    private SandboxLease inheritedLease(Scope scope, WorkspaceManifestRepository.Inheritance i) {
+        var p =
+                leaseRepository
+                        .findById(i.leaseId(), scope.orgId())
+                        .orElseThrow(SessionExecutionRevokedException::new);
+        if (!p.runId().equals(scope.runId())
+                || !p.userId().equals(scope.userId())
+                || !p.taskId().equals(i.parentTaskId())
+                || !p.attemptId().equals(i.parentAttemptId()))
+            throw new SessionExecutionRevokedException();
+        return new SandboxLease(
+                p.id(),
+                p.orgId(),
+                p.userId(),
+                p.runId(),
+                p.taskId(),
+                p.attemptId(),
+                p.providerId(),
+                p.providerSandboxId(),
+                p.providerStateJson(),
+                p.imageOrTemplate(),
+                p.capabilitiesJson(),
+                i.checkpointUri(),
+                i.workspaceVersion(),
+                p.status(),
+                p.leaseOwner(),
+                p.leaseExpiresAt(),
+                p.lastHeartbeatAt(),
+                p.createdAt(),
+                p.releasedAt(),
+                p.releaseError());
+    }
+
     private record RestoreEntry(
-            String logicalPath, UUID versionId, String sha256, long sizeBytes) {}
+            String logicalPath, UUID versionId, String sha256, long sizeBytes, String sourcePath) {
+        RestoreEntry(String logicalPath, UUID versionId, String sha256, long sizeBytes) {
+            this(logicalPath, versionId, sha256, sizeBytes, logicalPath);
+        }
+    }
 
     private static String safePath(String value) {
         if (value == null

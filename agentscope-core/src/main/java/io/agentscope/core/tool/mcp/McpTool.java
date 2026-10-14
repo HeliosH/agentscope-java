@@ -152,6 +152,21 @@ public class McpTool extends ToolBase {
     }
 
     @Override
+    public String getContractVersion() {
+        // A local wrapper's bytecode cannot attest to a remote server's implementation version.
+        return null;
+    }
+
+    @Override
+    public Map<String, Object> getContractAttributes() {
+        var attributes = new java.util.LinkedHashMap<String, Object>();
+        attributes.put("client", clientWrapper.getName());
+        attributes.put(
+                "presetHash", io.agentscope.core.tool.StepSnapshot.fingerprint(presetArguments));
+        return attributes;
+    }
+
+    @Override
     public Mono<PermissionDecision> checkPermissions(
             Map<String, Object> toolInput, PermissionContextState context) {
         if (isReadOnly()) {

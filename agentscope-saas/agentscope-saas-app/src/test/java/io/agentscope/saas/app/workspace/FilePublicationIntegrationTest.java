@@ -15,6 +15,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -108,6 +109,9 @@ class FilePublicationIntegrationTest {
     @Autowired WorkspaceManifestRepository manifestRepository;
     @Autowired io.agentscope.saas.domain.workspace.WorkspaceSourceRepository sourceRepository;
     @Autowired io.agentscope.saas.domain.workspace.WorkspaceInputRepository inputRepository;
+    @Autowired io.agentscope.saas.domain.workspace.WorkspaceSystemRepository systemRepository;
+    @Autowired io.agentscope.saas.domain.workspace.FileObjectGcRepository objectGcRepository;
+    @Autowired ObjectProvider<FileObjectStore> configuredObjectStores;
     @Autowired io.agentscope.saas.domain.workspace.WorkspaceRetentionRepository retentionRepository;
     @Autowired ChatPersistenceService chats;
     @Autowired RunOrchestrationService orchestration;
@@ -1669,6 +1673,199 @@ class FilePublicationIntegrationTest {
                 sandboxLeases, artifacts, catalog, mapper, manifestRepository, properties, manager);
     }
 
+    @Test
+    void backgroundChildRebuildsPinnedParentCheckpointAfterParentReleaseAndKeepsItsOrigin()
+            throws Exception {
+        var parent = activeScope();
+        loadInputs(parent);
+        var historical = write("outputs/parent-history.txt", "old");
+        var retrieved = retrieve(parent, historical);
+        var child =
+                orchestration.createSubagentTask(
+                        tenant,
+                        agent,
+                        parent.runId(),
+                        parent.execution().agentRunId(),
+                        "child-restore",
+                        "researcher",
+                        "child-session",
+                        "{}",
+                        new RunOrchestrationService.SubagentPolicy(3, 8, 32));
+        var file = taskWrite(catalog, parent, "outputs/receipt.txt", Map.of());
+        storeRestoreCheckpoint(parent, finishCheckpoint(parent, file));
+        orchestration.markSucceeded(tenant, agent, parent.runId());
+        UUID attempt = UUID.randomUUID();
+        admin.executeWithoutResult(
+                tx -> {
+                    assertThat(taskLeaseRepository.claimTask(child.taskId(), OffsetDateTime.now()))
+                            .isEqualTo(1);
+                    db().insertRunningAttempt(
+                                    attempt,
+                                    org,
+                                    parent.runId(),
+                                    child.taskId(),
+                                    child.agentRunId(),
+                                    1,
+                                    "child-owner",
+                                    OffsetDateTime.now().plusHours(1),
+                                    "child-" + attempt,
+                                    OffsetDateTime.now());
+                    taskLeaseRepository.markTaskRunning(child.taskId(), OffsetDateTime.now());
+                    taskLeaseRepository.markAgentRunRunning(
+                            child.agentRunId(), OffsetDateTime.now());
+                });
+        var plan =
+                restoreService()
+                        .prepare(
+                                tenant,
+                                org,
+                                attempt,
+                                "child-owner",
+                                io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode
+                                        .RUN_ISOLATED)
+                        .orElseThrow();
+        assertThat(plan.files())
+                .singleElement()
+                .satisfies(
+                        f -> {
+                            assertThat(f.path()).isEqualTo("outputs/receipt.txt");
+                            assertThat(f.content()).isEqualTo(bytes("abc"));
+                        });
+        var childScope = manifestRepository.restoreScope(org, user, attempt).orElseThrow();
+        var childInputs =
+                inputService()
+                        .prepare(tenant, parent.runId(), child.taskId(), attempt, "child-owner")
+                        .orElseThrow();
+        assertThat(childInputs.taskScope().taskId()).isEqualTo(child.taskId().toString());
+        assertThat(childInputs.workspace().files())
+                .singleElement()
+                .satisfies(
+                        f -> {
+                            assertThat(f.path()).isEqualTo(retrieved.path());
+                            assertThat(f.content()).isEqualTo(bytes("old"));
+                        });
+        var origin = manifestRepository.inheritance(childScope).orElseThrow();
+        assertThat(origin.parentTaskId()).isEqualTo(parent.execution().taskId());
+        // A later mutable lease pointer cannot switch an already accepted child's source manifest.
+        sandboxLeases.checkpoint(origin.leaseId(), org, "invalid-later-pointer", "later-version");
+        var rebuilt =
+                restoreService()
+                        .prepare(
+                                tenant,
+                                org,
+                                attempt,
+                                "child-owner",
+                                io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode
+                                        .RUN_ISOLATED)
+                        .orElseThrow();
+        assertThat(rebuilt.workspaceVersion()).isEqualTo(plan.workspaceVersion());
+        assertThat(rebuilt.files().get(0).content()).isEqualTo(bytes("abc"));
+        if ("true".equals(System.getenv("SAAS_CHECKPOINT_OPENSANDBOX_TEST")))
+            verifyChildInRealOpenSandbox(rebuilt, childInputs, child.taskId(), retrieved.path());
+        if ("true".equals(System.getenv("RUN_POSTGRES_USAGE_TEST"))) {
+            TenantContextHolder.setOrgId(UUID.randomUUID().toString());
+            try {
+                assertThat(manifestRepository.inheritance(childScope)).isEmpty();
+            } finally {
+                TenantContextHolder.setOrgId(org.toString());
+            }
+            assertThatThrownBy(() -> db().rewriteWorkspaceOrigin(child.taskId()))
+                    .isInstanceOf(org.springframework.dao.DataAccessException.class);
+            assertThatThrownBy(() -> db().removeWorkspaceOrigin(child.taskId()))
+                    .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        }
+        orchestration.cancel(tenant, agent, parent.runId());
+        assertThatThrownBy(() -> rebuilt.files().get(0).content())
+                .hasRootCauseMessage("SESSION_EXECUTION_REVOKED");
+        chats.deleteSession(session);
+        assertThat(manifestRepository.inheritance(childScope)).isEmpty();
+    }
+
+    private void verifyChildInRealOpenSandbox(
+            io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan checkpoint,
+            io.agentscope.harness.agent.sandbox.WorkspaceInputPlan inputs,
+            UUID task,
+            String retrievedPath)
+            throws Exception {
+        var options = new io.agentscope.extensions.sandbox.opensandbox.OpenSandboxClientOptions();
+        options.setApiBaseUrl(
+                System.getenv()
+                        .getOrDefault("OPENSANDBOX_API_BASE_URL", "http://127.0.0.1:18081/v1"));
+        options.setImage(
+                System.getenv().getOrDefault("SAAS_SANDBOX_OPENSANDBOX_IMAGE", "ubuntu:latest"));
+        options.setWorkspaceRoot("/workspace");
+        options.setWaitTimeoutSeconds(180);
+        var spec = new io.agentscope.harness.agent.sandbox.WorkspaceSpec();
+        spec.setRoot("/workspace");
+        var client = new io.agentscope.extensions.sandbox.opensandbox.OpenSandboxClient();
+        var sandbox = client.create(spec, null, options);
+        var manager =
+                new io.agentscope.harness.agent.sandbox.SandboxManager(
+                        client,
+                        mock(io.agentscope.harness.agent.sandbox.SessionSandboxStateStore.class),
+                        "child-restore-probe");
+        var remote =
+                new io.agentscope.harness.agent.filesystem.remote.RemoteFilesystem(
+                        new io.agentscope.harness.agent.filesystem.remote.store.InMemoryStore(),
+                        c -> java.util.List.of("child", "probe"));
+        var context = io.agentscope.core.agent.RuntimeContext.empty();
+        remote.write(context, "/outputs/historical.txt", "must not restore");
+        remote.write(context, "/outputs/receipt.txt", "wrong current version");
+        var filesystem =
+                new io.agentscope.harness.agent.filesystem.sandbox.SandboxBackedFilesystem();
+        filesystem.configureRemoteFallback(remote);
+        var lifecycle =
+                new io.agentscope.harness.agent.middleware.SandboxLifecycleMiddleware(
+                        manager, filesystem);
+        context.put(
+                io.agentscope.harness.agent.sandbox.SandboxContext.class,
+                io.agentscope.harness.agent.sandbox.SandboxContext.builder()
+                        .externalSandbox(sandbox)
+                        .build());
+        context.put(io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan.class, checkpoint);
+        context.put(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class, inputs);
+        context.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceTaskScope.class, inputs.taskScope());
+        context.put(
+                io.agentscope.harness.agent.sandbox.SandboxIsolationOverride.class,
+                new io.agentscope.harness.agent.sandbox.SandboxIsolationOverride(
+                        "child-probe/" + task));
+        try {
+            lifecycle.acquireForCall(context);
+            String safeInput = "'" + retrievedPath.replace("'", "'\\''") + "'";
+            var result =
+                    sandbox.exec(
+                            context,
+                            "test ! -e outputs/historical.txt && cat outputs/receipt.txt && cat "
+                                    + safeInput
+                                    + " && printf child > outputs/report.txt",
+                            30);
+            assertThat(result.exitCode()).isZero();
+            assertThat(result.stdout()).isEqualTo("abcold");
+            var report = filesystem.projectSandboxWorkspaceWithReport(context);
+            report.verifyComplete();
+            assertThat(report.projectedFiles()).isEqualTo(2);
+            assertThat(
+                            remote.read(context, "/outputs/tasks/" + task + "/report.txt", 0, 0)
+                                    .fileData()
+                                    .content())
+                    .isEqualTo("child");
+            assertThat(
+                            remote.read(context, "/outputs/tasks/" + task + "/receipt.txt", 0, 0)
+                                    .fileData()
+                                    .content())
+                    .isEqualTo("abc");
+            assertThat(remote.read(context, "/outputs/receipt.txt", 0, 0).fileData().content())
+                    .isEqualTo("wrong current version");
+        } finally {
+            try {
+                lifecycle.releaseForCall(context);
+            } finally {
+                sandbox.shutdown();
+            }
+        }
+    }
+
     private WorkspaceCheckpointContext boundCheckpoint(
             Scope scope, FileCatalogService.FileRecord file) {
         var checkpoint = new WorkspaceCheckpointContext(true);
@@ -3122,8 +3319,12 @@ class FilePublicationIntegrationTest {
 
     private WorkspaceInputService inputService() {
         properties.getSandbox().setEnabled(true);
-        return new WorkspaceInputService(
-                inputRepository, manifestRepository, stores, properties, manager);
+        var service =
+                new WorkspaceInputService(
+                        inputRepository, manifestRepository, stores, properties, manager);
+        service.configureSystems(systemRepository);
+        service.configureEvents(runs);
+        return service;
     }
 
     private io.agentscope.harness.agent.sandbox.WorkspaceInputPlan loadInputs(Scope scope) {
@@ -3512,6 +3713,519 @@ class FilePublicationIntegrationTest {
         assertThat(catalog.listVersions(tenant, first.logicalPath())).hasSize(1);
         assertThat(receipts(scope)).anyMatch(r -> r.versionId().equals(first.versionId()));
         assertThat(db().taskAttemptCount(scope.execution().taskId())).isEqualTo(1);
+    }
+
+    private WorkspaceSystemService systemService() {
+        return new WorkspaceSystemService(
+                systemRepository,
+                manifestRepository,
+                publications,
+                orgs,
+                stores,
+                properties,
+                io.agentscope.harness.agent.sandbox.WorkspaceTransferResources.DEFAULT,
+                manager);
+    }
+
+    private io.agentscope.core.agent.RuntimeContext systemContext(Scope scope) {
+        return io.agentscope.core.agent.RuntimeContext.builder()
+                .userId(user.toString())
+                .sessionId(session.toString())
+                .put(TenantContext.class, tenant)
+                .put(RunOrchestrationService.ATTR_RUN_ID, scope.runId().toString())
+                .put(
+                        io.agentscope.saas.sandbox.SandboxRuntimeAttributes.ATTR_TASK_ID,
+                        scope.execution().taskId().toString())
+                .put(
+                        io.agentscope.saas.sandbox.SandboxRuntimeAttributes.ATTR_ATTEMPT_ID,
+                        scope.execution().attemptId().toString())
+                .put(
+                        io.agentscope.saas.sandbox.SandboxRuntimeAttributes.ATTR_LEASE_OWNER,
+                        scope.execution().leaseOwner())
+                .build();
+    }
+
+    private io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore.Source systemSource(
+            Map<String, String> values) {
+        return new io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore.Source() {
+            public java.util.List<String> paths(int limit) {
+                return values.keySet().stream().sorted().toList();
+            }
+
+            public io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan.WorkspaceFile read(
+                    String path, long max) {
+                assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+                return new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan.WorkspaceFile(
+                        path, bytes(values.get(path)));
+            }
+        };
+    }
+
+    @Test
+    void systemSnapshotSurvivesServiceRebuildWithoutReadingTodaysProjection() throws Exception {
+        var scope = activeScope();
+        var initial =
+                systemService()
+                        .prepare(
+                                systemContext(scope),
+                                systemSource(
+                                        Map.of(
+                                                "/MEMORY.md",
+                                                "remember",
+                                                "/skills/a/SKILL.md",
+                                                "original")),
+                                io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy
+                                        .DEFAULT);
+        var unavailable =
+                mock(io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore.Source.class);
+        var restored =
+                systemService()
+                        .prepare(
+                                systemContext(scope),
+                                unavailable,
+                                io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy
+                                        .DEFAULT);
+        verifyNoInteractions(unavailable);
+        assertThat(restored.workspaceVersion()).isEqualTo(initial.workspaceVersion());
+        assertThat(new String(restored.files().get(0).content(), StandardCharsets.UTF_8))
+                .isEqualTo("remember");
+        assertThat(catalog.listActiveFiles(tenant)).isEmpty();
+    }
+
+    @Test
+    @SuppressWarnings("deprecation")
+    void dynamicSkillReadsUsePersistedSystemVersionsAndRecheckCancellation() throws Exception {
+        var scope = activeScope();
+        var ctx = systemContext(scope);
+        String document =
+                "---\nname: alpha\ndescription: Frozen skill\n---\nOriginal instructions\n";
+        var plan =
+                systemService()
+                        .prepare(
+                                ctx,
+                                systemSource(
+                                        Map.of(
+                                                "skills/alpha/SKILL.md",
+                                                document,
+                                                "skills/alpha/guide.md",
+                                                "original guide")),
+                                io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy
+                                        .DEFAULT);
+        ctx.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore.Plan.class,
+                new io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore.Plan(plan));
+        var live = mock(io.agentscope.harness.agent.filesystem.AbstractFilesystem.class);
+        var repo =
+                new io.agentscope.harness.agent.skill.WorkspaceSkillRepository(
+                        live, "skills", io.agentscope.core.agent.RuntimeContext::empty);
+        var middleware =
+                new io.agentscope.harness.agent.middleware.HarnessSkillMiddleware(
+                        java.util.List.of(repo), null);
+        assertThat(middleware.onSystemPrompt(null, ctx, "base").block())
+                .contains("alpha_workspace");
+        var param =
+                io.agentscope.core.tool.ToolCallParam.builder()
+                        .input(Map.of("skillId", "alpha_workspace", "path", "guide.md"))
+                        .build();
+        var result = middleware.runtime().loadTool().callAsync(param).block();
+        assertThat(result.getOutput())
+                .anyMatch(
+                        block ->
+                                block instanceof io.agentscope.core.message.TextBlock text
+                                        && text.getText().contains("original guide"));
+        verifyNoInteractions(live);
+        // A rebuilt service reads the same PG manifest and objects without revisiting the employee
+        // projection.
+        var rebuilt =
+                systemService()
+                        .prepare(
+                                ctx,
+                                systemSource(Map.of("skills/alpha/guide.md", "changed")),
+                                io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy
+                                        .DEFAULT);
+        assertThat(rebuilt.workspaceVersion()).isEqualTo(plan.workspaceVersion());
+        assertThat(repo.getAllSkills(ctx))
+                .singleElement()
+                .satisfies(
+                        skill ->
+                                assertThat(skill.getSkillContent())
+                                        .contains("Original instructions"));
+        orchestration.cancel(tenant, agent, scope.runId());
+        var rejected = middleware.runtime().loadTool().callAsync(param).block();
+        assertThat(rejected.getOutput())
+                .noneMatch(
+                        block ->
+                                block instanceof io.agentscope.core.message.TextBlock text
+                                        && text.getText().contains("original guide"));
+        assertThatThrownBy(() -> middleware.onSystemPrompt(null, ctx, "base").block())
+                .isInstanceOf(RuntimeException.class);
+        assertThat(middleware.runtime().currentCatalog().isEmpty()).isTrue();
+        verifyNoInteractions(live);
+    }
+
+    @Test
+    void emptySystemSnapshotDoesNotPickUpNewSkillsOnRetry() throws Exception {
+        var scope = activeScope();
+        var original =
+                systemService()
+                        .prepare(
+                                systemContext(scope),
+                                systemSource(Map.of()),
+                                io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy
+                                        .DEFAULT);
+        var restored =
+                systemService()
+                        .prepare(
+                                systemContext(scope),
+                                systemSource(Map.of("/skills/new/SKILL.md", "new")),
+                                io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy
+                                        .DEFAULT);
+        assertThat(restored.files()).isEmpty();
+        assertThat(restored.workspaceVersion()).isEqualTo(original.workspaceVersion());
+    }
+
+    @Test
+    void liveRunSystemSnapshotPinsPublicationAgainstGc() throws Exception {
+        var scope = activeScope();
+        var plan =
+                systemService()
+                        .prepare(
+                                systemContext(scope),
+                                systemSource(Map.of("/MEMORY.md", "keep")),
+                                io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy
+                                        .DEFAULT);
+        var entry = systemRepository.entries(scope.manifest().scope(), 10).get(0);
+        assertThat(publications.references(entry.publicationId())).isEqualTo(1);
+        Integer claimed =
+                admin.execute(
+                        tx ->
+                                publications.claim(
+                                        entry.publicationId(),
+                                        UUID.randomUUID(),
+                                        OffsetDateTime.now().plusDays(2),
+                                        OffsetDateTime.now().plusDays(3),
+                                        10));
+        assertThat(claimed).isEqualTo(0);
+        gc.collectOnce(OffsetDateTime.now().plusDays(2));
+        assertThat(new String(plan.files().get(0).content(), StandardCharsets.UTF_8))
+                .isEqualTo("keep");
+    }
+
+    @Test
+    void systemSnapshotRechecksGenerationAfterObjectRead() throws Exception {
+        var scope = activeScope();
+        var plan =
+                systemService()
+                        .prepare(
+                                systemContext(scope),
+                                systemSource(Map.of("/MEMORY.md", "keep")),
+                                io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy
+                                        .DEFAULT);
+        objects.afterGet = () -> db().advanceSessionGeneration(session);
+        assertThatThrownBy(() -> plan.files().get(0).content())
+                .hasCauseInstanceOf(
+                        io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException
+                                .class);
+    }
+
+    @Test
+    void failedSystemSnapshotStageIsQuotaAccountedAndEventuallyCollected() throws Exception {
+        var scope = activeScope();
+        objects.failPut = true;
+        assertThatThrownBy(
+                        () ->
+                                systemService()
+                                        .prepare(
+                                                systemContext(scope),
+                                                systemSource(Map.of("/MEMORY.md", "four")),
+                                                io.agentscope.harness.agent.sandbox
+                                                        .WorkspaceTransferPolicy.DEFAULT))
+                .isInstanceOf(Exception.class);
+        assertThat(systemRepository.find(scope.manifest().scope())).isEmpty();
+        objects.failPut = false;
+        properties.getFileStore().setWorkspaceSystemMaxOrgBytes(4);
+        assertThatThrownBy(
+                        () ->
+                                systemService()
+                                        .prepare(
+                                                systemContext(scope),
+                                                systemSource(Map.of("/MEMORY.md", "four")),
+                                                io.agentscope.harness.agent.sandbox
+                                                        .WorkspaceTransferPolicy.DEFAULT))
+                .hasMessage("SYSTEM_SNAPSHOT_ORG_QUOTA");
+        gc.collectOnce(OffsetDateTime.now().plusDays(2));
+        assertThat(systemRepository.occupied(org, OffsetDateTime.now())).isZero();
+    }
+
+    @Test
+    void systemSnapshotRejectsForeignOwnerAndCorruptBytes() throws Exception {
+        var scope = activeScope();
+        var plan =
+                systemService()
+                        .prepare(
+                                systemContext(scope),
+                                systemSource(Map.of("/MEMORY.md", "keep")),
+                                io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy
+                                        .DEFAULT);
+        var entry = systemRepository.entries(scope.manifest().scope(), 10).get(0);
+        objects.data.put(entry.objectKey(), bytes("fake"));
+        assertThatThrownBy(() -> plan.files().get(0).content())
+                .hasRootCauseMessage("WORKSPACE_INPUT_INTEGRITY");
+        var foreign =
+                new TenantContext(
+                        org.toString(), UUID.randomUUID().toString(), "member", "standard", 2, 0);
+        var context = systemContext(scope);
+        context.put(TenantContext.class, foreign);
+        assertThatThrownBy(
+                        () ->
+                                systemService()
+                                        .prepare(
+                                                context,
+                                                systemSource(Map.of()),
+                                                io.agentscope.harness.agent.sandbox
+                                                        .WorkspaceTransferPolicy.DEFAULT))
+                .isInstanceOf(
+                        io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException
+                                .class);
+    }
+
+    private WorkspaceInputService.Retrieved retrieve(
+            Scope scope, FileCatalogService.FileRecord file) throws Exception {
+        return inputService()
+                .retrieve(
+                        tenant,
+                        scope.runId(),
+                        scope.execution().taskId(),
+                        scope.execution().attemptId(),
+                        scope.execution().leaseOwner(),
+                        file.fileId(),
+                        file.versionId());
+    }
+
+    @Test
+    void onDemandHistoricalVersionIsPinnedAndRestoredAfterServiceRebuild() throws Exception {
+        var historical = write("outputs/historical.txt", "old");
+        var scope = activeScope();
+        loadInputs(scope);
+        var retrieved = retrieve(scope, historical);
+        assertThat(retrieved.path()).startsWith("inputs/retrieved/");
+        assertThat(inputRepository.additions(scope.manifest().scope(), 10)).hasSize(1);
+        write("outputs/historical.txt", "new");
+        assertThat(objectGcRepository.claimPrunableVersion(historical.versionId())).isZero();
+        var restored = loadInputs(scope);
+        assertThat(restored.workspace().workspaceVersion())
+                .isEqualTo(retrieved.plan().workspace().workspaceVersion());
+        assertThat(
+                        new String(
+                                restored.workspace().files().get(0).content(),
+                                StandardCharsets.UTF_8))
+                .isEqualTo("old");
+    }
+
+    @Test
+    void onDemandRepeatedConcurrentRetrievalAppendsOneVersion() throws Exception {
+        var file = write("outputs/history.txt", "old");
+        var scope = activeScope();
+        loadInputs(scope);
+        var a = executor.submit(() -> retrieve(scope, file));
+        var b = executor.submit(() -> retrieve(scope, file));
+        assertThat(a.get(10, TimeUnit.SECONDS).path())
+                .isEqualTo(b.get(10, TimeUnit.SECONDS).path());
+        assertThat(inputRepository.additions(scope.manifest().scope(), 10)).hasSize(1);
+    }
+
+    @Test
+    void onDemandBudgetAndFileVersionOwnershipRejectBeforeObjectRead() throws Exception {
+        var attached = write("inputs/attached.txt", "one");
+        var history = write("outputs/history.txt", "two");
+        var scope = activeScope();
+        bindInput(scope, attached);
+        loadInputs(scope);
+        properties.getSandbox().setTransferMaxFiles(1);
+        objects.lastReadKey = null;
+        assertThatThrownBy(() -> retrieve(scope, history)).hasMessage("WORKSPACE_INPUT_LIMIT");
+        assertThat(objects.lastReadKey).isNull();
+        properties.getSandbox().setTransferMaxFiles(5000);
+        assertThatThrownBy(
+                        () ->
+                                inputService()
+                                        .retrieve(
+                                                tenant,
+                                                scope.runId(),
+                                                scope.execution().taskId(),
+                                                scope.execution().attemptId(),
+                                                scope.execution().leaseOwner(),
+                                                attached.fileId(),
+                                                history.versionId()))
+                .isInstanceOf(
+                        io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException
+                                .class);
+        assertThat(objects.lastReadKey).isNull();
+        assertThat(inputRepository.additions(scope.manifest().scope(), 10)).isEmpty();
+    }
+
+    @Test
+    void onDemandCorruptOrRevokedObjectCannotAppendAWorkingCopy() throws Exception {
+        var history = write("outputs/history.txt", "old");
+        var scope = activeScope();
+        loadInputs(scope);
+        objects.data.put(history.objectKey(), bytes("bad"));
+        assertThatThrownBy(() -> retrieve(scope, history)).hasMessage("WORKSPACE_INPUT_INTEGRITY");
+        assertThat(inputRepository.additions(scope.manifest().scope(), 10)).isEmpty();
+        objects.data.put(history.objectKey(), bytes("old"));
+        objects.afterGet = () -> db().advanceSessionGeneration(session);
+        assertThatThrownBy(() -> retrieve(scope, history))
+                .isInstanceOf(
+                        io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException
+                                .class);
+        assertThat(inputRepository.additions(scope.manifest().scope(), 10)).isEmpty();
+    }
+
+    @Test
+    void onDemandFileRemovalFencesSandboxCommandsAfterHydration() throws Exception {
+        var history = write("outputs/history.txt", "old");
+        var scope = activeScope();
+        loadInputs(scope);
+        var retrieved = retrieve(scope, history);
+        var ctx = systemContext(scope);
+        ctx.put(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class, retrieved.plan());
+        var sandbox = mock(io.agentscope.harness.agent.sandbox.Sandbox.class);
+        ctx.put(io.agentscope.harness.agent.sandbox.Sandbox.class, sandbox);
+        var fs = new io.agentscope.harness.agent.filesystem.sandbox.SandboxBackedFilesystem();
+        var service = inputService();
+        fs.configureWorkspaceAccessGuard(service::requirePlanCurrent);
+        service.requirePlanCurrent(ctx);
+        catalog.markDeleted(tenant, history.logicalPath());
+        assertThatThrownBy(() -> fs.execute(ctx, "cat inputs/retrieved/*", 10))
+                .hasMessage("WORKSPACE_INPUT_BINDING_INVALID");
+        verifyNoInteractions(sandbox);
+    }
+
+    @Test
+    void onDemandToolsSearchMetadataAndMaterializeOnlyOneVersion() throws Exception {
+        var history = write("outputs/history.txt", "old");
+        var scope = activeScope();
+        var original = loadInputs(scope);
+        var ctx = systemContext(scope);
+        ctx.put(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class, original);
+        var sandbox = mock(io.agentscope.harness.agent.sandbox.Sandbox.class);
+        var state = new io.agentscope.harness.agent.sandbox.SandboxState() {};
+        state.setSessionId("tool-test");
+        when(sandbox.getState()).thenReturn(state);
+        when(sandbox.isRunning()).thenReturn(true);
+        ctx.put(io.agentscope.harness.agent.sandbox.Sandbox.class, sandbox);
+        var writes = new java.util.ArrayList<String>();
+        doAnswer(
+                        call -> {
+                            try (var tar =
+                                    new org.apache.commons.compress.archivers.tar
+                                            .TarArchiveInputStream(
+                                            call.getArgument(0, java.io.InputStream.class))) {
+                                var entry = tar.getNextTarEntry();
+                                writes.add(entry.getName());
+                                assertThat(tar.readAllBytes()).isEqualTo(bytes("old"));
+                                assertThat(tar.getNextTarEntry()).isNull();
+                            }
+                            return null;
+                        })
+                .when(sandbox)
+                .hydrateWorkspace(any(java.io.InputStream.class));
+        var tools =
+                new WorkspaceFilesTool(
+                        inputService(),
+                        io.agentscope.harness.agent.sandbox.WorkspaceTransferResources.DEFAULT,
+                        mapper);
+        objects.lastReadKey = null;
+        var search = mapper.readTree(tools.search(ctx, "history", null, 25));
+        assertThat(search.get("files").size()).isEqualTo(1);
+        assertThat(objects.lastReadKey).isNull();
+        var result =
+                mapper.readTree(
+                        tools.fetch(
+                                ctx, history.fileId().toString(), history.versionId().toString()));
+        tools.fetch(ctx, history.fileId().toString(), history.versionId().toString());
+        assertThat(writes).containsExactly(result.get("path").asText());
+        assertThat(inputRepository.additions(scope.manifest().scope(), 10)).hasSize(1);
+        assertThat(
+                        ctx.get(
+                                        io.agentscope.harness.agent.sandbox.WorkspaceInputPlan
+                                                .Materialized.class)
+                                .version())
+                .isEqualTo(result.get("workspaceVersion").asText());
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "RUN_POSTGRES_USAGE_TEST", matches = "true")
+    void postgresSystemAndRetrievedWorksetsHaveForcedRlsAndImmutablePrivileges() throws Exception {
+        var historical = write("outputs/history.txt", "old");
+        var scope = activeScope();
+        loadInputs(scope);
+        retrieve(scope, historical);
+        systemService()
+                .prepare(
+                        systemContext(scope),
+                        systemSource(Map.of("/MEMORY.md", "keep")),
+                        io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy.DEFAULT);
+        TenantContextHolder.setOrgId(UUID.randomUUID().toString());
+        try {
+            assertThat(systemRepository.find(scope.manifest().scope())).isEmpty();
+            assertThat(systemRepository.entries(scope.manifest().scope(), 10)).isEmpty();
+            assertThat(inputRepository.additions(scope.manifest().scope(), 10)).isEmpty();
+        } finally {
+            TenantContextHolder.setOrgId(org.toString());
+        }
+        assertThatThrownBy(() -> db().rewriteSystemManifest(scope.runId()))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThatThrownBy(() -> db().removeSystemEntries(scope.runId()))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThatThrownBy(() -> db().removeInputAdditions(scope.execution().taskId()))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThat(inputRepository.additions(scope.manifest().scope(), 10)).hasSize(1);
+    }
+
+    @Test
+    void systemSnapshotObjectSourceBindsTenantWhenReadOnAnotherThread() throws Exception {
+        var scope = activeScope();
+        var service =
+                new WorkspaceSystemService(
+                        systemRepository,
+                        manifestRepository,
+                        publications,
+                        orgs,
+                        configuredObjectStores,
+                        properties,
+                        io.agentscope.harness.agent.sandbox.WorkspaceTransferResources.DEFAULT,
+                        manager);
+        var plan =
+                service.prepare(
+                        systemContext(scope),
+                        systemSource(Map.of("MEMORY.md", "keep")),
+                        io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy.DEFAULT);
+        var result =
+                executor.submit(
+                        () -> {
+                            assertThat(TenantContextHolder.getOrgId()).isNull();
+                            byte[] content = plan.files().get(0).content();
+                            assertThat(TenantContextHolder.getOrgId()).isNull();
+                            return content;
+                        });
+        assertThat(result.get(10, TimeUnit.SECONDS)).isEqualTo(bytes("keep"));
+    }
+
+    @Test
+    void systemSnapshotSessionCleanupUnpinsPrivateObjectsForGc() throws Exception {
+        var scope = activeScope();
+        systemService()
+                .prepare(
+                        systemContext(scope),
+                        systemSource(Map.of("MEMORY.md", "keep")),
+                        io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy.DEFAULT);
+        var entry = systemRepository.entries(scope.manifest().scope(), 10).get(0);
+        chats.deleteSession(session);
+        assertThat(systemRepository.find(scope.manifest().scope())).isEmpty();
+        assertThat(publications.references(entry.publicationId())).isZero();
+        gc.collectOnce(OffsetDateTime.now().plusDays(2));
+        assertThat(objects.data).doesNotContainKey(entry.objectKey());
     }
 
     private record Scope(UUID runId, Execution execution, SessionFence fence, Manifest manifest) {}

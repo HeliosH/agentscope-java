@@ -46,6 +46,11 @@ public class MyBatisSandboxLeaseRepository implements SandboxLeaseRepository {
     }
 
     @Override
+    public Optional<SandboxLease> findParentCheckpoint(UUID attemptId, UUID orgId) {
+        return one(mapper.findParentCheckpoint(attemptId, orgId));
+    }
+
+    @Override
     public int activate(
             UUID leaseId,
             UUID orgId,

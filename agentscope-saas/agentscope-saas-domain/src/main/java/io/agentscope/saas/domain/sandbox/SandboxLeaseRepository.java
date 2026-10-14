@@ -21,6 +21,8 @@ public interface SandboxLeaseRepository {
 
     Optional<SandboxLease> findLatestCheckpointBeforeAttempt(UUID attemptId, UUID orgId);
 
+    Optional<SandboxLease> findParentCheckpoint(UUID attemptId, UUID orgId);
+
     int activate(
             UUID leaseId,
             UUID orgId,

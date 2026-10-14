@@ -32,6 +32,16 @@ import java.util.Optional;
  */
 public interface SkillResources {
 
+    /** Exact source document when backed by a frozen, verified skill revision. */
+    default Optional<String> document() {
+        return Optional.empty();
+    }
+
+    /** Non-secret immutable resource manifest identity, or null for unversioned accessors. */
+    default String version() {
+        return null;
+    }
+
     /**
      * Reads a text resource as UTF-8.
      *

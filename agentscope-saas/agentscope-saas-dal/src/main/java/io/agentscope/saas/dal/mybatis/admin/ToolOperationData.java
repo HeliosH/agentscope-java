@@ -32,4 +32,8 @@ public record ToolOperationData(
         OffsetDateTime startedAt,
         OffsetDateTime completedAt,
         OffsetDateTime updatedAt,
-        long version) {}
+        long version,
+        String toolContractHash,
+        String toolContractJson,
+        boolean toolContractRecoverable,
+        String logicalOriginId) {}

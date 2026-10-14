@@ -819,6 +819,57 @@ class SandboxBackedFilesystemTest {
     }
 
     @Test
+    void childrenPublishDistinctOutputPathsAndPreserveInheritedFilesInTheirCheckpoint()
+            throws Exception {
+        var remote = new RemoteFilesystem(new InMemoryStore(), NS);
+        var fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        String first = java.util.UUID.randomUUID().toString();
+        String second = java.util.UUID.randomUUID().toString();
+        for (String task : List.of(first, second)) {
+            var ctx =
+                    contextWithSandbox(
+                            new FakeSandbox(
+                                    tarArchive(
+                                            Map.of(
+                                                    "outputs/report.txt",
+                                                    task,
+                                                    "outputs/parent.txt",
+                                                    "parent"))));
+            ctx.put(
+                    io.agentscope.harness.agent.sandbox.WorkspaceTaskScope.class,
+                    new io.agentscope.harness.agent.sandbox.WorkspaceTaskScope(task));
+            ctx.put(
+                    io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan.class,
+                    new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan(
+                            "checkpoint://parent",
+                            "v1",
+                            List.of(
+                                    new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan
+                                            .WorkspaceFile(
+                                            "outputs/parent.txt",
+                                            "parent".getBytes(StandardCharsets.UTF_8)))));
+            assertEquals(2, fs.projectSandboxWorkspaceWithReport(ctx).projectedFiles());
+            assertEquals(
+                    "parent",
+                    remote.read(RC, "/outputs/tasks/" + task + "/parent.txt", 0, 0)
+                            .fileData()
+                            .content());
+        }
+        assertEquals(
+                first,
+                remote.read(RC, "/outputs/tasks/" + first + "/report.txt", 0, 0)
+                        .fileData()
+                        .content());
+        assertEquals(
+                second,
+                remote.read(RC, "/outputs/tasks/" + second + "/report.txt", 0, 0)
+                        .fileData()
+                        .content());
+        assertEquals(4, remote.glob(RC, "**", "/outputs").matches().size());
+    }
+
+    @Test
     void systemHydrationNeverSearchesUserBodiesAndSharesInputBudget() throws Exception {
         var store =
                 new InMemoryStore() {
@@ -896,6 +947,65 @@ class SandboxBackedFilesystemTest {
         assertEquals(0, report.projectedFiles());
         assertThrows(IllegalStateException.class, report::verifyComplete);
         assertFalse(remote.exists(RC, "/outputs/result.txt"));
+    }
+
+    @Test
+    void frozenSystemCopiesDoNotOverwriteNewerEmployeeMemoryOrSkills() throws Exception {
+        var remote = new RemoteFilesystem(new InMemoryStore(), NS);
+        remote.uploadFiles(
+                RC,
+                List.of(
+                        Map.entry("/MEMORY.md", "new memory".getBytes(StandardCharsets.UTF_8)),
+                        Map.entry(
+                                "/skills/a/SKILL.md",
+                                "new skill".getBytes(StandardCharsets.UTF_8))));
+        var fs = new SandboxBackedFilesystem();
+        fs.configureRemoteFallback(remote);
+        var context =
+                contextWithSandbox(
+                        new FakeSandbox(
+                                tarArchive(
+                                        Map.of(
+                                                "MEMORY.md",
+                                                "old memory",
+                                                "skills/a/SKILL.md",
+                                                "old skill"))));
+        var snapshot =
+                new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan(
+                        "system://fixture",
+                        "system-version",
+                        List.of(
+                                new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan
+                                        .WorkspaceFile(
+                                        "MEMORY.md", "old memory".getBytes(StandardCharsets.UTF_8)),
+                                new io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan
+                                        .WorkspaceFile(
+                                        "skills/a/SKILL.md",
+                                        "old skill".getBytes(StandardCharsets.UTF_8))));
+        context.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore.Plan.class,
+                new io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore.Plan(
+                        snapshot));
+        assertEquals(0, fs.projectSandboxWorkspaceWithReport(context).projectedFiles());
+        assertEquals("new memory", remote.read(RC, "/MEMORY.md", 0, 0).fileData().content());
+        assertEquals("new skill", remote.read(RC, "/skills/a/SKILL.md", 0, 0).fileData().content());
+    }
+
+    @Test
+    void systemInventoryIncludesRelativeUiKeysAndRejectsAmbiguousAliases() {
+        var remote = new RemoteFilesystem(new InMemoryStore(), NS);
+        remote.uploadFiles(
+                RC,
+                List.of(
+                        Map.entry("MEMORY.md", "personal".getBytes(StandardCharsets.UTF_8)),
+                        Map.entry("skills/a/SKILL.md", "skill".getBytes(StandardCharsets.UTF_8))));
+        assertEquals(List.of("MEMORY.md", "skills/a/SKILL.md"), remote.systemFilePaths(RC, 10));
+        assertEquals("MEMORY.md", remote.systemSnapshotFile(RC, "MEMORY.md", 100).path());
+        assertThrows(
+                IllegalStateException.class, () -> remote.systemSnapshotFile(RC, "MEMORY.md", 2));
+        remote.uploadFiles(
+                RC, List.of(Map.entry("/MEMORY.md", "other".getBytes(StandardCharsets.UTF_8))));
+        assertThrows(IllegalStateException.class, () -> remote.systemFilePaths(RC, 10));
     }
 
     /** A minimal Sandbox that reports success for any exec (so uploadFiles proceeds). */

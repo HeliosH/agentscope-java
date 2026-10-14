@@ -41,6 +41,11 @@ public interface TaskRepository {
      */
     BackgroundTask getTask(RuntimeContext rc, String sessionId, String taskId);
 
+    /** A task queued behind the caller cannot be completed by blocking this same call. */
+    default String pendingReason(RuntimeContext rc, String sessionId, String taskId) {
+        return null;
+    }
+
     /**
      * Submit a new background task according to {@link TaskRunSpec}.
      *

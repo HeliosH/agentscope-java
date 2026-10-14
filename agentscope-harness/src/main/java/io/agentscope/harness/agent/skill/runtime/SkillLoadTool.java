@@ -73,6 +73,14 @@ public final class SkillLoadTool implements AgentTool {
     }
 
     @Override
+    public String getContractVersion() {
+        String implementation = AgentTool.super.getContractVersion();
+        if (implementation == null) return null;
+        return io.agentscope.core.tool.StepSnapshot.fingerprint(
+                Map.of("implementation", implementation, "catalog", catalogRef.get().version()));
+    }
+
+    @Override
     public String getDescription() {
         return "Load and return a skill resource by its skill id and a path relative to the"
                 + " skill root.\n\n"
@@ -111,33 +119,33 @@ public final class SkillLoadTool implements AgentTool {
 
     @Override
     public Mono<ToolResultBlock> callAsync(ToolCallParam param) {
+        SkillCatalog catalog = catalogRef.get();
+        return Mono.fromCallable(() -> load(param, catalog))
+                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
+    }
+
+    private ToolResultBlock load(ToolCallParam param, SkillCatalog catalog) {
         try {
             Map<String, Object> input = param.getInput();
             String skillId = stringOrNull(input.get("skillId"));
             String path = stringOrNull(input.get("path"));
             if (skillId == null || skillId.isEmpty()) {
-                return Mono.just(
-                        ToolResultBlock.error("Missing or empty required parameter: skillId"));
+                return ToolResultBlock.error("Missing or empty required parameter: skillId");
             }
             if (path == null || path.isEmpty()) {
-                return Mono.just(
-                        ToolResultBlock.error("Missing or empty required parameter: path"));
+                return ToolResultBlock.error("Missing or empty required parameter: path");
             }
 
-            SkillCatalog catalog = catalogRef.get();
             HarnessSkillEntry entry = catalog == null ? null : catalog.get(skillId);
             if (entry == null) {
-                return Mono.just(
-                        ToolResultBlock.error(
-                                "Skill not found: '"
-                                        + skillId
-                                        + "'. Check the available skills list."));
+                return ToolResultBlock.error(
+                        "Skill not found: '" + skillId + "'. Check the available skills list.");
             }
 
-            return Mono.just(loadOne(entry, path));
+            return loadOne(entry, path);
         } catch (Exception e) {
             log.error("load_skill_through_path failed", e);
-            return Mono.just(ToolResultBlock.error(e.getMessage()));
+            return ToolResultBlock.error(e.getMessage());
         }
     }
 
@@ -193,7 +201,12 @@ public final class SkillLoadTool implements AgentTool {
         // (the previous behaviour) drove patch failures whenever the LLM tried to old_string
         // anything near the frontmatter boundary, since the parser eats that whitespace.
         String fullMarkdown =
-                MarkdownSkillParser.generate(skill.getMetadata(), skill.getSkillContent());
+                entry.lazyResources() == null
+                        ? null
+                        : entry.lazyResources().document().orElse(null);
+        if (fullMarkdown == null)
+            fullMarkdown =
+                    MarkdownSkillParser.generate(skill.getMetadata(), skill.getSkillContent());
         sb.append("\nContent (").append("SKILL.md").append("):\n");
         sb.append(CONTENT_FENCE).append("markdown\n");
         sb.append(fullMarkdown);

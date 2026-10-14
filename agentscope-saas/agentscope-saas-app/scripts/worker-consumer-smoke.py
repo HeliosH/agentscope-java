@@ -50,8 +50,8 @@ class ModelFixture(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         broken = mode == "always" or count == 1
-        if not broken and config.get("input_check"):
-            check = config["input_check"]
+        checks = ([config["input_check"]] if config.get("input_check") else []) + config.get("system_checks", [])
+        for check in checks if not broken else []:
             sandbox = str(uuid.UUID(h.pg(
                 f"SELECT provider_sandbox_id FROM sandbox_leases WHERE run_id = '{check['run']}' "
                 "AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1")))
@@ -68,7 +68,10 @@ class ModelFixture(http.server.BaseHTTPRequestHandler):
                     assert size <= check["size"], "Worker sandbox input exceeded pinned length"
                     digest.update(block)
             assert size == check["size"] and digest.hexdigest() == check["sha256"], "Worker sandbox input differs from pinned bytes"
-            config["input_verified"] = True
+            if check.get("system"):
+                config["system_verified"] = config.get("system_verified", 0) + 1
+            else:
+                config["input_verified"] = True
         chunk = {"id": "fixture-" + marker, "object": "chat.completion.chunk", "model": "local-recovery-fixture",
                  "choices": [{"index": 0, "delta": {"role": "assistant", "content": "partial" if broken else "Recovered " + marker},
                               "finish_reason": None if broken else "stop"}]}
@@ -135,6 +138,7 @@ def main():
         if use_sandbox:
             assert int(h.pg(f"SELECT count(*) FROM task_input_manifests WHERE run_id = '{absent}' "
                             "AND file_count = 0 AND total_bytes = 0")) == 1, "Missing explicit empty workset"
+            assert int(h.pg(f"SELECT count(*) FROM run_system_manifests WHERE run_id = '{absent}'")) == 1, "Missing frozen system workset"
         assert not any(e.get("name") == "run_recovery_scheduled" for e in events)
         count = int(h.pg(f"SELECT count(*) FROM model_invocations WHERE run_id = '{absent}' AND purpose = 'REASONING'"))
         assert count == 3, ("Expected model recovery, not an infrastructure failure", count,
@@ -148,6 +152,12 @@ def main():
             worker.overrides.update({"SAAS_FILE_STORE_MAX_FILE_BYTES": "1048576",
                                      "SAAS_MODEL_STREAM_RECOVERY_MAX_ATTEMPTS": "1",
                                      "SAAS_MODEL_STREAM_RECOVERY_ENABLED": "false"})
+        system_values = {"MEMORY.md": "frozen-memory-" + suffix,
+                         "skills/frozen-check/SKILL.md": "---\nname: frozen-check\ndescription: Immutable local system fixture\n---\nfrozen-skill-" + suffix}
+        if use_sandbox:
+            for path, content in system_values.items():
+                h.api(f"/api/agents/{agent}/workspace/file?" + urllib.parse.urlencode({"path": path}), token,
+                      {"content": content}, method="PUT")
         marker, queued, events = start("once")
         scheduled = next(e for e in events if e.get("name") == "run_recovery_scheduled")
         assert scheduled["value"]["state"] == "WAITING_FOR_WORKER"
@@ -155,6 +165,15 @@ def main():
         assert state["state"] == "WAITING_FOR_WORKER" and state["recoveryCount"] == 1
         assert h.api(f"/api/agents/{agent}/runs/{queued}", token)["status"] == "RUNNING"
         assert ModelFixture.calls[marker]["count"] == 1
+        if use_sandbox:
+            frozen_system = h.pg(f"SELECT version || ':' || file_count || ':' || total_bytes FROM run_system_manifests WHERE run_id = '{queued}'")
+            assert len(frozen_system.splitlines()) == 1 and frozen_system.split(":")[1] == "2", frozen_system
+            ModelFixture.calls[marker]["system_checks"] = [
+                {"run": queued, "path": path, "size": len(content.encode()), "sha256": hashlib.sha256(content.encode()).hexdigest(), "system": True}
+                for path, content in system_values.items()]
+            for path in system_values:
+                h.api(f"/api/agents/{agent}/workspace/file?" + urllib.parse.urlencode({"path": path}), token,
+                      {"content": "changed-after-acceptance-" + suffix}, method="PUT")
         print("  OK  registered but stopped worker leaves a durable queue with truthful waiting state", flush=True)
 
         other = h.api("/api/auth/register", payload={"email": f"consumer-other-{suffix}@e2e.test", "password": "test-" + suffix})["token"]
@@ -171,6 +190,12 @@ def main():
         status, history = h.request(f"/api/agents/{agent}/sessions/{session}/turns/window", token)
         assert status == 200 and ("Recovered " + marker).encode() in history
         assert ModelFixture.calls[marker]["count"] == 2
+        if use_sandbox:
+            assert ModelFixture.calls[marker].get("system_verified") == 2, "Worker did not read original memory and skill bytes"
+            assert h.pg(f"SELECT version || ':' || file_count || ':' || total_bytes FROM run_system_manifests WHERE run_id = '{queued}'") == frozen_system
+            for path in system_values:
+                status, content = h.request(f"/api/agents/{agent}/workspace/file/download?" + urllib.parse.urlencode({"path": path}), token)
+                assert status == 200 and content == ("changed-after-acceptance-" + suffix).encode(), "Frozen system copy overwrote a newer employee projection"
         print("  OK  independent worker resumes original task and final reply is available through web history", flush=True)
 
         marker, exhausted, events = start("always")
@@ -294,6 +319,7 @@ def main():
             assert h.request(f"/api/agents/{agent}", token, method="DELETE")[0] in (200, 204, 404)
             if use_sandbox:
                 assert int(h.pg(f"SELECT count(*) FROM task_input_manifests WHERE agent_id = '{agent}'")) == 0
+                assert int(h.pg(f"SELECT count(*) FROM run_system_manifests WHERE agent_id = '{agent}'")) == 0
         web.stop()
         server.shutdown()
         server.server_close()

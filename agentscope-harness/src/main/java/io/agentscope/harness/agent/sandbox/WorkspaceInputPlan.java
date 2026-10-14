@@ -5,7 +5,11 @@
 package io.agentscope.harness.agent.sandbox;
 
 /** Trusted, bounded working copies of explicitly bound file versions. Not a retry checkpoint. */
-public record WorkspaceInputPlan(WorkspaceRestorePlan workspace) {
+public record WorkspaceInputPlan(WorkspaceRestorePlan workspace, WorkspaceTaskScope taskScope) {
+    public WorkspaceInputPlan(WorkspaceRestorePlan workspace) {
+        this(workspace, null);
+    }
+
     /** Copied with the parent context so borrowed agents cannot silently change input bindings. */
     public record Materialized(String environmentId, String version) {}
 

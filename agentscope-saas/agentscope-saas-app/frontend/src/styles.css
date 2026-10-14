@@ -2697,3 +2697,13 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+.operation-pagination { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding: 12px; }
+.operation-dialog-body { display: grid; align-content: start; gap: 18px; overflow-y: auto; padding: 18px; }
+.operation-facts { display: grid; gap: 8px; font-size: 12px; }
+.operation-facts code, .operation-evidence-entry code { overflow-wrap: anywhere; font-size: 11px; }
+.operation-evidence-form { display: grid; gap: 14px; padding: 0; margin: 0; border: 0; min-width: 0; }
+.operation-evidence-history h3 { margin: 0 0 8px; font-size: 14px; }
+.operation-evidence-entry { display: grid; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.operation-evidence-entry span { color: var(--text-muted); }
+.operation-evidence-entry p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }

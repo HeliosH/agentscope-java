@@ -40,7 +40,11 @@ public class MyBatisToolOperationRepository implements ToolOperationRepository {
                 operation.inputHash(),
                 operation.inputJson(),
                 operation.retrySafety(),
-                operation.preparedAt());
+                operation.preparedAt(),
+                operation.toolContractHash(),
+                operation.toolContractJson(),
+                operation.toolContractRecoverable(),
+                operation.logicalOriginId());
     }
 
     @Override
@@ -48,6 +52,20 @@ public class MyBatisToolOperationRepository implements ToolOperationRepository {
         return mapper.lock(orgId, runId, operationKey).stream()
                 .findFirst()
                 .map(MyBatisToolOperationRepository::toDomain);
+    }
+
+    @Override
+    public Optional<ToolOperation> lockCallerOperation(
+            UUID orgId, UUID runId, UUID caller, String origin, String call) {
+        return mapper.lockCaller(orgId, runId, caller, origin, call).stream()
+                .findFirst()
+                .map(MyBatisToolOperationRepository::toDomain);
+    }
+
+    @Override
+    public boolean lockExecutionRun(UUID orgId, UUID runId, OffsetDateTime now) {
+        return mapper.lockSession(orgId, runId).size() == 1
+                && mapper.lockExecutionRun(orgId, runId, now).size() == 1;
     }
 
     @Override
@@ -91,6 +109,11 @@ public class MyBatisToolOperationRepository implements ToolOperationRepository {
     public boolean markRunning(
             UUID id, UUID orgId, UUID invocationId, String leaseOwner, OffsetDateTime now) {
         return mapper.markRunning(id, orgId, invocationId, leaseOwner, now) == 1;
+    }
+
+    @Override
+    public boolean blockUndispatchedReplay(UUID id, UUID orgId, long version, OffsetDateTime now) {
+        return mapper.blockUndispatchedReplay(id, orgId, version, now) == 1;
     }
 
     @Override
@@ -163,6 +186,10 @@ public class MyBatisToolOperationRepository implements ToolOperationRepository {
                 row.startedAt(),
                 row.completedAt(),
                 row.updatedAt(),
-                row.version());
+                row.version(),
+                row.toolContractHash(),
+                row.toolContractJson(),
+                row.toolContractRecoverable(),
+                row.logicalOriginId());
     }
 }

@@ -79,6 +79,22 @@ public interface SandboxLeaseMapper {
     List<SandboxLeaseData> findLatestCheckpointBeforeAttempt(
             @Param("attemptId") UUID attemptId, @Param("orgId") UUID orgId);
 
+    @Select(
+            """
+            SELECT sl.* FROM run_attempts current_attempt
+              JOIN task_nodes current_task ON current_task.id = current_attempt.task_id AND current_task.org_id = current_attempt.org_id AND current_task.run_id = current_attempt.run_id AND current_task.task_type = 'subagent'
+              JOIN agent_runs child ON child.id = current_attempt.agent_run_id AND child.org_id = current_attempt.org_id AND child.run_id = current_attempt.run_id
+              JOIN agent_runs parent ON parent.id = child.parent_agent_run_id AND parent.org_id = child.org_id AND parent.run_id = child.run_id
+              JOIN task_nodes t ON t.id = parent.task_id AND t.org_id = parent.org_id AND t.run_id = parent.run_id AND t.status = 'SUCCEEDED'
+              JOIN sandbox_leases sl ON sl.task_id = t.id AND sl.org_id = t.org_id AND sl.run_id = t.run_id
+              JOIN run_attempts source_attempt ON source_attempt.id = sl.attempt_id AND source_attempt.org_id = sl.org_id AND source_attempt.task_id = sl.task_id
+             WHERE current_attempt.id = #{attemptId} AND current_attempt.org_id = #{orgId}
+               AND sl.workspace_snapshot_uri IS NOT NULL AND sl.workspace_version IS NOT NULL
+             ORDER BY source_attempt.attempt_no DESC, sl.created_at DESC, sl.id DESC LIMIT 1
+            """)
+    List<SandboxLeaseData> findParentCheckpoint(
+            @Param("attemptId") UUID attemptId, @Param("orgId") UUID orgId);
+
     @Update(
             """
             UPDATE sandbox_leases

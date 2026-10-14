@@ -71,6 +71,11 @@ public interface Sandbox extends AutoCloseable {
         return false;
     }
 
+    /** Select a private execution directory inside an existing persistent mount, before start. */
+    default void scopePersistentWorkspace(String scopeKey) {
+        throw new IllegalStateException("Persistent provider does not support scoped workspaces");
+    }
+
     /**
      * Runs a shell command in the sandbox workspace.
      *

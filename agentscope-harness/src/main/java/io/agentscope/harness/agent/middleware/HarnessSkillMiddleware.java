@@ -22,8 +22,10 @@ import io.agentscope.core.skill.AgentSkill;
 import io.agentscope.core.skill.SkillFilter;
 import io.agentscope.core.skill.repository.AgentSkillRepository;
 import io.agentscope.core.tool.Toolkit;
+import io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore;
 import io.agentscope.harness.agent.skill.LazyResourceCapable;
 import io.agentscope.harness.agent.skill.SkillResources;
+import io.agentscope.harness.agent.skill.WorkspaceSkillRepository;
 import io.agentscope.harness.agent.skill.curator.SkillVisibilityFilter;
 import io.agentscope.harness.agent.skill.runtime.HarnessSkillEntry;
 import io.agentscope.harness.agent.skill.runtime.MarketplaceStager;
@@ -147,34 +149,51 @@ public class HarnessSkillMiddleware implements MiddlewareBase {
 
     @Override
     public Mono<String> onSystemPrompt(Agent agent, RuntimeContext ctx, String currentPrompt) {
+        RuntimeContext effective = ctx != null ? ctx : RuntimeContext.empty();
+        if (effective.get(WorkspaceSystemSnapshotStore.Plan.class) != null) {
+            return Mono.fromCallable(() -> buildPrompt(agent, effective, currentPrompt))
+                    .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
+        }
+        return Mono.fromCallable(() -> buildPrompt(agent, effective, currentPrompt));
+    }
+
+    private String buildPrompt(Agent agent, RuntimeContext ctx, String currentPrompt) {
         if (ctx == null) {
             ctx = RuntimeContext.empty();
         }
 
         Toolkit agentToolkit = agent != null ? agent.getToolkit() : null;
 
+        // A failed immutable read or authorization recheck must not leave a previous catalog
+        // usable.
+        runtime.install(SkillCatalog.empty(), agentToolkit);
+
         Map<String, RepoBound> merged = mergeRepositories(ctx);
         if (merged.isEmpty()) {
             runtime.install(SkillCatalog.empty(), agentToolkit);
-            return Mono.just(currentPrompt);
+            return currentPrompt;
         }
 
         List<RepoBound> visible = applyVisibility(merged.values(), ctx);
         if (visible.isEmpty()) {
             runtime.install(SkillCatalog.empty(), agentToolkit);
-            return Mono.just(currentPrompt);
+            return currentPrompt;
         }
 
         Map<String, StageResult> staged =
                 stager != null ? stager.stage(visible, sourceNamespaces) : Map.of();
 
         List<HarnessSkillEntry> entries = new ArrayList<>(visible.size());
+        SkillFilter effective = builderFilter.overlay(ctx.get(SkillFilter.class));
         for (RepoBound bound : visible) {
+            if (!effective.isAllowed(bound.skill().getSkillId())) continue;
             SkillResources lazy = null;
             if (bound.repo() instanceof LazyResourceCapable lrc) {
                 try {
                     lazy = lrc.resourcesFor(bound.skill().getName(), ctx);
                 } catch (Exception e) {
+                    if (ctx.get(WorkspaceSystemSnapshotStore.Plan.class) != null
+                            && bound.repo() instanceof WorkspaceSkillRepository) throw e;
                     log.debug(
                             "resourcesFor({}) failed; continuing without lazy: {}",
                             bound.skill().getName(),
@@ -183,21 +202,26 @@ public class HarnessSkillMiddleware implements MiddlewareBase {
             }
             StageResult stage = staged.getOrDefault(bound.skill().getName(), StageResult.NONE);
             String filesRoot = shellPathPolicy.resolve(bound.skill().getName(), stage);
+            var sandbox = ctx.get(io.agentscope.harness.agent.sandbox.Sandbox.class);
+            if (shellPathPolicy.mode() == ShellPathPolicy.Mode.SANDBOX
+                    && sandbox != null
+                    && sandbox.getState().getWorkspaceScopeKey() != null)
+                filesRoot =
+                        ShellPathPolicy.sandbox(sandbox.getState().getWorkspaceSpec().getRoot())
+                                .resolve(bound.skill().getName(), stage);
             entries.add(new HarnessSkillEntry(bound.skill(), lazy, filesRoot));
         }
 
         SkillCatalog catalog = SkillCatalog.of(entries);
         runtime.install(catalog, agentToolkit);
 
-        SkillFilter effective =
-                builderFilter.overlay(ctx != null ? ctx.get(SkillFilter.class) : null);
         String append = runtime.renderPrompt(catalog, effective);
         if (append == null || append.isEmpty()) {
-            return Mono.just(currentPrompt);
+            return currentPrompt;
         }
         String base = currentPrompt != null ? currentPrompt : "";
         String separator = base.isEmpty() || base.endsWith("\n") ? "" : "\n";
-        return Mono.just(base + separator + append);
+        return base + separator + append;
     }
 
     // ---------------------------------------------------------------------
@@ -214,8 +238,13 @@ public class HarnessSkillMiddleware implements MiddlewareBase {
         for (AgentSkillRepository repo : repositories) {
             List<AgentSkill> skills;
             try {
-                skills = repo.getAllSkills();
+                skills =
+                        repo instanceof WorkspaceSkillRepository workspace
+                                ? workspace.getAllSkills(ctx)
+                                : repo.getAllSkills();
             } catch (Exception e) {
+                if (ctx.get(WorkspaceSystemSnapshotStore.Plan.class) != null
+                        && repo instanceof WorkspaceSkillRepository) throw e;
                 log.warn(
                         "Skill repository {} failed to load: {}",
                         repo.getClass().getSimpleName(),

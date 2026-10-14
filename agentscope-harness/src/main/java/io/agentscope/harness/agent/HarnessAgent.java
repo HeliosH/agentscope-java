@@ -1985,6 +1985,10 @@ public class HarnessAgent implements Agent, AutoCloseable {
                         sandboxFilesystemSpec.getTransferResources());
                 capturedSandboxFs.configureProjectionSink(
                         sandboxFilesystemSpec.getWorkspaceProjectionSink());
+                capturedSandboxFs.configureSystemSnapshotStore(
+                        sandboxFilesystemSpec.getSystemSnapshotStore());
+                capturedSandboxFs.configureWorkspaceAccessGuard(
+                        sandboxFilesystemSpec.getWorkspaceAccessGuard());
                 // F3-S2: wire the remote projection so out-of-call file IO (MEMORY.md, skills, …)
                 // delegates to the BaseStore instead of throwing "No active sandbox". The
                 // projection

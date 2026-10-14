@@ -47,6 +47,148 @@ import reactor.core.publisher.Mono;
 class HarnessDurableTaskExecutorTest {
 
     @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void rebindsTenantAfterReactiveExecutionBeforeSuccessOrFailurePublication(boolean failed)
+            throws Exception {
+        UUID org = UUID.randomUUID();
+        var agent = mock(HarnessAgent.class);
+        when(agent.call(any(Msg.class), any(RuntimeContext.class)))
+                .thenReturn(
+                        Mono.fromCallable(
+                                () -> {
+                                    TenantContextHolder.clear();
+                                    if (failed) throw new IllegalStateException("agent failure");
+                                    return Msg.builder()
+                                            .role(MsgRole.ASSISTANT)
+                                            .textContent("done")
+                                            .build();
+                                }));
+        var properties = new SaasProperties();
+        properties.getSandbox().setEnabled(true);
+        var restore = mock(WorkspaceCheckpointRestoreService.class);
+        when(restore.prepare(any(), any(), any(), any(), any())).thenReturn(Optional.empty());
+        var artifacts = mock(WorkspaceArtifactService.class);
+        when(artifacts.publish(any(), any(), any(), any(), any(), any()))
+                .thenAnswer(
+                        call -> {
+                            assertThat(TenantContextHolder.getOrgId()).isEqualTo(org.toString());
+                            return null;
+                        });
+        var executor =
+                new HarnessDurableTaskExecutor(
+                        agent,
+                        new ObjectMapper(),
+                        properties,
+                        mock(ChatPersistenceService.class),
+                        mock(RunOrchestrationService.class),
+                        artifacts,
+                        restore,
+                        Optional.empty());
+        var request =
+                new ExecutionRequest(
+                        UUID.randomUUID(),
+                        "worker",
+                        org,
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        "assistant",
+                        null,
+                        "member",
+                        "standard",
+                        2,
+                        100,
+                        "tenant-bound execution",
+                        "{}",
+                        WorkspaceIsolationMode.RUN_ISOLATED);
+        String prior = UUID.randomUUID().toString();
+        TenantContextHolder.setOrgId(prior);
+        if (failed) assertThatThrownBy(() -> executor.execute(request)).hasMessage("agent failure");
+        else executor.execute(request);
+        verify(artifacts).publish(any(), any(), any(), any(), any(), any());
+        assertThat(TenantContextHolder.getOrgId()).isEqualTo(prior);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(
+            value = WorkspaceIsolationMode.class,
+            names = "USER_SHARED_READ_ONLY",
+            mode = org.junit.jupiter.params.provider.EnumSource.Mode.EXCLUDE)
+    void managedPlannedChildUsesTrustedTaskNamespaceAndIsolation(WorkspaceIsolationMode mode)
+            throws Exception {
+        var agent = mock(HarnessAgent.class);
+        when(agent.call(any(Msg.class), any(RuntimeContext.class)))
+                .thenReturn(
+                        Mono.just(
+                                Msg.builder().role(MsgRole.ASSISTANT).textContent("done").build()));
+        var properties = new SaasProperties();
+        properties.getSandbox().setEnabled(true);
+        var restore = mock(WorkspaceCheckpointRestoreService.class);
+        when(restore.prepare(any(), any(), any(), any(), any())).thenReturn(Optional.empty());
+        var inputs = mock(io.agentscope.saas.app.workspace.WorkspaceInputService.class);
+        UUID task = UUID.randomUUID();
+        var taskScope = new io.agentscope.harness.agent.sandbox.WorkspaceTaskScope(task.toString());
+        when(inputs.prepare(any(), any(), any(), any(), any()))
+                .thenReturn(
+                        Optional.of(
+                                new io.agentscope.harness.agent.sandbox.WorkspaceInputPlan(
+                                        new io.agentscope.harness.agent.sandbox
+                                                .WorkspaceRestorePlan(
+                                                "inputs://test", "v1", java.util.List.of()),
+                                        taskScope)));
+        var executor =
+                new HarnessDurableTaskExecutor(
+                        agent,
+                        new ObjectMapper(),
+                        properties,
+                        mock(ChatPersistenceService.class),
+                        mock(RunOrchestrationService.class),
+                        mock(WorkspaceArtifactService.class),
+                        restore,
+                        Optional.empty(),
+                        null,
+                        inputs);
+        UUID attempt = UUID.randomUUID();
+        UUID run = UUID.randomUUID();
+        executor.execute(
+                new ExecutionRequest(
+                        attempt,
+                        "worker",
+                        UUID.randomUUID(),
+                        run,
+                        task,
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        UUID.randomUUID(),
+                        "assistant",
+                        null,
+                        "member",
+                        "standard",
+                        2,
+                        100,
+                        "planned child",
+                        "{\"_runtime\":{\"sandboxIsolationKey\":\"untrusted-shared-key\"}}",
+                        mode));
+        var context = ArgumentCaptor.forClass(RuntimeContext.class);
+        verify(agent).call(any(Msg.class), context.capture());
+        assertThat(
+                        context.getValue()
+                                .get(io.agentscope.harness.agent.sandbox.WorkspaceTaskScope.class))
+                .isEqualTo(taskScope);
+        String expected =
+                switch (mode) {
+                    case ATTEMPT_ISOLATED, DEDICATED_SANDBOX -> "attempt/" + attempt;
+                    default -> "run/" + run;
+                };
+        assertThat(context.getValue().get(SandboxIsolationOverride.class).key())
+                .isEqualTo(expected);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({
         "reply,true",
         "reply,false",

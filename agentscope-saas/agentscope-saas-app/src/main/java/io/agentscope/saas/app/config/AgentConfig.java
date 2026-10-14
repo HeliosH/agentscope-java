@@ -91,6 +91,7 @@ public class AgentConfig {
 
             Workspace file policy:
             - User-uploaded files are stored under inputs/. Read attached files from the exact paths supplied with the request.
+            - Historical files are not automatically copied into a task. Use file_search and file_fetch with an explicit fileId/versionId when a needed file was not attached; read the exact working-copy path returned by file_fetch.
             - Save user-facing deliverables created by a task under outputs/ and mention their paths in the final response.
             - MEMORY.md, memory/, AGENTS.md, skills/, subagents/, tools.json, and .agentscope/ are system-managed. Do not treat them as user attachments or task output, and do not modify them unless the task explicitly requires configuration or memory maintenance.
             """;
@@ -128,7 +129,10 @@ public class AgentConfig {
             ObjectProvider<PgTaskRepository> pgTaskRepositoryProvider,
             LlamaFirewallClient llamaFirewallClient,
             LlamaFirewallToolSecurityPolicy llamaFirewallPolicy,
-            io.agentscope.saas.app.sandbox.PgSandboxUsageGuard sandboxUsageGuard) {
+            io.agentscope.saas.app.sandbox.PgSandboxUsageGuard sandboxUsageGuard,
+            io.agentscope.saas.app.workspace.WorkspaceSystemService systemWorkspace,
+            io.agentscope.saas.app.workspace.WorkspaceInputService workspaceInputs,
+            io.agentscope.harness.agent.sandbox.WorkspaceTransferResources transferResources) {
 
         SaasProperties.Agent agentCfg = properties.getAgent();
         SaasProperties.RateLimit rl = properties.getRateLimit();
@@ -141,6 +145,11 @@ public class AgentConfig {
                 properties.getSandbox().isEnabled());
 
         Toolkit platformToolkit = new Toolkit();
+        if (properties.getSandbox().isEnabled()) {
+            platformToolkit.registerTool(
+                    new io.agentscope.saas.app.workspace.WorkspaceFilesTool(
+                            workspaceInputs, transferResources, objectMapper));
+        }
         if (properties.getOrchestration().isPlannerEnabled()) {
             platformToolkit.registerTool(new PlanPublishTool(executionPlanService, objectMapper));
         }
@@ -239,6 +248,8 @@ public class AgentConfig {
         // does not attempt to exec in an unconfigured environment.
         SandboxFilesystemSpec sandboxSpec = sandboxSpecProvider.getIfAvailable();
         if (properties.getSandbox().isEnabled() && sandboxSpec != null) {
+            sandboxSpec.systemSnapshotStore(systemWorkspace);
+            sandboxSpec.workspaceAccessGuard(workspaceInputs::requirePlanCurrent);
             builder.sandboxUsageGuard(sandboxUsageGuard);
             sandboxSpec.workspaceTransferPolicy(
                     new io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy(

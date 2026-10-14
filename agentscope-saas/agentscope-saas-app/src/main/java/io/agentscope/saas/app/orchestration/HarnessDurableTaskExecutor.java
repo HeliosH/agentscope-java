@@ -253,6 +253,25 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
         runtimeAttribute(request, "modelId")
                 .ifPresent(key -> contextBuilder.put(ContextWindowAwareModel.MODEL_ID_KEY, key));
         RuntimeContext context = contextBuilder.build();
+        var inputPlan = context.get(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class);
+        if (inputPlan != null) {
+            String key =
+                    switch (request.workspaceIsolationMode()) {
+                        case ATTEMPT_ISOLATED, DEDICATED_SANDBOX ->
+                                "attempt/" + request.attemptId();
+                        default -> "run/" + request.runId();
+                    };
+            context.put(SandboxIsolationOverride.class, new SandboxIsolationOverride(key));
+            if (inputPlan.taskScope() != null)
+                context.put(
+                        io.agentscope.harness.agent.sandbox.WorkspaceTaskScope.class,
+                        inputPlan.taskScope());
+        }
+        if (request.subSessionId() != null && !request.subSessionId().isBlank())
+            context.put(
+                    io.agentscope.harness.agent.sandbox.WorkspaceTaskScope.class,
+                    new io.agentscope.harness.agent.sandbox.WorkspaceTaskScope(
+                            request.taskId().toString()));
         if (executionPolicies != null)
             executionPolicies.bind(context, request.orgId(), request.runId());
         Map<String, Object> inputMetadata = new LinkedHashMap<>();
@@ -271,7 +290,13 @@ public class HarnessDurableTaskExecutor implements DurableTaskExecutor {
                 Math.max(1L, properties.getOrchestration().getWorkerExecutionTimeoutSeconds());
         Msg result;
         try {
-            result = executeAgent(request, input, context, timeout);
+            try {
+                result = executeAgent(request, input, context, timeout);
+            } finally {
+                // Reactor may clear the caller's thread-local at the asynchronous boundary.
+                // Synchronous checkpoint/result submission still belongs to this execution.
+                TenantContextHolder.setOrgId(request.orgId().toString());
+            }
         } catch (RuntimeException | Error executionError) {
             if (executionError instanceof RuntimeException && workspaceArchives != null) {
                 var adopted = workspaceArchives.adoptPrepared(workspaceCheckpoint);

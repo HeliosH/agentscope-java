@@ -26,6 +26,27 @@ public class MyBatisWorkspaceManifestRepository implements WorkspaceManifestRepo
     }
 
     @Override
+    public Optional<Inheritance> inheritance(Scope s) {
+        return Optional.ofNullable(mapper.inheritance(s));
+    }
+
+    @Override
+    public Optional<UUID> parentTask(Scope s) {
+        return Optional.ofNullable(mapper.parentTask(s));
+    }
+
+    @Override
+    public boolean isChildTask(Scope s) {
+        return mapper.isChildTask(s);
+    }
+
+    @Override
+    public void inherit(Scope s, Inheritance checkpoint) {
+        if (mapper.inherit(s, checkpoint) != 1)
+            throw new IllegalStateException("PARENT_WORKSPACE_CHECKPOINT_CHANGED");
+    }
+
+    @Override
     public boolean lockScope(Scope s, OffsetDateTime now) {
         return !mapper.lockSession(s).isEmpty()
                 && !mapper.lockRun(s).isEmpty()

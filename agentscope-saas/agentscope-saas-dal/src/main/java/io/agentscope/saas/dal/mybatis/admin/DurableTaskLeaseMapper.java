@@ -21,6 +21,22 @@ import org.apache.ibatis.annotations.Update;
 
 /** Administrative MyBatis mapper for the cross-tenant durable task worker. */
 public interface DurableTaskLeaseMapper {
+    // Background children wait for their actual parent to seal its checkpoint. Shared workspace
+    // writers are serialized by the Run lock and this predicate across competing worker claims.
+    String WORKSPACE_READY =
+            """
+            AND (t.task_type <> 'subagent' OR
+                    EXISTS (SELECT 1 FROM agent_runs child JOIN agent_runs parent
+                        ON parent.id = child.parent_agent_run_id AND parent.org_id = child.org_id AND parent.run_id = child.run_id
+                        JOIN task_nodes parent_task ON parent_task.id = parent.task_id AND parent_task.org_id = parent.org_id AND parent_task.run_id = parent.run_id
+                        WHERE child.id = t.owner_agent_run_id AND child.org_id = t.org_id AND child.run_id = t.run_id
+                          AND parent_task.status = 'SUCCEEDED'))
+            AND ((t.workspace_mode IN ('ATTEMPT_ISOLATED','DEDICATED_SANDBOX') AND t.task_type <> 'subagent')
+                 OR NOT EXISTS (SELECT 1 FROM task_nodes writer WHERE writer.run_id = t.run_id
+                        AND writer.org_id = t.org_id AND writer.id <> t.id AND writer.status IN ('CLAIMED','RUNNING','ARCHIVING')
+                        AND (writer.workspace_mode NOT IN ('ATTEMPT_ISOLATED','DEDICATED_SANDBOX') OR writer.task_type = 'subagent')))
+            """;
+
     @Select("SELECT id FROM assistant_runs WHERE id = #{runId} FOR UPDATE")
     List<UUID> lockRun(@Param("runId") UUID runId);
 
@@ -70,9 +86,12 @@ public interface DurableTaskLeaseMapper {
                    JOIN task_nodes dependency ON dependency.id = e.from_task_id
                     WHERE e.to_task_id = t.id AND dependency.status <> 'SUCCEEDED'
                )
-             ORDER BY t.priority DESC, t.created_at ASC
-             LIMIT #{limit}
-            """)
+            """
+                    + WORKSPACE_READY
+                    + """
+                     ORDER BY t.priority DESC, t.created_at ASC
+                     LIMIT #{limit}
+                    """)
     @ConstructorArgs({
         @Arg(column = "task_id", javaType = UUID.class),
         @Arg(column = "org_id", javaType = UUID.class),
@@ -129,12 +148,13 @@ public interface DurableTaskLeaseMapper {
 
     @Update(
             """
-            UPDATE task_nodes
+            UPDATE task_nodes t
                SET status = 'CLAIMED', next_attempt_at = NULL, updated_at = #{claimedAt}
-             WHERE id = #{taskId}
-               AND status = 'READY'
-               AND (next_attempt_at IS NULL OR next_attempt_at <= #{claimedAt})
-            """)
+             WHERE t.id = #{taskId}
+               AND t.status = 'READY'
+               AND (t.next_attempt_at IS NULL OR t.next_attempt_at <= #{claimedAt})
+            """
+                    + WORKSPACE_READY)
     int claimTask(@Param("taskId") UUID taskId, @Param("claimedAt") OffsetDateTime claimedAt);
 
     @Insert(

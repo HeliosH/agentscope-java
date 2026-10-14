@@ -6,6 +6,7 @@ package io.agentscope.saas.app.workspace;
 
 import io.agentscope.harness.agent.sandbox.WorkspaceInputPlan;
 import io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan;
+import io.agentscope.harness.agent.sandbox.WorkspaceTaskScope;
 import io.agentscope.saas.app.config.SaasProperties;
 import io.agentscope.saas.app.orchestration.WorkspaceManifestVersion;
 import io.agentscope.saas.core.tenant.TenantContext;
@@ -38,6 +39,20 @@ public class WorkspaceInputService {
     private final SaasProperties properties;
     private final TransactionTemplate transactions;
     private io.agentscope.saas.app.orchestration.RunExecutionPolicyService executionPolicies;
+    private io.agentscope.saas.domain.workspace.WorkspaceSystemRepository systems;
+    private io.agentscope.saas.domain.orchestration.RunOrchestrationRepository events;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureEvents(
+            io.agentscope.saas.domain.orchestration.RunOrchestrationRepository repository) {
+        events = repository;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureSystems(
+            io.agentscope.saas.domain.workspace.WorkspaceSystemRepository repository) {
+        systems = repository;
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     void configureExecutionPolicies(
@@ -118,7 +133,8 @@ public class WorkspaceInputService {
                             () -> {
                                 validatePrepared(prepared);
                                 var stream =
-                                        store.openRead(
+                                        WorkspaceObjectReads.open(
+                                                store,
                                                 prepared.scope().orgId(),
                                                 input.objectKey(),
                                                 input.sizeBytes());
@@ -168,18 +184,18 @@ public class WorkspaceInputService {
                         new WorkspaceRestorePlan(
                                 "workspace-inputs://runs/" + run + "/tasks/" + task,
                                 version,
-                                files)));
+                                files),
+                        taskScope(prepared.scope())));
+    }
+
+    private WorkspaceTaskScope taskScope(Scope scope) {
+        return scopes.isChildTask(scope)
+                ? new WorkspaceTaskScope(scope.execution().taskId().toString())
+                : null;
     }
 
     private List<Input> bindings(Scope scope) {
-        var cfg = properties.getSandbox();
-        var policy =
-                executionPolicies == null
-                        ? new io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy(
-                                cfg.getTransferMaxFiles(),
-                                properties.getFileStore().getMaxFileBytes(),
-                                cfg.getTransferMaxBytes())
-                        : executionPolicies.workspacePolicy(scope.orgId(), scope.runId());
+        var policy = policy(scope);
         var frozen = inputs.frozen(scope);
         List<Input> raw;
         if (frozen.isPresent())
@@ -215,6 +231,16 @@ public class WorkspaceInputService {
                                     dependency.sourceTaskId()));
                 }
             }
+        }
+        if (frozen.isEmpty()) {
+            for (var inherited : inputs.parentBindings(scope, Math.addExact(policy.maxFiles(), 1)))
+                if (raw.stream()
+                        .noneMatch(
+                                existing ->
+                                        existing.logicalPath().equals(inherited.logicalPath())
+                                                && existing.versionId()
+                                                        .equals(inherited.versionId())))
+                    raw.add(inherited);
         }
         if (raw.size() > policy.maxFiles())
             throw new IllegalStateException("WORKSPACE_INPUT_LIMIT");
@@ -256,7 +282,390 @@ public class WorkspaceInputService {
                         || frozen.get().totalBytes() != total
                         || !frozen.get().version().equals(version(files))))
             throw new IllegalStateException("WORKSPACE_INPUT_MANIFEST_INVALID");
+        if (frozen.isPresent()) {
+            for (var addition : inputs.additions(scope, Math.addExact(policy.maxFiles(), 1))) {
+                if (addition.fileId() == null
+                        || addition.versionId() == null
+                        || addition.backend() == null
+                        || addition.logicalPath() == null
+                        || !addition.logicalPath().startsWith("inputs/retrieved/")
+                        || !new WorkspaceRestorePlan.WorkspaceFile(
+                                        addition.logicalPath(), new byte[0])
+                                .path()
+                                .equals(addition.logicalPath())
+                        || addition.sizeBytes() == null
+                        || addition.sizeBytes() < 0
+                        || addition.sizeBytes() > policy.maxFileBytes()
+                        || addition.sha256() == null
+                        || !addition.sha256().matches("[a-f0-9]{64}")
+                        || addition.objectKey() == null
+                        || addition.objectKey().isBlank())
+                    throw new IllegalStateException("WORKSPACE_INPUT_BINDING_INVALID");
+                if (byPath.putIfAbsent(addition.logicalPath(), addition) != null)
+                    throw new IllegalStateException("WORKSPACE_INPUT_PATH_CONFLICT");
+                total = Math.addExact(total, addition.sizeBytes());
+            }
+            files =
+                    byPath.values().stream()
+                            .sorted(java.util.Comparator.comparing(Input::logicalPath))
+                            .toList();
+        }
+        var system = systems == null ? null : systems.find(scope).orElse(null);
+        if (files.size() > policy.maxFiles() - (system == null ? 0 : system.fileCount())
+                || total > policy.maxTotalBytes() - (system == null ? 0 : system.totalBytes()))
+            throw new IllegalStateException("WORKSPACE_INPUT_LIMIT");
         return files;
+    }
+
+    private io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy policy(Scope scope) {
+        var cfg = properties.getSandbox();
+        return executionPolicies == null
+                ? new io.agentscope.harness.agent.sandbox.WorkspaceTransferPolicy(
+                        cfg.getTransferMaxFiles(),
+                        properties.getFileStore().getMaxFileBytes(),
+                        cfg.getTransferMaxBytes())
+                : executionPolicies.workspacePolicy(scope.orgId(), scope.runId());
+    }
+
+    public List<Input> search(Scope scope, String query, String afterPath, int limit) {
+        if (query == null
+                || query.length() > 512
+                || afterPath == null
+                || afterPath.length() > 1024
+                || limit < 1
+                || limit > 100) throw new IllegalArgumentException("Invalid file search window");
+        return transactions.execute(
+                tx -> {
+                    requireCurrent(scope);
+                    String pattern =
+                            "%"
+                                    + query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+                                    + "%";
+                    return inputs.search(scope, pattern, afterPath, limit + 1);
+                });
+    }
+
+    /** Pin an explicitly selected historical version without changing the initial manifest. */
+    public record Retrieved(WorkspaceInputPlan plan, String path) {}
+
+    /** Previously loaded copies remain authorized only while their exact source versions are active. */
+    public void requirePlanCurrent(io.agentscope.core.agent.RuntimeContext context) {
+        var plan = context.get(WorkspaceInputPlan.class);
+        if (plan == null) return;
+        var current = executionScope(context);
+        var uri = java.net.URI.create(plan.workspace().checkpointUri());
+        String[] parts = uri.getPath().split("/");
+        if (!"workspace-inputs".equals(uri.getScheme())
+                || !"runs".equals(uri.getHost())
+                || parts.length != 4
+                || !current.runId().toString().equals(parts[1])
+                || !"tasks".equals(parts[2])) throw new SessionExecutionRevokedException();
+        var source =
+                new Scope(
+                        current.orgId(),
+                        current.userId(),
+                        current.agentId(),
+                        current.sessionId(),
+                        current.sessionGeneration(),
+                        current.runId(),
+                        new io.agentscope.saas.domain.workspace.FilePublicationRepository.Execution(
+                                UUID.fromString(parts[3]),
+                                current.execution().agentRunId(),
+                                current.execution().attemptId(),
+                                current.execution().leaseOwner()));
+        String prior = io.agentscope.saas.core.tenant.TenantContextHolder.getOrgId();
+        io.agentscope.saas.core.tenant.TenantContextHolder.setOrgId(current.orgId().toString());
+        try {
+            transactions.executeWithoutResult(
+                    tx -> {
+                        requireCurrent(current);
+                        if (inputs.frozen(source).isEmpty())
+                            throw new SessionExecutionRevokedException();
+                        var authorized =
+                                bindings(source).stream()
+                                        .collect(
+                                                java.util.stream.Collectors.toMap(
+                                                        Input::logicalPath, f -> f));
+                        for (var file : plan.workspace().files()) {
+                            var binding = authorized.get(file.path());
+                            if (binding == null
+                                    || file.size() != binding.sizeBytes()
+                                    || !file.sha256().equals(binding.sha256()))
+                                throw new SessionExecutionRevokedException();
+                        }
+                        requireCurrent(current);
+                    });
+        } finally {
+            if (prior == null) io.agentscope.saas.core.tenant.TenantContextHolder.clear();
+            else io.agentscope.saas.core.tenant.TenantContextHolder.setOrgId(prior);
+        }
+    }
+
+    public Scope executionScope(io.agentscope.core.agent.RuntimeContext context) {
+        var tenant = Objects.requireNonNull(TenantContext.from(context));
+        String prior = io.agentscope.saas.core.tenant.TenantContextHolder.getOrgId();
+        io.agentscope.saas.core.tenant.TenantContextHolder.setOrgId(tenant.orgId());
+        try {
+            return transactions.execute(
+                    tx -> {
+                        var s =
+                                scopes.restoreScope(
+                                                UUID.fromString(tenant.orgId()),
+                                                UUID.fromString(tenant.userId()),
+                                                UUID.fromString(
+                                                        Objects.toString(
+                                                                context.get(
+                                                                        io.agentscope.saas.sandbox
+                                                                                .SandboxRuntimeAttributes
+                                                                                .ATTR_ATTEMPT_ID))))
+                                        .orElseThrow(SessionExecutionRevokedException::new);
+                        if (!s.execution()
+                                        .leaseOwner()
+                                        .equals(
+                                                context.get(
+                                                        io.agentscope.saas.sandbox
+                                                                .SandboxRuntimeAttributes
+                                                                .ATTR_LEASE_OWNER))
+                                || !s.execution()
+                                        .taskId()
+                                        .toString()
+                                        .equals(
+                                                context.get(
+                                                        io.agentscope.saas.sandbox
+                                                                .SandboxRuntimeAttributes
+                                                                .ATTR_TASK_ID))
+                                || !s.runId()
+                                        .toString()
+                                        .equals(
+                                                context.get(
+                                                        io.agentscope.saas.orchestration
+                                                                .RunOrchestrationService
+                                                                .ATTR_RUN_ID)))
+                            throw new SessionExecutionRevokedException();
+                        requireCurrent(s);
+                        return s;
+                    });
+        } finally {
+            if (prior == null) io.agentscope.saas.core.tenant.TenantContextHolder.clear();
+            else io.agentscope.saas.core.tenant.TenantContextHolder.setOrgId(prior);
+        }
+    }
+
+    public Retrieved retrieve(
+            TenantContext tenant,
+            UUID run,
+            UUID task,
+            UUID attempt,
+            String owner,
+            UUID fileId,
+            UUID versionId)
+            throws Exception {
+        if (TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("Input retrieval requires transaction-free IO");
+        String prior = io.agentscope.saas.core.tenant.TenantContextHolder.getOrgId();
+        io.agentscope.saas.core.tenant.TenantContextHolder.setOrgId(tenant.orgId());
+        try {
+            var scope =
+                    transactions.execute(
+                            tx -> {
+                                var s =
+                                        scopes.restoreScope(
+                                                        UUID.fromString(tenant.orgId()),
+                                                        UUID.fromString(tenant.userId()),
+                                                        attempt)
+                                                .orElseThrow(SessionExecutionRevokedException::new);
+                                if (!run.equals(s.runId())
+                                        || !task.equals(s.execution().taskId())
+                                        || !owner.equals(s.execution().leaseOwner()))
+                                    throw new SessionExecutionRevokedException();
+                                requireCurrent(s);
+                                if (inputs.frozen(s).isEmpty())
+                                    throw new IllegalStateException(
+                                            "WORKSPACE_INPUT_MANIFEST_MISSING");
+                                return s;
+                            });
+            var selected =
+                    transactions.execute(
+                            tx -> {
+                                requireCurrent(scope);
+                                var current = bindings(scope);
+                                var existing =
+                                        current.stream()
+                                                .filter(
+                                                        f ->
+                                                                fileId.equals(f.fileId())
+                                                                        && versionId.equals(
+                                                                                f.versionId()))
+                                                .findFirst();
+                                if (existing.isPresent()) return existing.get();
+                                var raw =
+                                        inputs.ownedVersion(scope, fileId, versionId)
+                                                .orElseThrow(SessionExecutionRevokedException::new);
+                                if (raw.logicalPath() == null
+                                        || !(raw.logicalPath().startsWith("inputs/")
+                                                || raw.logicalPath().startsWith("outputs/")))
+                                    throw new SessionExecutionRevokedException();
+                                String normalized =
+                                        new WorkspaceRestorePlan.WorkspaceFile(
+                                                        raw.logicalPath(), new byte[0])
+                                                .path();
+                                if (!normalized.equals(raw.logicalPath()))
+                                    throw new SessionExecutionRevokedException();
+                                String path =
+                                        "inputs/retrieved/"
+                                                + fileId
+                                                + "/"
+                                                + versionId
+                                                + "/"
+                                                + normalized.substring(
+                                                        normalized.lastIndexOf('/') + 1);
+                                var accepted = policy(scope);
+                                var system =
+                                        systems == null ? null : systems.find(scope).orElse(null);
+                                long count =
+                                        current.size() + (system == null ? 0 : system.fileCount());
+                                long bytes =
+                                        current.stream()
+                                                        .mapToLong(f -> f.sizeBytes())
+                                                        .reduce(0L, Math::addExact)
+                                                + (system == null ? 0 : system.totalBytes());
+                                if (raw.sizeBytes() == null
+                                        || raw.sizeBytes() < 0
+                                        || raw.sizeBytes() > accepted.maxFileBytes()
+                                        || count >= accepted.maxFiles()
+                                        || raw.sizeBytes() > accepted.maxTotalBytes() - bytes)
+                                    throw new IllegalStateException("WORKSPACE_INPUT_LIMIT");
+                                return new Input(
+                                        null,
+                                        fileId,
+                                        versionId,
+                                        path,
+                                        raw.backend(),
+                                        raw.objectKey(),
+                                        raw.sizeBytes(),
+                                        raw.sha256(),
+                                        null);
+                            });
+            var store =
+                    Objects.requireNonNull(
+                            stores.getIfAvailable(), "Input object store unavailable");
+            if (!store.backend().equals(selected.backend()))
+                throw new IllegalStateException("WORKSPACE_INPUT_BACKEND_CHANGED");
+            // Verify only the requested object, then pin it in a short CAS transaction.
+            var selectedFile =
+                    new WorkspaceRestorePlan.WorkspaceFile(
+                            selected.logicalPath(),
+                            selected.sizeBytes(),
+                            selected.sha256(),
+                            () ->
+                                    WorkspaceObjectReads.open(
+                                            store,
+                                            scope.orgId(),
+                                            selected.objectKey(),
+                                            selected.sizeBytes()));
+            try (var permit = transfers.acquire()) {
+                selectedFile.transferTo(
+                        java.io.OutputStream.nullOutputStream(), transfers.bufferBytes());
+            }
+            var prepared =
+                    transactions.execute(
+                            tx -> {
+                                requireCurrent(scope);
+                                var current = bindings(scope);
+                                boolean added =
+                                        current.stream()
+                                                .noneMatch(
+                                                        f ->
+                                                                selected.versionId()
+                                                                        .equals(f.versionId()));
+                                if (added) {
+                                    var active =
+                                            inputs.ownedVersion(scope, fileId, versionId)
+                                                    .orElseThrow(
+                                                            SessionExecutionRevokedException::new);
+                                    if (!Objects.equals(active.backend(), selected.backend())
+                                            || !Objects.equals(
+                                                    active.objectKey(), selected.objectKey())
+                                            || !Objects.equals(
+                                                    active.sizeBytes(), selected.sizeBytes())
+                                            || !Objects.equals(active.sha256(), selected.sha256()))
+                                        throw new SessionExecutionRevokedException();
+                                    inputs.append(scope, selected);
+                                }
+                                var files =
+                                        bindings(scope); // Budget rejection rolls back the append.
+                                if (added && events != null)
+                                    events.insertOutbox(
+                                            new io.agentscope.saas.domain.orchestration
+                                                    .RunOrchestrationRepository.NewOutboxMessage(
+                                                    UUID.randomUUID(),
+                                                    scope.orgId(),
+                                                    scope.runId(),
+                                                    "assistant_run",
+                                                    "workspace_input_added",
+                                                    io.agentscope.core.util.JsonUtils.getJsonCodec()
+                                                            .toJson(
+                                                                    java.util.Map.of(
+                                                                            "runId",
+                                                                            scope.runId(),
+                                                                            "taskId",
+                                                                            scope.execution()
+                                                                                    .taskId(),
+                                                                            "fileId",
+                                                                            fileId,
+                                                                            "versionId",
+                                                                            versionId,
+                                                                            "path",
+                                                                            selected.logicalPath(),
+                                                                            "workspaceVersion",
+                                                                            version(files)))));
+                                requireCurrent(scope);
+                                return new Prepared(scope, files);
+                            });
+            var descriptors = new ArrayList<WorkspaceRestorePlan.WorkspaceFile>();
+            for (var f : prepared.files())
+                descriptors.add(
+                        new WorkspaceRestorePlan.WorkspaceFile(
+                                f.logicalPath(),
+                                f.sizeBytes(),
+                                f.sha256(),
+                                () -> {
+                                    validatePrepared(prepared);
+                                    return new java.io.FilterInputStream(
+                                            WorkspaceObjectReads.open(
+                                                    store,
+                                                    scope.orgId(),
+                                                    f.objectKey(),
+                                                    f.sizeBytes())) {
+                                        @Override
+                                        public void close() throws java.io.IOException {
+                                            try {
+                                                super.close();
+                                            } finally {
+                                                validatePrepared(prepared);
+                                            }
+                                        }
+                                    };
+                                }));
+            return new Retrieved(
+                    new WorkspaceInputPlan(
+                            new WorkspaceRestorePlan(
+                                    "workspace-inputs://runs/" + run + "/tasks/" + task,
+                                    version(prepared.files()),
+                                    descriptors),
+                            taskScope(scope)),
+                    prepared.files().stream()
+                            .filter(
+                                    f ->
+                                            fileId.equals(f.fileId())
+                                                    && versionId.equals(f.versionId()))
+                            .findFirst()
+                            .orElseThrow()
+                            .logicalPath());
+        } finally {
+            if (prior == null) io.agentscope.saas.core.tenant.TenantContextHolder.clear();
+            else io.agentscope.saas.core.tenant.TenantContextHolder.setOrgId(prior);
+        }
     }
 
     private static String version(List<Input> files) {

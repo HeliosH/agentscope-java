@@ -273,6 +273,14 @@ public class Toolkit {
         return toolRegistry.getTool(name);
     }
 
+    public ToolContractSnapshot captureToolContract(String name) {
+        var tool = toolRegistry.getTool(name);
+        if (tool == null) throw new IllegalArgumentException("Tool no longer registered: " + name);
+        var registered = toolRegistry.getRegisteredTool(name);
+        return ToolContractSnapshot.capture(
+                tool, registered == null ? Map.of() : registered.getPresetParameters());
+    }
+
     /**
      * Gets the names of all registered tools.
      *

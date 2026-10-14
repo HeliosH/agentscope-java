@@ -56,6 +56,21 @@ public interface WorkspaceManifestRepository {
             boolean unchanged,
             UUID publicationId) {}
 
+    record Inheritance(
+            UUID leaseId,
+            UUID parentTaskId,
+            UUID parentAttemptId,
+            String checkpointUri,
+            String workspaceVersion) {}
+
+    Optional<Inheritance> inheritance(Scope scope);
+
+    Optional<UUID> parentTask(Scope scope);
+
+    boolean isChildTask(Scope scope);
+
+    void inherit(Scope scope, Inheritance checkpoint);
+
     boolean lockScope(Scope scope, OffsetDateTime now);
 
     long nextSequence(Scope scope);

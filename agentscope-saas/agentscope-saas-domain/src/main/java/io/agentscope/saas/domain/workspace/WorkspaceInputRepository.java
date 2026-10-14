@@ -27,10 +27,22 @@ public interface WorkspaceInputRepository {
 
     List<Input> dependencies(WorkspaceManifestRepository.Scope scope, int limit);
 
+    List<Input> parentBindings(WorkspaceManifestRepository.Scope scope, int limit);
+
     Optional<Frozen> frozen(WorkspaceManifestRepository.Scope scope);
 
     List<Input> frozenBindings(WorkspaceManifestRepository.Scope scope, int limit);
 
     /** Called under the current execution/session lock; the entire manifest commits atomically. */
     void freeze(WorkspaceManifestRepository.Scope scope, Frozen manifest, List<Input> files);
+
+    Optional<Input> ownedVersion(WorkspaceManifestRepository.Scope scope, UUID file, UUID version);
+
+    List<Input> additions(WorkspaceManifestRepository.Scope scope, int limit);
+
+    /** Append under the current Run/Attempt lock; existing manifest rows stay immutable. */
+    void append(WorkspaceManifestRepository.Scope scope, Input file);
+
+    List<Input> search(
+            WorkspaceManifestRepository.Scope scope, String pattern, String afterPath, int limit);
 }

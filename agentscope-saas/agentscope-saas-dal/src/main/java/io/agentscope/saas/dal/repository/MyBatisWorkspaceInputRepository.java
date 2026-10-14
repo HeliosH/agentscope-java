@@ -13,6 +13,11 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public class MyBatisWorkspaceInputRepository implements WorkspaceInputRepository {
+    @Override
+    public List<Input> parentBindings(Scope scope, int limit) {
+        return mapper.parentBindings(scope, limit);
+    }
+
     private final WorkspaceInputMapper mapper;
 
     public MyBatisWorkspaceInputRepository(WorkspaceInputMapper mapper) {
@@ -38,5 +43,21 @@ public class MyBatisWorkspaceInputRepository implements WorkspaceInputRepository
     public void freeze(Scope scope, Frozen manifest, List<Input> files) {
         mapper.insertManifest(scope, manifest);
         for (var file : files) mapper.insertEntry(scope, file);
+    }
+
+    public Optional<Input> ownedVersion(Scope scope, java.util.UUID file, java.util.UUID version) {
+        return Optional.ofNullable(mapper.ownedVersion(scope, file, version));
+    }
+
+    public List<Input> additions(Scope scope, int limit) {
+        return mapper.additions(scope, limit);
+    }
+
+    public void append(Scope scope, Input file) {
+        mapper.append(scope, file, mapper.nextAddition(scope));
+    }
+
+    public List<Input> search(Scope scope, String pattern, String afterPath, int limit) {
+        return mapper.search(scope, pattern, afterPath, limit);
     }
 }

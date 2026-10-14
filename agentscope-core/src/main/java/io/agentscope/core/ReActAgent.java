@@ -1465,6 +1465,10 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
             if (soTool != null) {
                 stepSchemas.put(soTool.getName(), StepSnapshot.fingerprint(soTool.getParameters()));
             }
+            rc.put(
+                    io.agentscope.core.tool.StepToolContracts.class,
+                    io.agentscope.core.tool.StepToolContracts.capture(
+                            stepToolkit, stepSchemas.keySet()));
         }
 
         private StepSnapshot captureStep(String stepId, ModelCallInput input) {
@@ -1490,6 +1494,11 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                     }
                 }
             }
+            var contracts =
+                    rc.get(io.agentscope.core.tool.StepToolContracts.class).restrict(visible);
+            for (String name : contracts.tools().keySet())
+                contracts.requireCurrent(name, toolkitForCall().captureToolContract(name));
+            rc.put(io.agentscope.core.tool.StepToolContracts.class, contracts);
             StepSnapshot snapshot =
                     StepSnapshot.capture(
                             stepId,
@@ -3124,6 +3133,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
          * through {@link Toolkit#callTools}.
          */
         private Mono<List<ToolResultBlock>> dispatchToolCalls(List<ToolUseBlock> toolCalls) {
+            bindToolOrigins();
             boolean hasStructured =
                     soTool != null
                             && toolCalls.stream()
@@ -3170,6 +3180,20 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                     .collectList());
         }
 
+        private void bindToolOrigins() {
+            var origins = new HashMap<String, String>();
+            for (Msg message : state.getContext()) {
+                if (message.getRole() != MsgRole.ASSISTANT) continue;
+                for (ToolUseBlock use : message.getContentBlocks(ToolUseBlock.class)) {
+                    if (message.getId() != null && !message.getId().isBlank())
+                        origins.put(use.getId(), message.getId());
+                }
+            }
+            rc.put(
+                    io.agentscope.core.tool.ToolInvocationOrigins.class,
+                    new io.agentscope.core.tool.ToolInvocationOrigins(origins));
+        }
+
         /**
          * Execute the per-call {@code generate_response} tool for a single tool call, mirroring the
          * schema validation the executor performs for registered tools.
@@ -3211,6 +3235,14 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                     && identity != null
                             ? identity.runId()
                             : null;
+            if (operationScope != null) {
+                var origins = rc.get(io.agentscope.core.tool.ToolInvocationOrigins.class);
+                String origin =
+                        origins == null ? step.stepId() : origins.origin(toolUse.getId(), step);
+                operationScope =
+                        io.agentscope.core.tool.ToolOperationKey.of(
+                                operationScope, identity, origin, toolUse.getId());
+            }
             Msg toolMsg =
                     ToolResultMessageBuilder.buildToolResultMsg(
                             result, toolUse, getName(), operationScope);
@@ -3235,6 +3267,7 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
         }
 
         private void saveContextCheckpoint() {
+            bindToolOrigins();
             ConversationCommitter.commitCurrent(rc, getName());
             io.agentscope.core.tool.ContextCheckpointStore store =
                     rc.get(io.agentscope.core.tool.ContextCheckpointStore.class);
@@ -3246,7 +3279,23 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
             String operationScope = step.identity().runId();
             List<String> pendingOperations =
                     extractPendingToolCalls().stream()
-                            .map(call -> operationScope + ":" + call.getId())
+                            .map(
+                                    call ->
+                                            io.agentscope.core.tool.ToolOperationKey.of(
+                                                    operationScope,
+                                                    step.identity(),
+                                                    rc.get(
+                                                                            io.agentscope.core.tool
+                                                                                    .ToolInvocationOrigins
+                                                                                    .class)
+                                                                    == null
+                                                            ? step.stepId()
+                                                            : rc.get(
+                                                                            io.agentscope.core.tool
+                                                                                    .ToolInvocationOrigins
+                                                                                    .class)
+                                                                    .origin(call.getId(), step),
+                                                    call.getId()))
                             .toList();
             io.agentscope.core.tool.ExecutionEnvironmentSnapshot environment =
                     rc.get(io.agentscope.core.tool.ExecutionEnvironmentSnapshot.class);

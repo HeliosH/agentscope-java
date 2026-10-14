@@ -8,18 +8,19 @@ package io.agentscope.saas.app.orchestration;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.message.ToolResultBlock;
+import io.agentscope.core.tool.ToolContractSnapshot;
 import io.agentscope.core.tool.ToolExecutionJournal;
 import io.agentscope.core.tool.ToolLeaseLostException;
 import io.agentscope.core.tool.ToolRetrySafety;
 import io.agentscope.saas.domain.orchestration.ToolOperation;
 import io.agentscope.saas.domain.orchestration.ToolOperationRepository;
+import io.agentscope.saas.domain.orchestration.ToolReconciliationRepository.ClaimAuthority;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionOperations;
 
@@ -29,6 +30,13 @@ public class DurableToolExecutionJournalService {
     private final ToolOperationRepository repository;
     private final TransactionOperations transactions;
     private final ObjectMapper objectMapper;
+    private io.agentscope.saas.domain.orchestration.ToolReconciliationRepository reconciliations;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureReconciliations(
+            io.agentscope.saas.domain.orchestration.ToolReconciliationRepository repository) {
+        reconciliations = repository;
+    }
 
     public DurableToolExecutionJournalService(
             ToolOperationRepository repository,
@@ -41,7 +49,6 @@ public class DurableToolExecutionJournalService {
 
     public ClaimedOperation prepare(
             UUID orgId, UUID runId, ToolExecutionJournal.Invocation invocation) {
-        tryInsert(newOperation(orgId, runId, invocation));
         ClaimedOperation claimed =
                 transactions.execute(status -> prepareInTransaction(orgId, runId, invocation));
         if (claimed == null)
@@ -57,16 +64,62 @@ public class DurableToolExecutionJournalService {
         UUID taskId = identityUuid(input, StepIdentityPart.TASK);
         UUID agentRunId = identityUuid(input, StepIdentityPart.AGENT_RUN);
         UUID attemptId = identityUuid(input, StepIdentityPart.ATTEMPT);
-        if (!repository.executionScopeActive(
-                orgId, runId, taskId, agentRunId, attemptId, leaseOwner(input), now)) {
+        if (!repository.lockExecutionRun(orgId, runId, now)) {
             throw leaseLost(input);
         }
+        var existing = existingOperation(orgId, runId, input);
+        if (existing.isEmpty()) {
+            if (input.toolContract() == null)
+                throw new IllegalStateException(
+                        "A new durable operation requires an executable contract snapshot");
+            if (repository.insertClaimed(newOperation(orgId, runId, input)) != 1)
+                throw new IllegalStateException("Prepared tool operation could not be created");
+            existing = repository.lock(orgId, runId, input.operationId());
+        }
         ToolOperation operation =
-                repository
-                        .lock(orgId, runId, input.operationId())
-                        .orElseThrow(
-                                () -> new IllegalStateException("Prepared tool operation missing"));
+                existing.orElseThrow(
+                        () -> new IllegalStateException("Prepared tool operation missing"));
+        now = OffsetDateTime.now();
+        if (!repository.executionScopeActive(
+                orgId, runId, taskId, agentRunId, attemptId, leaseOwner(input), now))
+            throw leaseLost(input);
+        if (operation.toolContractHash() == null || operation.logicalOriginId() == null)
+            return new ClaimedOperation(
+                    operation.id(),
+                    ToolExecutionJournal.PrepareResult.reconcile(
+                            "Legacy operation has no verified tool contract or logical origin;"
+                                    + " controlled conversion is required"));
         verifySameIntent(operation, input);
+        if (!contractMatches(operation, input))
+            return new ClaimedOperation(
+                    operation.id(),
+                    ToolExecutionJournal.PrepareResult.reconcile(
+                            "Tool contract changed or cannot be verified for this original"
+                                    + " operation"));
+        if (!operation.toolContractRecoverable()
+                && !("CLAIMED".equals(operation.status())
+                        && invocationId.equals(operation.invocationId())))
+            return new ClaimedOperation(
+                    operation.id(),
+                    ToolExecutionJournal.PrepareResult.reconcile(
+                            "The remote or mutable tool has no verified implementation version;"
+                                    + " automatic inheritance is blocked"));
+        if ("CLAIMED".equals(operation.status())
+                && claimAuthority(orgId, runId, operation, input, now) == ClaimAuthority.INVALID) {
+            if (!repository.blockUndispatchedReplay(
+                    operation.id(), orgId, operation.version(), now))
+                throw new IllegalStateException("Replay claim changed before it could be fenced");
+            appendTerminalOutbox(
+                    orgId,
+                    operation.id(),
+                    input,
+                    ToolExecutionJournal.TerminalStatus.OUTCOME_UNKNOWN);
+            return new ClaimedOperation(
+                    operation.id(),
+                    ToolExecutionJournal.PrepareResult.reconcile(
+                            "Replay approval cannot transfer to this invocation; record fresh"
+                                    + " evidence and approval"));
+        }
         if ("SUCCEEDED".equals(operation.status())) {
             if (operation.resultJson() == null) {
                 throw new IllegalStateException("Succeeded tool operation has no durable result");
@@ -75,6 +128,57 @@ public class DurableToolExecutionJournalService {
                     operation.id(),
                     ToolExecutionJournal.PrepareResult.reuse(
                             fromJson(operation.resultJson(), ToolResultBlock.class)));
+        }
+        if ("OUTCOME_UNKNOWN".equals(operation.status()) && reconciliations != null) {
+            var resolution = reconciliations.executionResolution(orgId, runId, operation.id());
+            if (resolution.isPresent()) {
+                var confirmed = resolution.get();
+                if (confirmed.operationVersion() != operation.version())
+                    return new ClaimedOperation(
+                            operation.id(),
+                            ToolExecutionJournal.PrepareResult.reconcile(
+                                    "External evidence no longer matches this operation version;"
+                                            + " record fresh evidence and approval"));
+                if ("CONFIRMED_SUCCESS".equals(confirmed.decision())) {
+                    var result = fromJson(confirmed.resultJson(), ToolResultBlock.class);
+                    if (!operation.toolCallId().equals(result.getId())
+                            || !operation.toolName().equals(result.getName()))
+                        throw new IllegalStateException(
+                                "Reconciliation result does not match the original operation");
+                    return new ClaimedOperation(
+                            operation.id(), ToolExecutionJournal.PrepareResult.reuse(result));
+                }
+                if ("CONFIRMED_NOT_PERFORMED".equals(confirmed.decision())
+                        && confirmed.replayApproved()
+                        && operation.retrySafety().equals(input.retrySafety().name())
+                        && reconciliations.consumeReplay(
+                                orgId,
+                                runId,
+                                operation.id(),
+                                operation.version(),
+                                confirmed.id(),
+                                invocationId,
+                                input.toolName(),
+                                input.toolCallId(),
+                                input.inputHash(),
+                                now)) {
+                    reclaim(
+                            operation.id(),
+                            operation.version(),
+                            orgId,
+                            invocationId,
+                            attemptId,
+                            input,
+                            now);
+                    return new ClaimedOperation(
+                            operation.id(), ToolExecutionJournal.PrepareResult.execute());
+                }
+                return new ClaimedOperation(
+                        operation.id(),
+                        ToolExecutionJournal.PrepareResult.reconcile(
+                                "External outcome requires current evidence and an explicit,"
+                                        + " unexpired replay approval"));
+            }
         }
         if ("CLAIMED".equals(operation.status()) && invocationId.equals(operation.invocationId())) {
             return new ClaimedOperation(
@@ -162,19 +266,41 @@ public class DurableToolExecutionJournalService {
                 invocation.inputHash(),
                 json(invocation.input()),
                 invocation.retrySafety().name(),
-                now);
+                now,
+                invocation.toolContract() == null ? null : invocation.toolContract().hash(),
+                invocation.toolContract() == null ? null : json(invocation.toolContract()),
+                invocation.toolContract() != null && invocation.toolContract().recoverable(),
+                invocation.logicalOriginId());
     }
 
-    private void tryInsert(ToolOperationRepository.NewOperation candidate) {
-        try {
-            Integer inserted = transactions.execute(status -> repository.insertClaimed(candidate));
-            if (inserted == null || (inserted != 0 && inserted != 1)) {
-                throw new IllegalStateException("Unexpected tool operation insert result");
-            }
-        } catch (DuplicateKeyException ignored) {
-            // The unique business key selected a previously prepared operation. Its state is
-            // inspected under a row lock in the following transaction.
+    private java.util.Optional<ToolOperation> existingOperation(
+            UUID org, UUID run, ToolExecutionJournal.Invocation input) {
+        var existing = repository.lock(org, run, input.operationId());
+        UUID caller = identityUuid(input, StepIdentityPart.AGENT_RUN);
+        if (existing.isEmpty() && caller != null)
+            existing =
+                    repository.lockCallerOperation(
+                            org, run, caller, input.logicalOriginId(), input.toolCallId());
+        if (existing.isEmpty()) {
+            var legacy = repository.lock(org, run, run + ":" + input.toolCallId());
+            if (legacy.isPresent()
+                    && (legacy.get().agentRunId() == null
+                            || Objects.equals(caller, legacy.get().agentRunId()))
+                    && (legacy.get().logicalOriginId() == null
+                            || input.logicalOriginId().equals(legacy.get().logicalOriginId())))
+                existing = legacy;
         }
+        return existing;
+    }
+
+    private boolean contractMatches(
+            ToolOperation operation, ToolExecutionJournal.Invocation input) {
+        if (input.toolContract() == null
+                || !operation.toolContractHash().equals(input.toolContract().hash())) return false;
+        var stored = fromJson(operation.toolContractJson(), ToolContractSnapshot.class);
+        return stored.hash().equals(operation.toolContractHash())
+                && stored.equals(input.toolContract())
+                && operation.toolContractRecoverable() == stored.recoverable();
     }
 
     public void markRunning(
@@ -186,13 +312,39 @@ public class DurableToolExecutionJournalService {
         OffsetDateTime now = OffsetDateTime.now();
         Boolean updated =
                 transactions.execute(
-                        status ->
-                                repository.markRunning(
-                                        operationId,
-                                        orgId,
-                                        invocationId,
-                                        leaseOwner(invocation),
-                                        now));
+                        status -> {
+                            if (!repository.lockExecutionRun(orgId, runId, now))
+                                throw leaseLost(invocation);
+                            OffsetDateTime dispatchedAt = OffsetDateTime.now();
+                            if (!executionScopeActive(orgId, runId, invocation, dispatchedAt))
+                                throw leaseLost(invocation);
+                            var operation =
+                                    existingOperation(orgId, runId, invocation).orElseThrow();
+                            verifySameIntent(operation, invocation);
+                            if (!operation.id().equals(operationId)
+                                    || !contractMatches(operation, invocation))
+                                throw new IllegalStateException(
+                                        "Dispatch does not match the original executable contract");
+                            if (!executionScopeActive(
+                                    orgId, runId, invocation, OffsetDateTime.now()))
+                                throw leaseLost(invocation);
+                            if ("CLAIMED".equals(operation.status())
+                                    && claimAuthority(
+                                                    orgId,
+                                                    runId,
+                                                    operation,
+                                                    invocation,
+                                                    OffsetDateTime.now())
+                                            == ClaimAuthority.INVALID)
+                                throw new IllegalStateException(
+                                        "Replay approval is no longer valid for dispatch");
+                            return repository.markRunning(
+                                    operationId,
+                                    orgId,
+                                    invocationId,
+                                    leaseOwner(invocation),
+                                    OffsetDateTime.now());
+                        });
         if (!Boolean.TRUE.equals(updated)) {
             if (!executionScopeActive(orgId, runId, invocation, now)) {
                 throw leaseLost(invocation);
@@ -230,7 +382,14 @@ public class DurableToolExecutionJournalService {
                                     now)) {
                                 ToolOperation operation =
                                         repository
-                                                .lock(orgId, runId, invocation.operationId())
+                                                .lockCallerOperation(
+                                                        orgId,
+                                                        runId,
+                                                        identityUuid(
+                                                                invocation,
+                                                                StepIdentityPart.AGENT_RUN),
+                                                        invocation.logicalOriginId(),
+                                                        invocation.toolCallId())
                                                 .orElseThrow(
                                                         () ->
                                                                 new IllegalStateException(
@@ -314,6 +473,25 @@ public class DurableToolExecutionJournalService {
                 now);
     }
 
+    private ClaimAuthority claimAuthority(
+            UUID orgId,
+            UUID runId,
+            ToolOperation operation,
+            ToolExecutionJournal.Invocation invocation,
+            OffsetDateTime now) {
+        if (reconciliations == null) return ClaimAuthority.NOT_REQUIRED;
+        return reconciliations.claimAuthority(
+                orgId,
+                runId,
+                operation.id(),
+                operation.version(),
+                uuid(invocation.invocationId(), "invocationId"),
+                invocation.toolName(),
+                invocation.toolCallId(),
+                invocation.inputHash(),
+                now);
+    }
+
     private void appendTerminalOutbox(
             UUID orgId,
             UUID operationId,
@@ -345,6 +523,7 @@ public class DurableToolExecutionJournalService {
         if (!operation.toolName().equals(invocation.toolName())
                 || !operation.toolCallId().equals(invocation.toolCallId())
                 || !operation.inputHash().equals(invocation.inputHash())
+                || !Objects.equals(operation.logicalOriginId(), invocation.logicalOriginId())
                 || !Objects.equals(
                         operation.taskId(), identityUuid(invocation, StepIdentityPart.TASK))
                 || !Objects.equals(

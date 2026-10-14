@@ -37,7 +37,7 @@ import reactor.core.publisher.Mono;
  * @see ToolParam
  * @see Toolkit
  */
-public interface AgentTool {
+public interface AgentTool extends ToolContractVersionProvider {
 
     /**
      * Gets the name of the tool.
@@ -48,6 +48,16 @@ public interface AgentTool {
      * @return The tool name (never null)
      */
     String getName();
+
+    /** Version of behavior and bound configuration; remote or mutable tools must override it. */
+    default String getContractVersion() {
+        return ToolContractSnapshot.implementationVersion(getClass());
+    }
+
+    /** Non-secret contract attributes; use digests or references, never credentials. */
+    default Map<String, Object> getContractAttributes() {
+        return Map.of();
+    }
 
     /**
      * Declares automatic retry safety. The default prevents replay of unknown side effects.

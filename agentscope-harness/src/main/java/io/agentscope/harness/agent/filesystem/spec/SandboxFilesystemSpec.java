@@ -63,6 +63,30 @@ public abstract class SandboxFilesystemSpec {
     private NamespaceFactory remoteProjectionNamespaceFactory;
 
     private WorkspaceProjectionSink workspaceProjectionSink = WorkspaceProjectionSink.noop();
+    private io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore systemSnapshotStore;
+    private io.agentscope.harness.agent.sandbox.WorkspaceAccessGuard workspaceAccessGuard;
+
+    public SandboxFilesystemSpec workspaceAccessGuard(
+            io.agentscope.harness.agent.sandbox.WorkspaceAccessGuard guard) {
+        workspaceAccessGuard = guard;
+        return this;
+    }
+
+    public io.agentscope.harness.agent.sandbox.WorkspaceAccessGuard getWorkspaceAccessGuard() {
+        return workspaceAccessGuard;
+    }
+
+    public SandboxFilesystemSpec systemSnapshotStore(
+            io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore store) {
+        systemSnapshotStore = store;
+        return this;
+    }
+
+    public io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore
+            getSystemSnapshotStore() {
+        return systemSnapshotStore;
+    }
+
     private WorkspaceTransferPolicy workspaceTransferPolicy = WorkspaceTransferPolicy.DEFAULT;
     private io.agentscope.harness.agent.sandbox.WorkspaceTransferResources transferResources =
             io.agentscope.harness.agent.sandbox.WorkspaceTransferResources.DEFAULT;

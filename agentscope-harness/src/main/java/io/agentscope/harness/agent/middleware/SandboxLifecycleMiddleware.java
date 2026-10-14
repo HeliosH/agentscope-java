@@ -186,14 +186,20 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
                         filesystemProxy.getTransferPolicy(ctx));
                 var inputs = ctx.get(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class);
                 if (inputs != null && sandbox.hasPersistentWorkspace())
-                    throw new IllegalStateException(
-                            "Pinned input plans require an isolated non-volume workspace");
+                    sandbox.scopePersistentWorkspace(
+                            ctx.get(
+                                            io.agentscope.harness.agent.sandbox
+                                                    .SandboxIsolationOverride.class)
+                                    .key());
+                boolean frozenSystem =
+                        inputs != null && filesystemProxy.prepareSystemWorkspace(ctx);
                 sandbox.start();
                 usageGuard.activate(ctx, usage.get(), sandbox);
                 // A retry restores its frozen workspace, not today's mutable remote projection.
                 if (ctx.get(WorkspaceRestorePlan.class) == null) {
-                    if (inputs != null) filesystemProxy.hydrateSystemWorkspace(ctx, sandbox);
-                    else filesystemProxy.hydrateRemoteWorkspace(ctx, sandbox);
+                    if (inputs != null && !frozenSystem)
+                        filesystemProxy.hydrateSystemWorkspace(ctx, sandbox);
+                    else if (inputs == null) filesystemProxy.hydrateRemoteWorkspace(ctx, sandbox);
                 }
                 restoreWorkspace(ctx, sandbox);
                 if (inputs != null)
@@ -278,7 +284,8 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             restore =
                     ctx.get(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class)
                             .workspace();
-        String workspaceVersion = restore == null ? null : restore.workspaceVersion();
+        String workspaceVersion =
+                io.agentscope.harness.agent.sandbox.WorkspaceVersions.current(ctx);
         String provider = sandbox.getClass().getName();
         String version =
                 StepSnapshot.fingerprint(
@@ -295,6 +302,24 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
 
     private void restoreWorkspace(RuntimeContext ctx, Sandbox sandbox) throws Exception {
         WorkspaceRestorePlan plan = ctx.get(WorkspaceRestorePlan.class);
+        var system =
+                ctx.get(
+                        io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore.Plan
+                                .class);
+        if (system != null) {
+            var merged = new java.util.LinkedHashMap<String, WorkspaceRestorePlan.WorkspaceFile>();
+            for (var file : system.workspace().files()) merged.put(file.path(), file);
+            if (plan != null) for (var file : plan.files()) merged.put(file.path(), file);
+            plan =
+                    new WorkspaceRestorePlan(
+                            plan == null
+                                    ? system.workspace().checkpointUri()
+                                    : plan.checkpointUri(),
+                            plan == null
+                                    ? system.workspace().workspaceVersion()
+                                    : plan.workspaceVersion(),
+                            java.util.List.copyOf(merged.values()));
+        }
         var inputs = ctx.get(io.agentscope.harness.agent.sandbox.WorkspaceInputPlan.class);
         if (inputs != null) {
             if (plan == null) plan = inputs.workspace();
@@ -311,6 +336,9 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
             }
         }
         if (plan == null || plan.files().isEmpty()) {
+            if (plan != null && sandbox.hasPersistentWorkspace())
+                io.agentscope.harness.agent.sandbox.VolumeWorkspaceCache.prepare(
+                        ctx, sandbox, plan, filesystemProxy.getTransferResources());
             return;
         }
         var policy = filesystemProxy.getTransferPolicy(ctx);
@@ -319,7 +347,19 @@ public class SandboxLifecycleMiddleware implements MiddlewareBase {
                     "Workspace checkpoint exceeds restore file limit " + policy.maxFiles());
         }
         long totalBytes = 0L;
+        for (var file : plan.files()) {
+            totalBytes = Math.addExact(totalBytes, file.size());
+            if (file.size() > policy.maxFileBytes() || totalBytes > policy.maxTotalBytes())
+                throw new IllegalStateException("Workspace checkpoint exceeds restore byte limit");
+        }
         var resources = filesystemProxy.getTransferResources();
+        if (sandbox.hasPersistentWorkspace()) {
+            var missing =
+                    io.agentscope.harness.agent.sandbox.VolumeWorkspaceCache.prepare(
+                            ctx, sandbox, plan, resources);
+            plan = new WorkspaceRestorePlan(plan.checkpointUri(), plan.workspaceVersion(), missing);
+        }
+        totalBytes = 0;
         try (var permit = resources.acquire();
                 var spool =
                         resources.spool(

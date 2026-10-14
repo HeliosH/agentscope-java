@@ -44,6 +44,7 @@ import io.agentscope.core.tool.StepSnapshot;
 import io.agentscope.core.tool.ToolBase;
 import io.agentscope.core.tool.ToolCallParam;
 import io.agentscope.core.tool.ToolExecutionJournal;
+import io.agentscope.core.tool.ToolOperationKey;
 import io.agentscope.core.tool.Toolkit;
 import java.time.Duration;
 import java.util.List;
@@ -60,6 +61,17 @@ import reactor.core.publisher.Mono;
 
 class ConversationCommitBarrierTest {
     private static final Duration TIMEOUT = Duration.ofSeconds(10);
+
+    private static void assertPendingOperation(ContextCheckpointStore.Draft draft) {
+        var origin =
+                draft.retainedTail().stream()
+                        .filter(m -> m.hasContentBlocks(ToolUseBlock.class))
+                        .reduce((first, last) -> last)
+                        .orElseThrow();
+        assertEquals(
+                List.of(ToolOperationKey.of("run", draft.identity(), origin.getId(), "call")),
+                draft.pendingOperationIds());
+    }
 
     @Test
     void stateNamespacesIsolateHistoryAndLateOldWritesWithoutChangingRuntimeSessionId() {
@@ -181,7 +193,7 @@ class ConversationCommitBarrierTest {
                 draft -> {
                     if (!draft.pendingOperationIds().isEmpty()) {
                         assertFalse(order.contains("journal"));
-                        assertEquals(List.of("run:call"), draft.pendingOperationIds());
+                        assertPendingOperation(draft);
                         order.add("checkpoint-pending");
                         return new ContextCheckpointStore.StoredCheckpoint(1, draft.historyHash());
                     }
@@ -393,7 +405,7 @@ class ConversationCommitBarrierTest {
         ctx.put(
                 ContextCheckpointStore.class,
                 draft -> {
-                    assertEquals(List.of("run:call"), draft.pendingOperationIds());
+                    assertPendingOperation(draft);
                     assertFalse(reactor.core.scheduler.Schedulers.isInNonBlockingThread());
                     throw failure;
                 });

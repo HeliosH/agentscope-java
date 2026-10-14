@@ -45,6 +45,24 @@ public abstract class SandboxState {
     @JsonIgnore private SandboxSnapshot snapshot;
     private String workspaceProjectionHash;
     private boolean workspaceRootReady = false;
+    private String workspaceBaseRoot;
+    private String workspaceScopeKey;
+
+    public String getWorkspaceBaseRoot() {
+        return workspaceBaseRoot;
+    }
+
+    public void setWorkspaceBaseRoot(String root) {
+        workspaceBaseRoot = root;
+    }
+
+    public String getWorkspaceScopeKey() {
+        return workspaceScopeKey;
+    }
+
+    public void setWorkspaceScopeKey(String key) {
+        workspaceScopeKey = key;
+    }
 
     public String getSessionId() {
         return sessionId;

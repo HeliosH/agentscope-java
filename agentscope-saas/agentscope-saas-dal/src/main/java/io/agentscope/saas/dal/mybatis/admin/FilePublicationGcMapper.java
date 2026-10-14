@@ -39,8 +39,9 @@ public interface FilePublicationGcMapper {
                     + " ('STAGED', 'STORED') AND recovery_deadline_at > #{now}) AND NOT EXISTS"
                     + " (SELECT 1 FROM workspace_archive_items e JOIN workspace_archive_jobs j ON"
                     + " j.id = e.job_id WHERE e.publication_id = file_publications.id AND j.status"
-                    + " IN ('PENDING', 'RUNNING') AND j.deadline_at > #{now}) ORDER BY eligible_at,"
-                    + " id LIMIT #{limit}")
+                    + " IN ('PENDING', 'RUNNING') AND j.deadline_at > #{now}) AND NOT EXISTS"
+                    + " (SELECT 1 FROM run_system_entries se WHERE se.publication_id ="
+                    + " file_publications.id) ORDER BY eligible_at, id LIMIT #{limit}")
     List<Publication> candidates(
             @Param("now") OffsetDateTime now,
             @Param("maxAttempts") int attempts,
@@ -53,6 +54,7 @@ public interface FilePublicationGcMapper {
              WHERE id = #{id} AND status <> 'PUBLISHED' AND eligible_at <= #{now} AND attempts < #{maxAttempts}
                AND NOT (recoverable AND status IN ('STAGED', 'STORED') AND recovery_deadline_at > #{now})
                AND NOT EXISTS (SELECT 1 FROM workspace_archive_items e JOIN workspace_archive_jobs j ON j.id = e.job_id WHERE e.publication_id = file_publications.id AND j.status IN ('PENDING', 'RUNNING') AND j.deadline_at > #{now})
+               AND NOT EXISTS (SELECT 1 FROM run_system_entries e WHERE e.publication_id = file_publications.id)
             """)
     int claim(
             @Param("id") UUID id,
@@ -63,8 +65,8 @@ public interface FilePublicationGcMapper {
 
     @Select(
             """
-            SELECT COUNT(*) FROM file_versions v JOIN file_publications p ON p.org_id = v.org_id AND p.object_key = v.object_key
-             WHERE p.id = #{id}
+            SELECT (SELECT COUNT(*) FROM file_versions v JOIN file_publications p ON p.org_id = v.org_id AND p.object_key = v.object_key WHERE p.id = #{id})
+                 + (SELECT COUNT(*) FROM run_system_entries e WHERE e.publication_id = #{id})
             """)
     long references(@Param("id") UUID id);
 

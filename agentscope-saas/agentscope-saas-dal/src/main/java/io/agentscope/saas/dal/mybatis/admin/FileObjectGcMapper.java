@@ -34,6 +34,7 @@ public interface FileObjectGcMapper {
                     WHERE v.file_id = files.id
                )
                AND NOT EXISTS (SELECT 1 FROM task_input_entries i WHERE i.file_id = files.id)
+               AND NOT EXISTS (SELECT 1 FROM task_input_additions i WHERE i.file_id = files.id)
                AND NOT EXISTS (SELECT 1 FROM run_artifacts a WHERE a.file_id = files.id)
              ORDER BY updated_at ASC
              LIMIT #{limit}
@@ -53,6 +54,7 @@ public interface FileObjectGcMapper {
                 AND NOT EXISTS (SELECT 1 FROM legacy_archive_imports j JOIN file_versions v ON v.id = j.source_version_id
                     WHERE v.file_id = files.id)
                 AND NOT EXISTS (SELECT 1 FROM task_input_entries i WHERE i.file_id = files.id)
+                AND NOT EXISTS (SELECT 1 FROM task_input_additions i WHERE i.file_id = files.id)
                 AND NOT EXISTS (SELECT 1 FROM run_artifacts a WHERE a.file_id = files.id)
             """)
     int claimDeletedFile(@Param("fileId") UUID fileId);
@@ -115,6 +117,7 @@ public interface FileObjectGcMapper {
                )
                AND NOT EXISTS (SELECT 1 FROM legacy_archive_imports j WHERE j.source_version_id = ranked.id)
                AND NOT EXISTS (SELECT 1 FROM task_input_entries i WHERE i.version_id = ranked.id)
+               AND NOT EXISTS (SELECT 1 FROM task_input_additions i WHERE i.version_id = ranked.id)
                AND NOT EXISTS (SELECT 1 FROM run_artifacts a WHERE a.file_version_id = ranked.id)
              LIMIT #{limit}
             """)
@@ -141,6 +144,7 @@ public interface FileObjectGcMapper {
                )
                AND NOT EXISTS (SELECT 1 FROM legacy_archive_imports j WHERE j.source_version_id = candidate.id)
                AND NOT EXISTS (SELECT 1 FROM task_input_entries i WHERE i.version_id = candidate.id)
+               AND NOT EXISTS (SELECT 1 FROM task_input_additions i WHERE i.version_id = candidate.id)
                AND NOT EXISTS (SELECT 1 FROM run_artifacts a WHERE a.file_version_id = candidate.id)
             """)
     int claimPrunableVersion(@Param("versionId") UUID versionId);
@@ -178,6 +182,7 @@ public interface FileObjectGcMapper {
             """
             SELECT (SELECT COUNT(*) FROM file_versions
                      WHERE org_id = #{orgId} AND object_key = #{objectKey})
+                 + (SELECT COUNT(*) FROM run_system_entries WHERE org_id = #{orgId} AND object_key = #{objectKey})
                  + (SELECT COUNT(*) FROM file_publications
                      WHERE org_id = #{orgId} AND object_key = #{objectKey}
                        AND status IN ('STAGED', 'STORED') AND lease_until > CURRENT_TIMESTAMP)

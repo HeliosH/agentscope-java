@@ -68,6 +68,19 @@ public class PgTaskRepository implements TaskRepository {
     }
 
     @Override
+    public String pendingReason(RuntimeContext rc, String sessionId, String taskId) {
+        var row = findRow(scope(rc, sessionId), taskId);
+        return row != null
+                        && "READY".equals(row.status())
+                        && row.runId()
+                                .toString()
+                                .equals(rc.get(RunOrchestrationService.ATTR_RUN_ID))
+                ? "Task is queued until the current response finishes. Finish this response; its"
+                        + " result will be delivered automatically."
+                : null;
+    }
+
+    @Override
     public BackgroundTask putTask(
             RuntimeContext rc,
             String taskId,

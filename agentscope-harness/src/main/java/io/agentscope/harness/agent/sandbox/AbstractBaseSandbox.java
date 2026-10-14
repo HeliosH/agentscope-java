@@ -54,7 +54,6 @@ public abstract class AbstractBaseSandbox implements Sandbox {
     private static final int PROBE_TIMEOUT_SECONDS = 10;
 
     private final SandboxState state;
-    private final WorkspaceSpecApplier workspaceSpecApplier;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private WorkspaceTransferResources transferResources = WorkspaceTransferResources.DEFAULT;
     private long archiveTransferLimit =
@@ -77,7 +76,6 @@ public abstract class AbstractBaseSandbox implements Sandbox {
 
     protected AbstractBaseSandbox(SandboxState state) {
         this.state = state;
-        this.workspaceSpecApplier = new WorkspaceSpecApplier(state.getWorkspaceSpec().getRoot());
     }
 
     /**
@@ -88,6 +86,7 @@ public abstract class AbstractBaseSandbox implements Sandbox {
     @Override
     public void start() throws Exception {
         WorkspaceSpec spec = state.getWorkspaceSpec();
+        var workspaceSpecApplier = new WorkspaceSpecApplier(spec.getRoot());
         SandboxSnapshot snapshot = state.getSnapshot();
         log.info(
                 "[sandbox] start: workspaceRootReady={} snapshot={} isRestorable={}",

@@ -889,6 +889,17 @@ public class SaasProperties {
         private boolean workspaceSourceEnabled = true;
         private long workspaceSourceMaxBytes = 320L * MIB;
         private long workspaceSourceMaxOrgBytes = 2L * GIB;
+        private long workspaceSystemMaxOrgBytes = 2L * GIB;
+
+        public long getWorkspaceSystemMaxOrgBytes() {
+            return workspaceSystemMaxOrgBytes;
+        }
+
+        public void setWorkspaceSystemMaxOrgBytes(long value) {
+            if (value < 1) throw new IllegalArgumentException("Invalid system snapshot quota");
+            workspaceSystemMaxOrgBytes = value;
+        }
+
         private boolean workspaceProviderRetentionEnabled = true;
         private long workspaceProviderRetentionSeconds = 900;
         private int workspaceProviderRetentionMaxOrgResources = 4;

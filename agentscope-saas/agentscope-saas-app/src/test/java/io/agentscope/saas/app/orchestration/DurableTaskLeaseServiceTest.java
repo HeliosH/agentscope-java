@@ -78,6 +78,28 @@ class DurableTaskLeaseServiceTest {
         assertThat(attemptStatus(first.get(0).attemptId())).isEqualTo("LEASED");
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(WorkspaceIsolationMode.class)
+    void sharedWorkspaceWritersWaitWhileIsolatedTasksCanRunInParallel(WorkspaceIsolationMode mode) {
+        UUID sibling = UUID.randomUUID();
+        insertTask(sibling, database.taskOrgId(taskId), "IDEMPOTENT", 3);
+        database.updateTaskCompletionContract(sibling, "[]", "[]");
+        database.updateTaskWorkspaceMode(taskId, mode.name());
+        database.updateTaskWorkspaceMode(sibling, mode.name());
+        boolean shared =
+                mode != WorkspaceIsolationMode.ATTEMPT_ISOLATED
+                        && mode != WorkspaceIsolationMode.DEDICATED_SANDBOX;
+        var claimed = leases.claimReady("workspace-writer-a", 2);
+        assertThat(claimed).hasSize(shared ? 1 : 2);
+        assertThat(leases.claimReady("workspace-writer-b", 2)).isEmpty();
+        if (shared) {
+            var first = claimed.get(0);
+            assertThat(leases.start(first.attemptId(), "workspace-writer-a")).isTrue();
+            assertThat(leases.succeed(first.attemptId(), "workspace-writer-a")).isTrue();
+            assertThat(leases.claimReady("workspace-writer-b", 2)).hasSize(1);
+        }
+    }
+
     @Test
     void startsHeartbeatsAndCompletesLease() {
         var lease = leases.claimReady("worker-a", 1).get(0);

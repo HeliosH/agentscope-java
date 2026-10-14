@@ -166,7 +166,28 @@ class JournalTranscriptRecoveryIntegrationTest {
         assertThat(database.toolOperationState(run.runId(), "effect-call").status())
                 .isEqualTo("SUCCEEDED");
         var pending = durable.latest().orElseThrow();
-        assertThat(pending.pendingOperationIds()).containsExactly(run.runId() + ":effect-call");
+        var origin =
+                pending.retainedTail().stream()
+                        .filter(m -> m.hasContentBlocks(ToolUseBlock.class))
+                        .findFirst()
+                        .orElseThrow()
+                        .getId();
+        var identity =
+                new StepSnapshot.Identity(
+                        run.runId().toString(),
+                        run.rootAgentRunId().toString(),
+                        run.rootTaskId().toString(),
+                        run.rootAttemptId().toString());
+        String logicalKey =
+                io.agentscope.core.tool.ToolOperationKey.of(
+                        run.runId().toString(), identity, origin, "effect-call");
+        assertThat(pending.pendingOperationIds()).containsExactly(logicalKey);
+        assertThat(database.toolOperationState(run.runId(), "effect-call").operationKey())
+                .isEqualTo(logicalKey);
+        assertThat(database.toolOperationState(run.runId(), "effect-call").logicalOriginId())
+                .isEqualTo(origin);
+        assertThat(database.toolOperationState(run.runId(), "effect-call").toolContractHash())
+                .hasSize(64);
         assertThat(pending.retainedTail())
                 .noneMatch(m -> m.hasContentBlocks(ToolResultBlock.class));
         var before = archive.readWindow(ctx, "assistant", session.toString(), 0L, null, 100);

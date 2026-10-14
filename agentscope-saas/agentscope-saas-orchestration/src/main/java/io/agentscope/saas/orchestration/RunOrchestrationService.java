@@ -27,6 +27,7 @@ import io.agentscope.saas.domain.orchestration.SessionExecutionRevokedException;
 import io.agentscope.saas.domain.orchestration.WorkspaceIsolationMode;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -433,7 +434,7 @@ public class RunOrchestrationService {
                         taskId,
                         run.orgId(),
                         run.id(),
-                        root.id(),
+                        parentAgentRun.taskId(),
                         taskKey,
                         required(subSessionId, "subSessionId", 255),
                         titleFor(subagentType + ": " + taskKey),
@@ -444,7 +445,7 @@ public class RunOrchestrationService {
                         "{}",
                         "{}",
                         "[]",
-                        WorkspaceIsolationMode.NONE.name(),
+                        WorkspaceIsolationMode.RUN_ISOLATED.name(),
                         3,
                         "IDEMPOTENT",
                         2,
@@ -534,7 +535,7 @@ public class RunOrchestrationService {
         }
     }
 
-    /** Cancels one durable child and invalidates any live Attempt lease. */
+    /** Cancels a durable child and its dependent background subtree, invalidating live leases. */
     @Transactional
     public boolean cancelSubagentTask(TenantContext tenant, UUID agentId, UUID runId, UUID taskId) {
         AssistantRun run = lockOwnedRun(tenant, agentId, runId);
@@ -547,16 +548,41 @@ public class RunOrchestrationService {
             return false;
         }
         OffsetDateTime now = OffsetDateTime.now();
-        repository.completeTask(task.id(), run.orgId(), TASK_CANCELLED, null, null, now, now);
+        var descendants = new LinkedHashSet<UUID>();
+        descendants.add(task.id());
+        var snapshot = repository.findTasks(run.id(), run.orgId());
+        boolean added;
+        do {
+            added = false;
+            for (var candidate : snapshot)
+                if ("subagent".equals(candidate.taskType())
+                        && descendants.contains(candidate.parentId()))
+                    added |= descendants.add(candidate.id());
+        } while (added);
+        snapshot.stream()
+                .filter(candidate -> descendants.contains(candidate.id()))
+                .filter(candidate -> !isTerminalTaskStatus(candidate.status()))
+                .forEach(
+                        candidate -> {
+                            repository.completeTask(
+                                    candidate.id(),
+                                    run.orgId(),
+                                    TASK_CANCELLED,
+                                    null,
+                                    null,
+                                    now,
+                                    now);
+                            appendEvent(run, candidate.id(), "TASK_CANCELLED", "{}");
+                        });
         repository.findAgentRuns(run.id(), run.orgId()).stream()
-                .filter(agentRun -> task.id().equals(agentRun.taskId()))
+                .filter(agentRun -> descendants.contains(agentRun.taskId()))
                 .filter(agentRun -> !isTerminalTaskStatus(agentRun.status()))
                 .forEach(
                         agentRun ->
                                 repository.updateAgentRunStatus(
                                         agentRun.id(), run.orgId(), TASK_CANCELLED, now, now));
         repository.findAttempts(run.id(), run.orgId()).stream()
-                .filter(attempt -> task.id().equals(attempt.taskId()))
+                .filter(attempt -> descendants.contains(attempt.taskId()))
                 .filter(attempt -> !isTerminalAttemptStatus(attempt.status()))
                 .forEach(
                         attempt ->
@@ -568,8 +594,6 @@ public class RunOrchestrationService {
                                         null,
                                         now,
                                         now));
-        appendEvent(run, task.id(), "TASK_CANCELLED", "{}");
-
         List<TaskNode> allTasks = repository.findTasks(run.id(), run.orgId());
         boolean allChildrenSettled =
                 allTasks.stream()

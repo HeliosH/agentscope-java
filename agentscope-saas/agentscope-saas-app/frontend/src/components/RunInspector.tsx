@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   Check,
+  ClipboardCheck,
+  ArrowRight,
+  RotateCcw,
   CircleStop,
   Eye,
   FileOutput,
@@ -25,10 +28,11 @@ import {
   type TaskView,
 } from '../api/runs';
 import { FilePreviewDialog, type PreviewFile } from './FilePreview';
+import { listOwnedOperations, outcomeLabel, type OperationPage } from '../api/toolOperations';
 import './RunInspector.css';
 
 const TERMINAL = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED', 'REJECTED']);
-type InspectorTab = 'tasks' | 'artifacts' | 'events';
+type InspectorTab = 'tasks' | 'artifacts' | 'events' | 'operations';
 
 function statusClass(status: string) {
   return `run-status run-status--${status.toLowerCase()}`;
@@ -56,8 +60,43 @@ export default function RunInspector({ agentId, runId, onClose }: RunInspectorPr
   const [acting, setActing] = useState(false);
   const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
   const lastSeq = useRef(0);
+  const refreshGeneration = useRef(0);
+  const refreshBusy = useRef<number | null>(null);
+  const [operationPage, setOperationPage] = useState<OperationPage>({ items: [], nextCursor: null });
+  const [operationAfter, setOperationAfter] = useState<string | null>(null);
+  const [operationError, setOperationError] = useState('');
+  const [operationsLoading, setOperationsLoading] = useState(false);
+
+  useEffect(() => { setOperationAfter(null); setOperationPage({ items: [], nextCursor: null }); }, [agentId, runId]);
+
+  useEffect(() => {
+    if (tab !== 'operations') return;
+    let disposed = false;
+    let inFlight = false;
+    async function poll() {
+      if (inFlight) return;
+      inFlight = true;
+      setOperationsLoading(true);
+      try {
+        const page = await listOwnedOperations(agentId, runId, operationAfter);
+        if (!disposed) { setOperationPage(page); setOperationError(''); }
+      } catch (cause) {
+        if (!disposed) setOperationError(cause instanceof Error ? cause.message : 'Operations are unavailable.');
+      } finally {
+        inFlight = false;
+        if (!disposed) setOperationsLoading(false);
+      }
+    }
+    setOperationPage({ items: [], nextCursor: null });
+    void poll();
+    const timer = window.setInterval(() => void poll(), 2000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [agentId, runId, tab, operationAfter]);
 
   const refresh = useCallback(async () => {
+    const generation = refreshGeneration.current;
+    if (refreshBusy.current === generation) return;
+    refreshBusy.current = generation;
     try {
       const [nextRun, nextTasks, nextPlan, nextArtifacts, nextEvents, nextRecovery] = await Promise.all([
         getRun(agentId, runId),
@@ -67,6 +106,7 @@ export default function RunInspector({ agentId, runId, onClose }: RunInspectorPr
         getEvents(agentId, runId, lastSeq.current),
         getRecovery(agentId, runId),
       ]);
+      if (generation !== refreshGeneration.current) return;
       setRun(nextRun);
       setRecovery(nextRecovery);
       setTasks(nextTasks);
@@ -78,17 +118,27 @@ export default function RunInspector({ agentId, runId, onClose }: RunInspectorPr
       }
       setError('');
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Run state is unavailable');
+      if (generation === refreshGeneration.current)
+        setError(cause instanceof Error ? cause.message : 'Run state is unavailable');
+    } finally {
+      if (refreshBusy.current === generation) refreshBusy.current = null;
     }
   }, [agentId, runId]);
 
   useEffect(() => {
+    refreshGeneration.current++;
     lastSeq.current = 0;
+    setRun(null);
+    setRecovery(null);
+    setTasks([]);
+    setPlan(null);
+    setArtifacts([]);
+    setError('');
     setEvents([]);
     setPreviewFile(null);
     void refresh();
     const timer = window.setInterval(() => void refresh(), 2000);
-    return () => window.clearInterval(timer);
+    return () => { refreshGeneration.current++; window.clearInterval(timer); };
   }, [refresh]);
 
   const dependencies = useMemo(() => {
@@ -131,6 +181,7 @@ export default function RunInspector({ agentId, runId, onClose }: RunInspectorPr
     { key: 'tasks', label: 'Tasks', count: tasks.length, icon: ListChecks },
     { key: 'artifacts', label: 'Files', count: artifacts.length, icon: FileOutput },
     { key: 'events', label: 'Activity', count: events.length, icon: Activity },
+    { key: 'operations', label: 'Tools', count: operationPage.items.length, icon: ClipboardCheck },
   ];
 
   return (
@@ -212,6 +263,21 @@ export default function RunInspector({ agentId, runId, onClose }: RunInspectorPr
       </div>
 
       <div className="run-inspector__body">
+        {tab === 'operations' && <div className="run-list">
+          {operationError && <div className="run-inspector__error">{operationError}</div>}
+          {operationPage.items.map(operation => <div className="run-operation" key={operation.id}>
+            <strong>{operation.toolName}</strong>
+            <span className={statusClass(operation.effectiveStatus)}>{outcomeLabel(operation.effectiveStatus)}</span>
+            <small>Original: {outcomeLabel(operation.status)}</small>
+            {operation.status === 'OUTCOME_UNKNOWN' && !['CONFIRMED_SUCCESS', 'CONFIRMED_NOT_PERFORMED', 'REPLAY_APPROVED'].includes(operation.effectiveStatus)
+              && <small>Waiting for administrator outcome review</small>}
+          </div>)}
+          {!operationPage.items.length && <div className="run-empty">{operationsLoading ? 'Loading tools...' : 'No tool operations.'}</div>}
+          <div className="operation-pagination">
+            {operationAfter && <button className="quiet-button" type="button" disabled={operationsLoading} onClick={() => setOperationAfter(null)}><RotateCcw size={14} />First</button>}
+            {operationPage.nextCursor && <button className="quiet-button" type="button" disabled={operationsLoading} onClick={() => setOperationAfter(operationPage.nextCursor)}><ArrowRight size={14} />Next</button>}
+          </div>
+        </div>}
         {tab === 'tasks' && (
           <div className="run-list">
             {tasks.map(task => {

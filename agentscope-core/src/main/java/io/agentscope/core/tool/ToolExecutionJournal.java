@@ -63,7 +63,9 @@ public interface ToolExecutionJournal {
             String toolName,
             String inputHash,
             Map<String, Object> input,
-            ToolRetrySafety retrySafety) {
+            ToolRetrySafety retrySafety,
+            ToolContractSnapshot toolContract,
+            String logicalOriginId) {
         public Invocation {
             if (operationId == null || operationId.isBlank()) {
                 throw new IllegalArgumentException("operationId is required");
@@ -79,6 +81,69 @@ public interface ToolExecutionJournal {
             }
             input = input == null ? Map.of() : Map.copyOf(input);
             retrySafety = retrySafety == null ? ToolRetrySafety.NEVER : retrySafety;
+            if (toolContract != null
+                    && (!toolName.equals(toolContract.toolName())
+                            || !retrySafety.name().equals(toolContract.retrySafety())))
+                throw new IllegalArgumentException(
+                        "Invocation does not match the executable tool contract");
+            if (logicalOriginId == null
+                    || logicalOriginId.isBlank()
+                    || logicalOriginId.length() > 512)
+                throw new IllegalArgumentException(
+                        "A bounded logical invocation origin is required");
+        }
+
+        public Invocation(
+                String operationId,
+                String invocationId,
+                String stepId,
+                StepSnapshot.Identity identity,
+                ExecutionLeaseSnapshot executionLease,
+                String toolCallId,
+                String toolName,
+                String inputHash,
+                Map<String, Object> input,
+                ToolRetrySafety retrySafety,
+                ToolContractSnapshot toolContract) {
+            this(
+                    operationId,
+                    invocationId,
+                    stepId,
+                    identity,
+                    executionLease,
+                    toolCallId,
+                    toolName,
+                    inputHash,
+                    input,
+                    retrySafety,
+                    toolContract,
+                    stepId == null ? "direct" : stepId);
+        }
+
+        public Invocation(
+                String operationId,
+                String invocationId,
+                String stepId,
+                StepSnapshot.Identity identity,
+                ExecutionLeaseSnapshot executionLease,
+                String toolCallId,
+                String toolName,
+                String inputHash,
+                Map<String, Object> input,
+                ToolRetrySafety retrySafety) {
+            this(
+                    operationId,
+                    invocationId,
+                    stepId,
+                    identity,
+                    executionLease,
+                    toolCallId,
+                    toolName,
+                    inputHash,
+                    input,
+                    retrySafety,
+                    null,
+                    stepId == null ? "direct" : stepId);
         }
 
         public Invocation(
@@ -101,7 +166,9 @@ public interface ToolExecutionJournal {
                     toolName,
                     inputHash,
                     input,
-                    retrySafety);
+                    retrySafety,
+                    null,
+                    stepId == null ? "direct" : stepId);
         }
     }
 }

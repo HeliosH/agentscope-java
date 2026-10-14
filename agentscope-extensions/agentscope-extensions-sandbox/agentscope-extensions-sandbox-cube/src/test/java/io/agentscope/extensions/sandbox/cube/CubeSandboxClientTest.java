@@ -35,6 +35,28 @@ import org.junit.jupiter.api.io.TempDir;
 class CubeSandboxClientTest {
 
     @Test
+    void persistentWorkspaceKeepsTheVolumeAndBindsAStablePrivateRunRoot() {
+        var state = new CubeSandboxState();
+        var spec = new WorkspaceSpec();
+        spec.setRoot("/workspace");
+        state.setWorkspaceSpec(spec);
+        state.setWorkspaceRoot("/workspace");
+        state.setPersistentWorkspace(true);
+        var sandbox = new CubeSandbox(state, new CubeSandboxClientOptions());
+        sandbox.scopePersistentWorkspace("run/one");
+        String root = state.getWorkspaceRoot();
+        assertTrue(root.startsWith("/workspace/.agentscope/runs/"));
+        assertEquals(root, state.getWorkspaceSpec().getRoot());
+        assertEquals("/workspace", state.getWorkspaceBaseRoot());
+        var resumed = new CubeSandbox(state, new CubeSandboxClientOptions());
+        resumed.scopePersistentWorkspace("run/one");
+        assertEquals(root, state.getWorkspaceRoot());
+        assertThrows(
+                IllegalStateException.class, () -> resumed.scopePersistentWorkspace("run/two"));
+        assertTrue(state.isPersistentWorkspace());
+    }
+
+    @Test
     void create_attachesSnapshotFromSpec(@TempDir Path tmp) {
         CubeSandboxClient client = new CubeSandboxClient();
 

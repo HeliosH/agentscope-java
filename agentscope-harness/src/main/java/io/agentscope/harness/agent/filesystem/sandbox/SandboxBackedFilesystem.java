@@ -74,6 +74,43 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
     private static final int REMOTE_PROJECTION_BATCH_SIZE = 100;
     private WorkspaceTransferPolicy transferPolicy = WorkspaceTransferPolicy.DEFAULT;
     private WorkspaceTransferResources transferResources = WorkspaceTransferResources.DEFAULT;
+    private io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore systemSnapshots;
+    private io.agentscope.harness.agent.sandbox.WorkspaceAccessGuard workspaceAccessGuard;
+
+    public void configureWorkspaceAccessGuard(
+            io.agentscope.harness.agent.sandbox.WorkspaceAccessGuard guard) {
+        workspaceAccessGuard = guard;
+    }
+
+    public void configureSystemSnapshotStore(
+            io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore store) {
+        systemSnapshots = store;
+    }
+
+    /** Managed tasks freeze even an empty system projection; no live store is read on retries. */
+    public boolean prepareSystemWorkspace(RuntimeContext context) throws Exception {
+        if (systemSnapshots == null) return false;
+        var source =
+                new io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore.Source() {
+                    public List<String> paths(int limit) {
+                        return remoteFallback == null
+                                ? List.of()
+                                : remoteFallback.systemFilePaths(context, limit);
+                    }
+
+                    public io.agentscope.harness.agent.sandbox.WorkspaceRestorePlan.WorkspaceFile
+                            read(String path, long maxBytes) {
+                        if (remoteFallback == null)
+                            throw new IllegalStateException("System projection unavailable");
+                        return remoteFallback.systemSnapshotFile(context, path, maxBytes);
+                    }
+                };
+        var plan = systemSnapshots.prepare(context, source, getTransferPolicy(context));
+        context.put(
+                io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore.Plan.class,
+                new io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore.Plan(plan));
+        return true;
+    }
 
     public void configureTransferResources(WorkspaceTransferResources resources) {
         transferResources = Objects.requireNonNull(resources);
@@ -138,6 +175,8 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
         child.projectionSink = this.projectionSink;
         child.transferPolicy = this.transferPolicy;
         child.transferResources = this.transferResources;
+        child.systemSnapshots = this.systemSnapshots;
+        child.workspaceAccessGuard = this.workspaceAccessGuard;
         return child;
     }
 
@@ -586,7 +625,12 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
             return new WorkspaceProjectionReport(0, 0, 0, 0, true, List.of());
         }
 
-        boolean incremental = active.hasPersistentWorkspace();
+        boolean incremental =
+                active.hasPersistentWorkspace()
+                        && runtimeContext.get(
+                                        io.agentscope.harness.agent.sandbox.WorkspaceInputPlan
+                                                .class)
+                                == null;
         Map<String, VolumeSyncEntry> previous =
                 incremental ? readVolumeSyncManifest(runtimeContext, active) : Map.of();
         Map<String, Long> remoteBefore =
@@ -876,6 +920,17 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
             for (var file : pinned.workspace().files())
                 if (file.path().startsWith("outputs/"))
                     pinnedOutputs.put("/" + file.path(), file.sha256());
+        Map<String, String> referenceHashes = new LinkedHashMap<>(pinnedOutputs);
+        // Restored outputs remain in the complete checkpoint, including unchanged inherited files.
+        // Only immutable input/system references can be omitted because they are restored
+        // separately.
+        var system =
+                context.get(
+                        io.agentscope.harness.agent.sandbox.WorkspaceSystemSnapshotStore.Plan
+                                .class);
+        if (system != null)
+            for (var file : system.workspace().files())
+                referenceHashes.put("/" + file.path(), file.sha256());
         try (InputStream input = active.persistWorkspace();
                 TarArchiveInputStream source = new TarArchiveInputStream(input);
                 TarArchiveOutputStream saved = new TarArchiveOutputStream(spool.output())) {
@@ -918,16 +973,19 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                 String hash;
                 // Bound outputs must be compared before entering the immutable publication tar.
                 try (var reference =
-                        pinnedOutputs.containsKey(path)
+                        referenceHashes.containsKey(path)
                                 ? transferResources.spool("workspace-reference-", Math.max(1, size))
                                 : null) {
                     if (reference != null) {
                         try (var output = reference.output()) {
                             hash = transferEntry(source, output, size, buffer);
                         }
-                        if (hash.equals(pinnedOutputs.get(path))) continue;
-                        String name = path.substring(path.lastIndexOf('/') + 1);
-                        referenceTarget = "/outputs/revisions/" + UUID.randomUUID() + "-" + name;
+                        if (hash.equals(referenceHashes.get(path))) continue;
+                        if (pinnedOutputs.containsKey(path)) {
+                            String name = path.substring(path.lastIndexOf('/') + 1);
+                            referenceTarget =
+                                    "/outputs/revisions/" + UUID.randomUUID() + "-" + name;
+                        }
                     }
                     var outputEntry = new TarArchiveEntry(path.substring(1));
                     outputEntry.setSize(size);
@@ -950,6 +1008,8 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                 boolean remoteChanged =
                         incremental && old != null && old.remoteVersion() != remoteVersion;
                 String target = referenceTarget == null ? path : referenceTarget;
+                var taskScope =
+                        context.get(io.agentscope.harness.agent.sandbox.WorkspaceTaskScope.class);
                 boolean unchanged =
                         incremental && localUnchanged && remoteVersion != 0L && !remoteChanged;
                 if (remoteChanged) {
@@ -959,6 +1019,8 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                     }
                     target = conflictProjectionPath(path);
                 }
+                if (taskScope != null && path.startsWith("/outputs/"))
+                    target = taskScope.publicationPath(target);
                 if (!targets.add(target)) {
                     rejected.add("duplicate workspace publication target");
                     break;
@@ -1339,6 +1401,11 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
                                         .class);
                 if (guard != null && usage != null)
                     guard.requireCurrent(runtimeContext, usage, scoped);
+                if (workspaceAccessGuard != null
+                        && runtimeContext.get(
+                                        io.agentscope.harness.agent.sandbox.WorkspaceInputPlan
+                                                .class)
+                                != null) workspaceAccessGuard.requireCurrent(runtimeContext);
                 return scoped;
             }
             if (remoteFallback != null) {

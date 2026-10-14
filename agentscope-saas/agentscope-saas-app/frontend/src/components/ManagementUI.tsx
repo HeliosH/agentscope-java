@@ -2,6 +2,7 @@ import { useEffect, useId, type FormEventHandler, type ReactNode } from 'react';
 import {
   Database,
   Cpu,
+  ClipboardCheck,
   FileClock,
   Gauge,
   RefreshCw,
@@ -17,6 +18,7 @@ const ADMIN_LINKS = [
   { path: '/admin/models', label: 'Models', icon: Cpu },
   { path: '/admin/usage', label: 'Usage', icon: Gauge },
   { path: '/admin/sandboxes', label: 'Sandboxes', icon: Database },
+  { path: '/admin/operations', label: 'Operations', icon: ClipboardCheck },
   { path: '/admin/memory-events', label: 'Memory', icon: FileClock },
   { path: '/admin/audit', label: 'Audit', icon: ShieldCheck },
 ];
@@ -140,6 +142,7 @@ export function ManagementDialog({
   description,
   className = '',
   bodyClassName = '',
+  closeDisabled = false,
   onClose,
   onSubmit,
   children,
@@ -149,6 +152,7 @@ export function ManagementDialog({
   description?: string;
   className?: string;
   bodyClassName?: string;
+  closeDisabled?: boolean;
   onClose: () => void;
   onSubmit: FormEventHandler<HTMLFormElement>;
   children: ReactNode;
@@ -158,15 +162,15 @@ export function ManagementDialog({
 
   useEffect(() => {
     function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape' && !closeDisabled) onClose();
     }
     document.addEventListener('keydown', closeOnEscape);
     return () => document.removeEventListener('keydown', closeOnEscape);
-  }, [onClose]);
+  }, [onClose, closeDisabled]);
 
   return (
     <div className="management-modal-overlay" onMouseDown={event => {
-      if (event.target === event.currentTarget) onClose();
+      if (event.target === event.currentTarget && !closeDisabled) onClose();
     }}>
       <form
         className={`management-modal${className ? ` ${className}` : ''}`}
@@ -180,7 +184,7 @@ export function ManagementDialog({
             <h2 id={titleId}>{title}</h2>
             {description && <p>{description}</p>}
           </div>
-          <button className="icon-button" type="button" title="Close" aria-label="Close" onClick={onClose}>
+          <button className="icon-button" type="button" title="Close" aria-label="Close" disabled={closeDisabled} onClick={onClose}>
             <X size={16} />
           </button>
         </header>

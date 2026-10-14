@@ -15,6 +15,12 @@ public interface ToolOperationRepository {
 
     Optional<ToolOperation> lock(UUID orgId, UUID runId, String operationKey);
 
+    Optional<ToolOperation> lockCallerOperation(
+            UUID orgId, UUID runId, UUID agentRunId, String logicalOriginId, String toolCallId);
+
+    /** Locks session then Run to serialize dispatch with cancellation and session reset. */
+    boolean lockExecutionRun(UUID orgId, UUID runId, OffsetDateTime now);
+
     boolean executionScopeActive(
             UUID orgId,
             UUID runId,
@@ -36,6 +42,8 @@ public interface ToolOperationRepository {
 
     boolean markRunning(
             UUID id, UUID orgId, UUID invocationId, String leaseOwner, OffsetDateTime now);
+
+    boolean blockUndispatchedReplay(UUID id, UUID orgId, long expectedVersion, OffsetDateTime now);
 
     boolean complete(
             UUID id,
@@ -74,5 +82,9 @@ public interface ToolOperationRepository {
             String inputHash,
             String inputJson,
             String retrySafety,
-            OffsetDateTime preparedAt) {}
+            OffsetDateTime preparedAt,
+            String toolContractHash,
+            String toolContractJson,
+            boolean toolContractRecoverable,
+            String logicalOriginId) {}
 }

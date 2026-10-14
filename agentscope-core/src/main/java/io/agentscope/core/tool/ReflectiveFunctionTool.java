@@ -160,6 +160,38 @@ final class ReflectiveFunctionTool extends ToolBase {
     }
 
     @Override
+    public String getContractVersion() {
+        String owner =
+                toolObject instanceof ToolContractVersionProvider versioned
+                        ? versioned.getContractVersion()
+                        : ToolContractSnapshot.implementationVersion(toolObject.getClass());
+        String bridge = ToolContractSnapshot.implementationVersion(getClass());
+        String invoker = ToolContractSnapshot.implementationVersion(methodInvoker.getClass());
+        String converter =
+                ToolContractSnapshot.implementationVersion(
+                        customConverter == null
+                                ? DefaultToolResultConverter.class
+                                : customConverter.getClass());
+        if (owner == null
+                || owner.isBlank()
+                || bridge == null
+                || invoker == null
+                || converter == null) return null;
+        return StepSnapshot.fingerprint(
+                Map.of(
+                        "owner",
+                        owner,
+                        "bridge",
+                        bridge,
+                        "invoker",
+                        invoker,
+                        "converter",
+                        converter,
+                        "method",
+                        method.toGenericString()));
+    }
+
+    @Override
     public Mono<ToolResultBlock> callAsync(ToolCallParam param) {
         if (isExternalTool()) {
             return Mono.error(new ToolSuspendException());

@@ -77,7 +77,7 @@ final class CubeSandbox extends AbstractBaseSandbox {
         verifyVolumeMounts();
         super.start();
         try {
-            applyCommonSkillsOverlay();
+            if (state.getWorkspaceScopeKey() == null) applyCommonSkillsOverlay();
         } catch (Exception error) {
             try {
                 super.stop();
@@ -150,11 +150,22 @@ final class CubeSandbox extends AbstractBaseSandbox {
 
     @Override
     protected void doSetupWorkspace() throws Exception {
-        envd().runShell(
-                        state,
-                        state.getWorkspaceRoot(),
-                        "mkdir -p " + state.getWorkspaceRoot(),
-                        30);
+        var result =
+                envd().runShell(
+                                state,
+                                state.getWorkspaceBaseRoot() == null
+                                        ? state.getWorkspaceRoot()
+                                        : state.getWorkspaceBaseRoot(),
+                                "mkdir -p "
+                                        + shellSingleQuote(state.getWorkspaceRoot())
+                                        + " && test ! -L "
+                                        + shellSingleQuote(state.getWorkspaceRoot())
+                                        + " && test \"$(realpath "
+                                        + shellSingleQuote(state.getWorkspaceRoot())
+                                        + ")\" = "
+                                        + shellSingleQuote(state.getWorkspaceRoot()),
+                                30);
+        if (!result.ok()) throw new IllegalStateException("SCOPED_WORKSPACE_UNAVAILABLE");
     }
 
     @Override
@@ -187,6 +198,29 @@ final class CubeSandbox extends AbstractBaseSandbox {
     @Override
     public boolean hasPersistentWorkspace() {
         return state.isPersistentWorkspace();
+    }
+
+    @Override
+    public void scopePersistentWorkspace(String scopeKey) {
+        if (!hasPersistentWorkspace() || scopeKey == null || scopeKey.isBlank() || isRunning())
+            throw new IllegalStateException("Invalid persistent workspace scope");
+        if (state.getWorkspaceScopeKey() != null && !scopeKey.equals(state.getWorkspaceScopeKey()))
+            throw new IllegalStateException("Persistent workspace belongs to another Run");
+        String base = state.getWorkspaceBaseRoot();
+        if (base == null) base = state.getWorkspaceRoot();
+        Path root = Path.of(base).normalize();
+        if (!root.isAbsolute() || !root.toString().equals(base))
+            throw new IllegalStateException("Invalid persistent workspace root");
+        String scoped =
+                root.resolve(".agentscope/runs")
+                        .resolve(io.agentscope.core.tool.StepSnapshot.fingerprint(scopeKey))
+                        .toString();
+        state.setWorkspaceBaseRoot(base);
+        state.setWorkspaceScopeKey(scopeKey);
+        state.setWorkspaceRoot(scoped);
+        var spec = state.getWorkspaceSpec().copy();
+        spec.setRoot(scoped);
+        state.setWorkspaceSpec(spec);
     }
 
     // ---- internals ----

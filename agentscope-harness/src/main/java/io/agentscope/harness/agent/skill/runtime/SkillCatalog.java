@@ -30,9 +30,33 @@ import java.util.Map;
 public final class SkillCatalog {
 
     private final Map<String, HarnessSkillEntry> entries;
+    private final String version;
 
     private SkillCatalog(Map<String, HarnessSkillEntry> entries) {
         this.entries = Collections.unmodifiableMap(new LinkedHashMap<>(entries));
+        this.version =
+                io.agentscope.core.tool.StepSnapshot.fingerprint(
+                        this.entries.values().stream()
+                                .map(
+                                        e -> {
+                                            var identity = new LinkedHashMap<String, Object>();
+                                            identity.put("id", e.skill().getSkillId());
+                                            identity.put("metadata", e.skill().getMetadata());
+                                            identity.put("body", e.skill().getSkillContent());
+                                            identity.put("resources", e.skill().getResources());
+                                            identity.put(
+                                                    "resourceVersion",
+                                                    e.lazyResources() == null
+                                                            ? null
+                                                            : e.lazyResources().version());
+                                            identity.put("filesRoot", e.filesRoot());
+                                            return identity;
+                                        })
+                                .toList());
+    }
+
+    public String version() {
+        return version;
     }
 
     public static SkillCatalog empty() {
